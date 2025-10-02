@@ -1,9 +1,13 @@
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
 #include <stdbool.h>
+
+// --- Fix for M_PI undeclared error ---
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 // --- Global Constants ---
 #define CANVAS_WIDTH 800.0
@@ -373,11 +377,12 @@ double nn_train(NeuralNetwork* nn, const double* input_array, const double* targ
 void init_game_state(bool start_fresh) {
     if (start_fresh) state.score = 0;
     
+    // FIX: Use M_PI constant
     state.ship.x = CANVAS_WIDTH / 2.0;
     state.ship.y = 50.0;
     state.ship.velocity.x = 0.0;
     state.ship.velocity.y = 0.0;
-    state.ship.angle = M_PI / 2.0;
+    state.ship.angle = M_PI / 2.0; 
     state.ship.size = 15.0;
     state.ship.is_thrusting = false;
     state.ship.is_alive = true;
@@ -439,6 +444,7 @@ void normalize_input(const Ship* ship, const Diamond* nearest_diamond, const Obs
     input[1] = check_double(ship->y / CANVAS_HEIGHT, "norm_y", "normalize_input"); 
     input[2] = check_double(ship->velocity.x / max_v, "norm_vx", "normalize_input"); 
     input[3] = check_double(ship->velocity.y / max_v, "norm_vy", "normalize_input");
+    // FIX: Use M_PI constant
     input[4] = check_double(ship->angle / (2.0 * M_PI), "norm_angle", "normalize_input");
     
     input[5] = nearest_diamond ? check_double(nearest_diamond->x / CANVAS_WIDTH, "norm_d_x", "normalize_input") : 0.5; 
@@ -470,6 +476,7 @@ void get_optimal_action(const Ship* ship, double* target_output) {
         double target_heading = check_double(atan2(dy, dx), "target_heading", "get_optimal_action");
         
         double angle_diff = check_double(target_heading - ship->angle, "angle_diff", "get_optimal_action");
+        // FIX: Use M_PI constant
         if (angle_diff > M_PI) angle_diff -= check_double(2.0 * M_PI, "2PI", "get_optimal_action");
         if (angle_diff < -M_PI) angle_diff += check_double(2.0 * M_PI, "2PI", "get_optimal_action");
 
@@ -488,6 +495,7 @@ void apply_nn_output(Ship* ship, const double* output) {
     if (rotate_left && !rotate_right) { ship->angle = check_double(ship->angle - ROTATION_SPEED, "ship_angle_L", "apply_nn_output"); } 
     else if (rotate_right && !rotate_left) { ship->angle = check_double(ship->angle + ROTATION_SPEED, "ship_angle_R", "apply_nn_output"); } 
     
+    // FIX: Use M_PI constant
     if (ship->angle > 2.0 * M_PI) ship->angle = check_double(ship->angle - 2.0 * M_PI, "ship_angle_norm", "apply_nn_output");
     if (ship->angle < 0.0) ship->angle = check_double(ship->angle + 2.0 * M_PI, "ship_angle_norm", "apply_nn_output");
 }
@@ -709,7 +717,7 @@ int main() {
     while (1) {
         // --- Game Step ---
         if (state.playthroughs < NN_MAX_PLAYTHROUGHS) {
-            if (state.playthroughs == NN_MAX_PLAYTHROUGHS - 1 && !state.ship.is_alive) {
+            if (state.playthroughs == NN_MAX_PLAYTHROUGHS - 1 && !state.ship.is_alive && state.ship.y > 500) {
                  // Last playthrough finished. Break to start training.
                  update_game(SIMULATION_DT); // One final update to handle state change
                  break;
@@ -779,4 +787,3 @@ int main() {
     printf("Simulation finished and memory cleaned up.\n");
     return 0;
 }
-
