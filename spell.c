@@ -15,17 +15,17 @@
 #define NN_OUTPUT_SIZE (MAX_WORD_LEN * ALPHABET_SIZE)   // 10 * 27 = 270
 
 #define NUM_TRAIN_WORDS 64          
-#define MISSPELLED_PER_WORD 16      // CHANGED: Reduced from 32 to 16
+#define MISSPELLED_PER_WORD 16      
 #define CORRECT_WORD_PROPORTION 0.1 
-#define BATCH_SIZE ((int)(NUM_TRAIN_WORDS * MISSPELLED_PER_WORD / (1.0 - CORRECT_WORD_PROPORTION))) // ~1137 examples
+#define BATCH_SIZE ((int)(NUM_TRAIN_WORDS * MISSPELLED_PER_WORD / (1.0 - CORRECT_WORD_PROPORTION))) 
 #define CORRECT_SAMPLES_IN_BATCH (BATCH_SIZE - (NUM_TRAIN_WORDS * MISSPELLED_PER_WORD)) 
 
 #define NUM_TEST_WORDS VOCAB_SIZE   
 #define MISSPELLED_PER_TEST_WORD 16 
-#define TOTAL_TESTS (NUM_TEST_WORDS * MISSPELLED_PER_TEST_WORD) // 8192
+#define TOTAL_TESTS (NUM_TEST_WORDS * MISSPELLED_PER_TEST_WORD) 
 
 #define MAX_TRAINING_SECONDS 240.0  
-#define TEST_INTERVAL_SECONDS 30.0  // CHANGED: Increased from 10.0 to 30.0
+#define TEST_INTERVAL_SECONDS 30.0  
 
 // --- NN Architecture Constants (Single Hidden Layer) ---
 #define NN_HIDDEN_SIZE 512          
@@ -42,7 +42,9 @@
 #define LAYER_SPACING 300 
 
 // --- Vocabulary and Encoding Arrays ---
+// ... (Vocabulary omitted for brevity, it remains unchanged) ...
 const char* ENGLISH_WORDS[VOCAB_SIZE] = {
+    // ... 512 words here ...
     "the", "and", "but", "not", "for", "with", "you", "all", "are", "can",
     "had", "his", "out", "was", "she", "new", "day", "use", "way", "get",
     "him", "how", "man", "one", "say", "see", "two", "who", "big", "did",
@@ -116,7 +118,7 @@ const char* ENGLISH_WORDS[VOCAB_SIZE] = {
 };
 
 const char ALPHABET[] = "abcdefghijklmnopqrstuvwxyz ";
-int CHAR_TO_INT[128]; // Map char to index (0-26)
+int CHAR_TO_INT[128]; 
 
 void init_char_mapping() {
     for (int i = 0; i < 128; i++) CHAR_TO_INT[i] = -1;
@@ -130,31 +132,152 @@ void init_char_mapping() {
 typedef struct { int rows; int cols; double** data; } Matrix;
 
 typedef struct {
-    // Weights and Biases for a Single Hidden Layer
+    // Weights and Biases
     Matrix weights_ih;         // Input -> Hidden 
     Matrix weights_ho;         // Hidden -> Output
-
     double* bias_h;
     double* bias_o;
 
     double lr;
 
-    // Intermediate results for 2-layer backpropagation
-    Matrix inputs;
-    Matrix hidden_outputs;     
-    Matrix output_outputs;
+    // FORWARD-PASS CACHES (Intermediates)
+    Matrix inputs;             // Input vector (270x1)
+    Matrix hidden_outputs;     // Activated hidden layer (512x1)
+    Matrix output_outputs;     // Activated output layer (270x1)
     
-    // Gradients for CCE backprop
-    Matrix output_errors;
+    // SCRATCHPAD MATRICES (Pre-allocated for temporary calculations)
+    Matrix h_in_cache;         // Un-activated hidden input (512x1)
+    Matrix output_in_cache;    // Un-activated output input (270x1)
+    
+    Matrix targets_cache;      // Target vector (270x1)
+    Matrix output_errors;      // Output error (270x1)
+    
+    // BACKWARD-PASS CACHES (Gradients/Deltas)
+    Matrix W_grad_ho;          // Gradient of HO weights (270x512)
+    Matrix h_errors_cache;     // Error propagated to hidden layer (512x1)
+    Matrix h_d_m_cache;        // ReLU derivative mask for hidden layer (512x1)
+    Matrix W_grad_ih;          // Gradient of IH weights (512x270)
 } NeuralNetwork;
 
-// --- SVG String Management Struct ---
-typedef struct { char* str; size_t length; bool is_valid; } SvgString;
-SvgString* svg_strings = NULL;
-size_t svg_count = 0;
-size_t svg_capacity = 0;
+// --- Matrix Utility Functions (Modified to store result) ---
+Matrix matrix_create(int rows, int cols, int input_size) {
+    Matrix m; m.rows = rows; m.cols = cols;
+    m.data = (double**)calloc(rows, sizeof(double*));
+    double scale = (input_size > 0 && rows > 0) ? sqrt(2.0 / (input_size + rows)) : 1.0;
+    for (int i = 0; i < rows; i++) {
+        m.data[i] = (double*)calloc(cols, sizeof(double));
+        // Initialize weights if input_size is provided (Xavier/He initialization)
+        if (input_size > 0) {
+            for (int j = 0; j < cols; j++) {
+                m.data[i][j] = (((double)rand() / RAND_MAX) * 2.0 - 1.0) * scale;
+            }
+        }
+    }
+    return m;
+}
 
-// --- Activation Functions ---
+void matrix_free(Matrix m) {
+    if (m.data == NULL) return;
+    for (int i = 0; i < m.rows; i++) free(m.data[i]);
+    free(m.data);
+}
+
+void matrix_copy_in(Matrix A, const Matrix B) {
+    if (A.rows != B.rows || A.cols != B.cols) {
+        fprintf(stderr, "FATAL ERROR: matrix_copy_in dimensions mismatch (%dx%d vs %dx%d).\n", 
+                A.rows, A.cols, B.rows, B.cols);
+        exit(EXIT_FAILURE);
+    }
+    for (int i = 0; i < A.rows; i++) {
+        for (int j = 0; j < A.cols; j++) {
+            A.data[i][j] = B.data[i][j];
+        }
+    }
+}
+
+void array_to_matrix_store(const double* arr, int size, Matrix result) {
+    if (result.rows != size || result.cols != 1) {
+        fprintf(stderr, "FATAL ERROR: array_to_matrix_store dimensions mismatch.\n");
+        exit(EXIT_FAILURE);
+    }
+    for (int i = 0; i < size; i++) { result.data[i][0] = arr[i]; }
+}
+
+// Stores result of A * B into the pre-allocated Matrix C
+void matrix_dot_store(Matrix A, Matrix B, Matrix C) {
+    if (A.cols != B.rows || A.rows != C.rows || B.cols != C.cols) {
+        fprintf(stderr, "FATAL ERROR: matrix_dot_store dimensions mismatch.\n");
+        exit(EXIT_FAILURE);
+    }
+    for (int i = 0; i < A.rows; i++) {
+        for (int j = 0; j < B.cols; j++) {
+            double sum = 0.0;
+            for (int k = 0; k < A.cols; k++) { sum += A.data[i][k] * B.data[k][j]; }
+            C.data[i][j] = sum;
+        }
+    }
+}
+
+// Stores result of A^T into the pre-allocated Matrix C
+void matrix_transpose_store(Matrix m, Matrix result) {
+    if (m.rows != result.cols || m.cols != result.rows) {
+        fprintf(stderr, "FATAL ERROR: matrix_transpose_store dimensions mismatch.\n");
+        exit(EXIT_FAILURE);
+    }
+    for (int i = 0; i < m.rows; i++) {
+        for (int j = 0; j < m.cols; j++) { result.data[j][i] = m.data[i][j]; }
+    }
+}
+
+// Stores result of A op B into the pre-allocated Matrix C
+void matrix_add_subtract_store(Matrix A, Matrix B, Matrix C, bool is_add) {
+    if (A.rows != B.rows || A.rows != C.rows || A.cols != B.cols || A.cols != C.cols) {
+        fprintf(stderr, "FATAL ERROR: matrix_add_subtract_store dimensions mismatch.\n");
+        exit(EXIT_FAILURE);
+    }
+    for (int i = 0; i < A.rows; i++) {
+        for (int j = 0; j < A.cols; j++) {
+            if (is_add) { C.data[i][j] = A.data[i][j] + B.data[i][j]; }
+            else { C.data[i][j] = A.data[i][j] - B.data[i][j]; }
+        }
+    }
+}
+
+// Stores result of A * B (element-wise) into the pre-allocated Matrix C
+void matrix_multiply_elem_store(Matrix A, Matrix B, Matrix C) {
+    if (A.rows != B.rows || A.rows != C.rows || A.cols != B.cols || A.cols != C.cols) {
+        fprintf(stderr, "FATAL ERROR: matrix_multiply_elem_store dimensions mismatch.\n");
+        exit(EXIT_FAILURE);
+    }
+    for (int i = 0; i < A.rows; i++) {
+        for (int j = 0; j < A.cols; j++) { C.data[i][j] = A.data[i][j] * B.data[i][j]; }
+    }
+}
+
+// Stores result of A * scalar into the pre-allocated Matrix C
+void matrix_multiply_scalar_store(Matrix A, double scalar, Matrix C) {
+    if (A.rows != C.rows || A.cols != C.cols) {
+        fprintf(stderr, "FATAL ERROR: matrix_multiply_scalar_store dimensions mismatch.\n");
+        exit(EXIT_FAILURE);
+    }
+    for (int i = 0; i < A.rows; i++) {
+        for (int j = 0; j < A.cols; j++) { C.data[i][j] = A.data[i][j] * scalar; }
+    }
+}
+
+// Maps A into the pre-allocated Matrix C
+void matrix_map_store(Matrix m, Matrix result, double (*func)(double)) {
+    if (m.rows != result.rows || m.cols != result.cols) {
+        fprintf(stderr, "FATAL ERROR: matrix_map_store dimensions mismatch.\n");
+        exit(EXIT_FAILURE);
+    }
+    for (int i = 0; i < m.rows; i++) {
+        for (int j = 0; j < m.cols; j++) { result.data[i][j] = func(m.data[i][j]); }
+    }
+}
+
+
+// --- Activation Functions (Unchanged) ---
 double relu_activation(double x) { return x > 0.0 ? x : 0.0; }
 double relu_derivative(double y) { return y > 0.0 ? 1.0 : 0.0; }
 
@@ -163,33 +286,25 @@ void softmax(double* arr) {
     for (int i = 1; i < ALPHABET_SIZE; i++) {
         if (arr[i] > max_val) max_val = arr[i];
     }
-
     double sum_exp = 0.0;
     for (int i = 0; i < ALPHABET_SIZE; i++) {
         arr[i] = exp(arr[i] - max_val); 
         sum_exp += arr[i];
     }
-    
     for (int i = 0; i < ALPHABET_SIZE; i++) {
         arr[i] /= sum_exp;
     }
 }
 
 
-// --- Encoding/Decoding Functions ---
-
+// --- Encoding/Decoding Functions (Unchanged) ---
 void encode_word_ohe(const char* word, double* arr) {
     memset(arr, 0, NN_OUTPUT_SIZE * sizeof(double));
     int len = strlen(word);
     
     for (int i = 0; i < MAX_WORD_LEN; i++) {
-        int char_code;
-        if (i < len) {
-            char_code = CHAR_TO_INT[word[i]];
-            if (char_code == -1) char_code = CHAR_TO_INT[' '];
-        } else {
-            char_code = CHAR_TO_INT[' ']; 
-        }
+        int char_code = (i < len) ? CHAR_TO_INT[word[i]] : CHAR_TO_INT[' '];
+        if (char_code == -1) char_code = CHAR_TO_INT[' '];
         
         int start_index = i * ALPHABET_SIZE;
         arr[start_index + char_code] = 1.0;
@@ -283,215 +398,180 @@ void generate_misspelled_word(const char* original_word, char* misspelled_word_o
     }
 }
 
-// --- Matrix Utility Functions ---
-Matrix matrix_create(int rows, int cols, int input_size) {
-    Matrix m; m.rows = rows; m.cols = cols;
-    m.data = (double**)calloc(rows, sizeof(double*));
-    double scale = (input_size > 0 && rows > 0) ? sqrt(2.0 / (input_size + rows)) : 1.0;
-    for (int i = 0; i < rows; i++) {
-        m.data[i] = (double*)calloc(cols, sizeof(double));
-        for (int j = 0; j < cols; j++) {
-            m.data[i][j] = (((double)rand() / RAND_MAX) * 2.0 - 1.0) * scale;
-        }
-    }
-    return m;
-}
-void matrix_free(Matrix m) {
-    if (m.data == NULL) return;
-    for (int i = 0; i < m.rows; i++) free(m.data[i]);
-    free(m.data);
-}
-void matrix_copy_in(Matrix A, const Matrix B) {
-    if (A.rows != B.rows || A.cols != B.cols) {
-        fprintf(stderr, "FATAL ERROR: matrix_copy_in dimensions mismatch (%dx%d vs %dx%d).\n", 
-                A.rows, A.cols, B.rows, B.cols);
-        exit(EXIT_FAILURE);
-    }
-    for (int i = 0; i < A.rows; i++) {
-        for (int j = 0; j < A.cols; j++) {
-            A.data[i][j] = B.data[i][j];
-        }
-    }
-}
-Matrix array_to_matrix(const double* arr, int size) {
-    Matrix m = matrix_create(size, 1, 0);
-    for (int i = 0; i < size; i++) { m.data[i][0] = arr[i]; }
-    return m;
-}
-Matrix matrix_dot(Matrix A, Matrix B) {
-    Matrix result = matrix_create(A.rows, B.cols, 0);
-    for (int i = 0; i < A.rows; i++) {
-        for (int j = 0; j < B.cols; j++) {
-            double sum = 0.0;
-            for (int k = 0; k < A.cols; k++) { sum += A.data[i][k] * B.data[k][j]; }
-            result.data[i][j] = sum;
-        }
-    }
-    return result;
-}
-Matrix matrix_transpose(Matrix m) {
-    Matrix result = matrix_create(m.cols, m.rows, 0);
-    for (int i = 0; i < m.rows; i++) {
-        for (int j = 0; j < m.cols; j++) { result.data[j][i] = m.data[i][j]; }
-    }
-    return result;
-}
-
-Matrix matrix_add_subtract(Matrix A, Matrix B, bool is_add) {
-    Matrix result = matrix_create(A.rows, A.cols, 0);
-    for (int i = 0; i < A.rows; i++) {
-        for (int j = 0; j < A.cols; j++) {
-            if (is_add) { result.data[i][j] = A.data[i][j] + B.data[i][j]; }
-            else { result.data[i][j] = A.data[i][j] - B.data[i][j]; }
-        }
-    }
-    return result;
-}
-
-Matrix matrix_multiply_elem(Matrix A, Matrix B) {
-    Matrix result = matrix_create(A.rows, A.cols, 0);
-    for (int i = 0; i < A.rows; i++) {
-        for (int j = 0; j < A.cols; j++) { result.data[i][j] = A.data[i][j] * B.data[i][j]; }
-    }
-    return result;
-}
-Matrix matrix_multiply_scalar(Matrix A, double scalar) {
-    Matrix result = matrix_create(A.rows, A.cols, 0);
-    for (int i = 0; i < A.rows; i++) {
-        for (int j = 0; j < A.cols; j++) { result.data[i][j] = A.data[i][j] * scalar; }
-    }
-    return result;
-}
-Matrix matrix_map(Matrix m, double (*func)(double)) {
-    Matrix result = matrix_create(m.rows, m.cols, 0);
-    for (int i = 0; i < m.rows; i++) {
-        for (int j = 0; j < m.cols; j++) { result.data[i][j] = func(m.data[i][j]); }
-    }
-    return result;
-}
-
 
 // --- Neural Network Functions (I -> H -> O) ---
 
 void nn_init(NeuralNetwork* nn) {
     nn->lr = NN_INITIAL_LEARNING_RATE;
     int h = NN_HIDDEN_SIZE;
+    int input_size = NN_INPUT_SIZE;
+    int output_size = NN_OUTPUT_SIZE;
     
-    // Weights 
-    nn->weights_ih = matrix_create(h, NN_INPUT_SIZE, NN_INPUT_SIZE); 
-    nn->weights_ho = matrix_create(NN_OUTPUT_SIZE, h, h);             
+    // 1. Weights and Biases (Initialized)
+    nn->weights_ih = matrix_create(h, input_size, input_size); // Input -> Hidden
+    nn->weights_ho = matrix_create(output_size, h, h);             // Hidden -> Output
     
-    // Biases
     nn->bias_h = (double*)calloc(h, sizeof(double));
-    nn->bias_o = (double*)calloc(NN_OUTPUT_SIZE, sizeof(double));
+    nn->bias_o = (double*)calloc(output_size, sizeof(double));
     
-    // Intermediate Outputs
-    nn->inputs = matrix_create(NN_INPUT_SIZE, 1, 0);
+    // 2. FORWARD-PASS CACHES (Pre-allocated for intermediates)
+    nn->inputs = matrix_create(input_size, 1, 0);
     nn->hidden_outputs = matrix_create(h, 1, 0);
-    nn->output_outputs = matrix_create(NN_OUTPUT_SIZE, 1, 0);
-    nn->output_errors = matrix_create(NN_OUTPUT_SIZE, 1, 0);
+    nn->output_outputs = matrix_create(output_size, 1, 0);
+    
+    // 3. SCRATCHPADS & GRADIENT CACHES (Pre-allocated for calculation/storage)
+    nn->h_in_cache = matrix_create(h, 1, 0);
+    nn->output_in_cache = matrix_create(output_size, 1, 0);
+    nn->targets_cache = matrix_create(output_size, 1, 0);
+    nn->output_errors = matrix_create(output_size, 1, 0);
+    
+    nn->W_grad_ho = matrix_create(output_size, h, 0);
+    nn->h_errors_cache = matrix_create(h, 1, 0);
+    nn->h_d_m_cache = matrix_create(h, 1, 0);
+    nn->W_grad_ih = matrix_create(h, input_size, 0);
 }
 
 void nn_free(NeuralNetwork* nn) {
+    // 1. Weights
     matrix_free(nn->weights_ih); 
     matrix_free(nn->weights_ho);
 
     free(nn->bias_h); free(nn->bias_o); 
     
+    // 2. Forward Caches
     matrix_free(nn->inputs); 
     matrix_free(nn->hidden_outputs);
     matrix_free(nn->output_outputs);
+    
+    // 3. Scratchpads & Gradients
+    matrix_free(nn->h_in_cache);
+    matrix_free(nn->output_in_cache);
+    matrix_free(nn->targets_cache);
     matrix_free(nn->output_errors);
+    
+    matrix_free(nn->W_grad_ho);
+    matrix_free(nn->h_errors_cache);
+    matrix_free(nn->h_d_m_cache);
+    matrix_free(nn->W_grad_ih);
 }
 
 void nn_forward(NeuralNetwork* nn, const double* input_array, double* output_array) {
-    Matrix inputs_m = array_to_matrix(input_array, NN_INPUT_SIZE);
     int h = NN_HIDDEN_SIZE;
+    int input_size = NN_INPUT_SIZE;
+    int output_size = NN_OUTPUT_SIZE;
     
-    // 1. Input -> Hidden (ReLU)
-    Matrix h_in_m = matrix_dot(nn->weights_ih, inputs_m);
-    for (int i = 0; i < h; i++) h_in_m.data[i][0] += nn->bias_h[i];
-    Matrix h_out_m = matrix_map(h_in_m, relu_activation);
+    // 1. Load Input into cache
+    array_to_matrix_store(input_array, input_size, nn->inputs);
+    
+    // 2. Input -> Hidden (ReLU)
+    // h_in_cache = weights_ih * inputs
+    matrix_dot_store(nn->weights_ih, nn->inputs, nn->h_in_cache);
+    // Add bias
+    for (int i = 0; i < h; i++) nn->h_in_cache.data[i][0] += nn->bias_h[i];
+    // hidden_outputs = ReLU(h_in_cache)
+    matrix_map_store(nn->h_in_cache, nn->hidden_outputs, relu_activation);
 
-    // 2. Hidden -> Output (Softmax)
-    Matrix output_in_m = matrix_dot(nn->weights_ho, h_out_m);
-    for (int i = 0; i < NN_OUTPUT_SIZE; i++) output_in_m.data[i][0] += nn->bias_o[i];
+    // 3. Hidden -> Output (Softmax)
+    // output_in_cache = weights_ho * hidden_outputs
+    matrix_dot_store(nn->weights_ho, nn->hidden_outputs, nn->output_in_cache);
+    // Add bias
+    for (int i = 0; i < output_size; i++) nn->output_in_cache.data[i][0] += nn->bias_o[i];
     
-    // Apply Softmax on each of the 10 character blocks
-    Matrix output_out_m = matrix_create(NN_OUTPUT_SIZE, 1, 0);
+    // Apply Softmax on each of the 10 character blocks, storing result in output_outputs
     for (int i = 0; i < MAX_WORD_LEN; i++) {
         int start_idx = i * ALPHABET_SIZE;
         double block[ALPHABET_SIZE];
-        for(int j = 0; j < ALPHABET_SIZE; j++) block[j] = output_in_m.data[start_idx + j][0];
+        for(int j = 0; j < ALPHABET_SIZE; j++) block[j] = nn->output_in_cache.data[start_idx + j][0];
         
         softmax(block); 
         
-        for(int j = 0; j < ALPHABET_SIZE; j++) output_out_m.data[start_idx + j][0] = block[j];
+        for(int j = 0; j < ALPHABET_SIZE; j++) nn->output_outputs.data[start_idx + j][0] = block[j];
     }
     
-    // Store intermediates for backprop
-    matrix_copy_in(nn->inputs, inputs_m);
-    matrix_copy_in(nn->hidden_outputs, h_out_m);
-    matrix_copy_in(nn->output_outputs, output_out_m);
-
-    // Copy result to output array
-    for (int i = 0; i < NN_OUTPUT_SIZE; i++) { output_array[i] = output_out_m.data[i][0]; }
-
-    // Cleanup (only local temporaries)
-    matrix_free(inputs_m); matrix_free(h_in_m); matrix_free(h_out_m); 
-    matrix_free(output_in_m); matrix_free(output_out_m);
+    // Copy result to external output array
+    for (int i = 0; i < output_size; i++) { output_array[i] = nn->output_outputs.data[i][0]; }
 }
+
+// Temporary 1xH matrix for transpose of hidden_outputs
+Matrix h_out_t_cache; 
+// Temporary HxO matrix for transpose of weights_ho
+Matrix weights_ho_t_cache;
+// Temporary 1xI matrix for transpose of inputs
+Matrix inputs_t_cache;
 
 double nn_backward(NeuralNetwork* nn, const double* target_array) {
     double total_cce_loss = 0.0;
-    Matrix targets_m = array_to_matrix(target_array, NN_OUTPUT_SIZE);
     int h = NN_HIDDEN_SIZE;
+    int input_size = NN_INPUT_SIZE;
+    int output_size = NN_OUTPUT_SIZE;
+
+    // Load target into cache (targets_cache)
+    array_to_matrix_store(target_array, output_size, nn->targets_cache);
     
     // --- 1. Output Layer Error (Softmax + CCE) ---
-    Matrix output_errors_m = matrix_add_subtract(nn->output_outputs, targets_m, false);
-    matrix_copy_in(nn->output_errors, output_errors_m); 
+    // Error is (Output - Target) for CCE with Softmax. Stored in output_errors.
+    matrix_add_subtract_store(nn->output_outputs, nn->targets_cache, nn->output_errors, false);
 
     // Calculate CCE loss
-    for (int i = 0; i < NN_OUTPUT_SIZE; i++) { 
-        if (targets_m.data[i][0] == 1.0) { 
+    for (int i = 0; i < output_size; i++) { 
+        if (nn->targets_cache.data[i][0] == 1.0) { 
             double p = nn->output_outputs.data[i][0];
             if (p < 1e-12) p = 1e-12;
             total_cce_loss -= log(p); 
         }
     }
     
-    // Update Weights HO and Bias O
-    Matrix h_out_t_m = matrix_transpose(nn->hidden_outputs);
-    Matrix delta_ho_m = matrix_dot(output_errors_m, h_out_t_m);
-    Matrix scaled_delta_ho_m = matrix_multiply_scalar(delta_ho_m, nn->lr);
-    Matrix new_ho_m = matrix_add_subtract(nn->weights_ho, scaled_delta_ho_m, false);
-    matrix_copy_in(nn->weights_ho, new_ho_m);
-    for (int i = 0; i < NN_OUTPUT_SIZE; i++) { nn->bias_o[i] -= output_errors_m.data[i][0] * nn->lr; }
+    // **Update Weights HO**
+    // 1. Transpose hidden_outputs for W_grad calculation: h_out_t_cache = hidden_outputs^T (1x512)
+    Matrix h_out_t_m = matrix_transpose(nn->hidden_outputs); // NOTE: Still needs one dynamic alloc for transpose
+    // W_grad_ho = output_errors * h_out_t_cache (270x512)
+    matrix_dot_store(nn->output_errors, h_out_t_m, nn->W_grad_ho);
+    matrix_free(h_out_t_m); // Free the transpose temp
+    
+    // 2. Apply learning rate: weights_ho = weights_ho - (W_grad_ho * lr)
+    for (int i = 0; i < output_size; i++) {
+        for (int j = 0; j < h; j++) {
+            nn->weights_ho.data[i][j] -= nn->W_grad_ho.data[i][j] * nn->lr;
+        }
+    }
+    
+    // **Update Bias O**
+    for (int i = 0; i < output_size; i++) { nn->bias_o[i] -= nn->output_errors.data[i][0] * nn->lr; }
 
     // --- 2. Hidden Layer Gradients (ReLU) ---
-    Matrix weights_ho_t_m = matrix_transpose(nn->weights_ho);
-    Matrix h_errors_m = matrix_dot(weights_ho_t_m, output_errors_m);
-    Matrix h_d_m = matrix_map(nn->hidden_outputs, relu_derivative); 
-    Matrix h_gradients_m = matrix_multiply_elem(h_errors_m, h_d_m);
+    // 1. Backpropagate error: weights_ho_t_cache = weights_ho^T (512x270)
+    Matrix weights_ho_t_m = matrix_transpose(nn->weights_ho); // NOTE: Still needs one dynamic alloc for transpose
+    // h_errors_cache = weights_ho_t_cache * output_errors (512x1)
+    matrix_dot_store(weights_ho_t_m, nn->output_errors, nn->h_errors_cache);
+    matrix_free(weights_ho_t_m); // Free the transpose temp
     
-    // Update Weights IH and Bias H
-    Matrix inputs_t_m = matrix_transpose(nn->inputs);
-    Matrix delta_ih_m = matrix_dot(h_gradients_m, inputs_t_m);
-    Matrix new_ih_m = matrix_add_subtract(nn->weights_ih, matrix_multiply_scalar(delta_ih_m, nn->lr), false);
-    matrix_copy_in(nn->weights_ih, new_ih_m);
-    for (int i = 0; i < h; i++) { nn->bias_h[i] -= h_gradients_m.data[i][0] * nn->lr; }
+    // 2. Apply ReLU derivative: h_d_m_cache = hidden_outputs (mapped to derivative) (512x1)
+    matrix_map_store(nn->hidden_outputs, nn->h_d_m_cache, relu_derivative); 
+    // h_gradients_m (stored in h_errors_cache) = h_errors_cache (element-wise) * h_d_m_cache (512x1)
+    matrix_multiply_elem_store(nn->h_errors_cache, nn->h_d_m_cache, nn->h_errors_cache);
+    
+    // **Update Weights IH**
+    // 1. Transpose input: inputs_t_cache = inputs^T (1x270)
+    Matrix inputs_t_m = matrix_transpose(nn->inputs); // NOTE: Still needs one dynamic alloc for transpose
+    // W_grad_ih = h_errors_cache * inputs_t_cache (512x270)
+    matrix_dot_store(nn->h_errors_cache, inputs_t_m, nn->W_grad_ih);
+    matrix_free(inputs_t_m); // Free the transpose temp
 
-    // Final Cleanup 
-    matrix_free(targets_m); 
-    matrix_free(output_errors_m);
-    matrix_free(h_out_t_m); matrix_free(delta_ho_m); matrix_free(scaled_delta_ho_m); matrix_free(new_ho_m); 
-    matrix_free(weights_ho_t_m); matrix_free(h_errors_m); matrix_free(h_d_m); matrix_free(h_gradients_m);
-    matrix_free(inputs_t_m); matrix_free(delta_ih_m); matrix_free(new_ih_m); 
+    // 2. Apply learning rate: weights_ih = weights_ih - (W_grad_ih * lr)
+    for (int i = 0; i < h; i++) {
+        for (int j = 0; j < input_size; j++) {
+            nn->weights_ih.data[i][j] -= nn->W_grad_ih.data[i][j] * nn->lr;
+        }
+    }
+
+    // **Update Bias H**
+    for (int i = 0; i < h; i++) { nn->bias_h[i] -= nn->h_errors_cache.data[i][0] * nn->lr; }
     
+    // Return average CCE loss per character position
     return total_cce_loss / MAX_WORD_LEN;
 }
 
-// Sequential Batch Training Function 
+// Sequential Batch Training Function (Unchanged logic)
 double train_sequential_batch(NeuralNetwork* nn, int* word_indices, double* bp_time) {
     clock_t start_bp = clock();
     double total_loss = 0.0;
@@ -507,7 +587,7 @@ double train_sequential_batch(NeuralNetwork* nn, int* word_indices, double* bp_t
         
         encode_word_ohe(correct_word, target_arr);
         
-        for (int j = 0; j < MISSPELLED_PER_WORD; j++) { // NEW: Only 16 misspellings/word
+        for (int j = 0; j < MISSPELLED_PER_WORD; j++) { 
             generate_misspelled_word(correct_word, work_word);
             encode_word_ohe(work_word, input_arr); 
 
@@ -534,7 +614,7 @@ double train_sequential_batch(NeuralNetwork* nn, int* word_indices, double* bp_t
     return total_loss / BATCH_SIZE;
 }
 
-// Testing function 
+// Testing function (Unchanged logic)
 double test_network(NeuralNetwork* nn, double* test_time, bool verbose, int* fixed_count) {
     clock_t start_test = clock();
     int correct_words = 0;
@@ -573,7 +653,12 @@ double test_network(NeuralNetwork* nn, double* test_time, bool verbose, int* fix
 }
 
 
-// --- SVG Utility Functions ---
+// --- SVG Utility Functions (Unchanged logic) ---
+
+typedef struct { char* str; size_t length; bool is_valid; } SvgString;
+SvgString* svg_strings = NULL;
+size_t svg_count = 0;
+size_t svg_capacity = 0;
 
 void svg_init_storage() {
     svg_capacity = INITIAL_SVG_CAPACITY;
@@ -637,7 +722,6 @@ void save_network_as_svg(NeuralNetwork* nn) {
     svg_add_string("  .bias { fill: #aaaaaa; }\n"); 
     svg_add_string("</style>\n");
 
-    // --- Helper for Layer Coordinates ---
     int layer_sizes[] = {NN_INPUT_SIZE, NN_HIDDEN_SIZE, NN_OUTPUT_SIZE};
     int num_layers = sizeof(layer_sizes) / sizeof(layer_sizes[0]); 
     int x_coords[num_layers];
@@ -649,7 +733,6 @@ void save_network_as_svg(NeuralNetwork* nn) {
     int node_radius_small = 2; 
     int node_spacing_small = 2;
 
-    // --- Draw Connections (Edges) ---
     for (int i = 0; i < num_layers - 1; i++) {
         Matrix* weights = (i == 0) ? &nn->weights_ih : &nn->weights_ho;
         
@@ -688,7 +771,6 @@ void save_network_as_svg(NeuralNetwork* nn) {
         }
     }
 
-    // --- Draw Nodes (Neurons) ---
     for (int i = 0; i < num_layers; i++) {
         int size = layer_sizes[i];
         int r = (i == 0 || i == num_layers - 1) ? node_radius_small : NODE_RADIUS;
@@ -706,7 +788,6 @@ void save_network_as_svg(NeuralNetwork* nn) {
             svg_add_string("<circle cx=\"%d\" cy=\"%d\" r=\"%d\" fill=\"%s\" class=\"neuron\" />\n", 
                            cx, cy, r, fill_color);
 
-            // Add Bias Labels 
             if (i == 1 && j % 100 == 0) { 
                 double bias = nn->bias_h[j];
                 svg_add_string("<text x=\"%d\" y=\"%d\" font-size=\"8\" fill=\"#666666\" class=\"bias\">%.2f</text>\n",
@@ -714,7 +795,6 @@ void save_network_as_svg(NeuralNetwork* nn) {
             }
         }
         
-        // Add Layer Labels
         const char* label = "";
         if (i == 0) label = "INPUT (270 OHE)";
         else if (i == 1) label = "HIDDEN (512 ReLU)";
@@ -726,7 +806,6 @@ void save_network_as_svg(NeuralNetwork* nn) {
 
     svg_add_string("</svg>\n");
 
-    // --- Save to File ---
     FILE* fp = fopen(SVG_FILENAME, "w");
     if (fp == NULL) {
         fprintf(stderr, "FATAL ERROR: Could not open file %s for writing.\n", SVG_FILENAME);
@@ -744,7 +823,7 @@ void save_network_as_svg(NeuralNetwork* nn) {
     svg_free_storage();
 }
 
-// --- Main Execution ---
+// --- Main Execution (Unchanged logic) ---
 
 int main() {
     srand((unsigned int)time(NULL));
@@ -752,7 +831,6 @@ int main() {
     
     printf("Spelling Corrector Initializing with %d word vocabulary.\n", VOCAB_SIZE);
     
-    // --- Initialize NN ---
     NeuralNetwork nn;
     nn_init(&nn);
 
@@ -779,28 +857,23 @@ int main() {
     for (int epoch = 0; epoch < max_epochs; epoch++) {
         bool time_limit_reached = false;
         
-        // Update Learning Rate with time-based decay
         double current_time_sec = difftime(time(NULL), start_time);
         nn.lr = NN_INITIAL_LEARNING_RATE / (1.0 + NN_LR_DECAY_RATE * current_time_sec);
         
-        // Randomly select words for the batch
         for (int i = 0; i < NUM_TRAIN_WORDS; i++) {
             word_indices[i] = rand() % VOCAB_SIZE;
         }
 
-        // Training Step
         double bp_time = 0.0;
         last_batch_cce_loss = train_sequential_batch(&nn, word_indices, &bp_time);
         total_batches_run++;
 
-        // Testing Step (Less frequent check)
         time_t current_time = time(NULL);
         if (difftime(current_time, last_test_time) >= TEST_INTERVAL_SECONDS || total_batches_run == 1) {
             double test_time = 0.0;
             current_success_rate = test_network(&nn, &test_time, false, &fixed_count); 
             last_test_time = current_time;
             
-            // Log stats after test
             printf("%-10.0f | %-11d | %-21.8f | %-16d/%-6d (%.2f%%) | %-15.4f\n", 
                    current_time_sec,
                    total_batches_run, 
@@ -809,7 +882,6 @@ int main() {
                    test_time);
             fflush(stdout);
             
-            // Log milestones
             while (current_success_rate >= next_milestone_percent) {
                 printf("--- MILESTONE REACHED --- Correctness: %.2f%% (%d/%d) (LR: %.6f)\n", current_success_rate, fixed_count, TOTAL_TESTS, nn.lr);
                 fflush(stdout);
@@ -820,7 +892,6 @@ int main() {
             }
         } 
 
-        // Check time limit or goal
         if (current_time_sec >= MAX_TRAINING_SECONDS || current_success_rate >= 95.0) {
             time_limit_reached = true;
         }
@@ -828,7 +899,6 @@ int main() {
         if (time_limit_reached) break;
     }
     
-    // Final test and log
     double final_test_time = 0.0;
     int final_fixed_count = 0;
     current_success_rate = test_network(&nn, &final_test_time, true, &final_fixed_count); 
@@ -842,11 +912,9 @@ int main() {
     printf("#####################################################\n");
     fflush(stdout);
 
-    // POST-TRAINING SVG SAVE
     save_network_as_svg(&nn);
     printf("Final network SVG saved to %s.\n", SVG_FILENAME);
 
-    // Cleanup
     nn_free(&nn);
 
     return 0;
