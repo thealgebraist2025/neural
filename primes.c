@@ -24,11 +24,14 @@
 #define NN_HIDDEN_SIZE 32           
 #define NN_LEARNING_RATE 0.0005     
 
-// --- SVG Constants (Updated to match smaller layers) ---
-#define SVG_WIDTH 900
+// --- SVG Constants (Updated for 5 layers of 32 nodes) ---
+#define SVG_WIDTH 1200
 #define SVG_HEIGHT 500
 #define INITIAL_SVG_CAPACITY 2500
-#define SVG_FILENAME "network_deep_narrow.svg" 
+#define SVG_FILENAME "network.svg" // NEW: Set to network.svg
+#define NODE_RADIUS 6
+#define NODE_SPACING 12
+#define LAYER_SPACING 200
 
 // --- Pre-computed Data Arrays ---
 int primes_array[NUM_EXAMPLES];
@@ -62,7 +65,7 @@ typedef struct {
     Matrix output_outputs;
 } NeuralNetwork;
 
-// --- SVG String Management Struct (Retained) ---
+// --- SVG String Management Struct (Restored) ---
 typedef struct { char* str; size_t length; bool is_valid; } SvgString;
 SvgString* svg_strings = NULL;
 size_t svg_count = 0;
@@ -198,7 +201,6 @@ Matrix matrix_transpose(Matrix m) {
     return result;
 }
 
-// FIX: Definition for matrix_add_subtract to resolve implicit declaration and type errors
 Matrix matrix_add_subtract(Matrix A, Matrix B, bool is_add) {
     Matrix result = matrix_create(A.rows, A.cols, 0);
     for (int i = 0; i < A.rows; i++) {
@@ -332,7 +334,6 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     int h = NN_HIDDEN_SIZE;
     
     // --- 1. Output Layer ---
-    // FIXED: matrix_add_subtract is now correctly declared/defined
     Matrix output_errors_m = matrix_add_subtract(nn->output_outputs, targets_m, false);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) { mse_loss += output_errors_m.data[i][0] * output_errors_m.data[i][0]; }
     mse_loss /= NN_OUTPUT_SIZE;
@@ -342,7 +343,6 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     // Update Weights H4O and Bias O
     Matrix h4_out_t_m = matrix_transpose(nn->hidden4_outputs);
     Matrix delta_h4o_m = matrix_dot(output_gradients_m, h4_out_t_m);
-    // FIXED: Correct use of matrix_add_subtract result as Matrix type argument
     Matrix new_h4o_m = matrix_add_subtract(nn->weights_h4o, matrix_multiply_scalar(delta_h4o_m, nn->lr), false);
     matrix_copy_in(nn->weights_h4o, new_h4o_m);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) { nn->bias_o[i] -= output_gradients_m.data[i][0] * nn->lr; }
@@ -356,7 +356,6 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     // Update Weights H3H4 and Bias H4
     Matrix h3_out_t_m = matrix_transpose(nn->hidden3_outputs);
     Matrix delta_h3h4_m = matrix_dot(h4_gradients_m, h3_out_t_m);
-    // FIXED: Correct use of matrix_add_subtract result as Matrix type argument
     Matrix new_h3h4_m = matrix_add_subtract(nn->weights_h3h4, matrix_multiply_scalar(delta_h3h4_m, nn->lr), false);
     matrix_copy_in(nn->weights_h3h4, new_h3h4_m);
     for (int i = 0; i < h; i++) { nn->bias_h4[i] -= h4_gradients_m.data[i][0] * nn->lr; }
@@ -370,7 +369,6 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     // Update Weights H2H3 and Bias H3
     Matrix h2_out_t_m = matrix_transpose(nn->hidden2_outputs);
     Matrix delta_h2h3_m = matrix_dot(h3_gradients_m, h2_out_t_m);
-    // FIXED: Correct use of matrix_add_subtract result as Matrix type argument
     Matrix new_h2h3_m = matrix_add_subtract(nn->weights_h2h3, matrix_multiply_scalar(delta_h2h3_m, nn->lr), false);
     matrix_copy_in(nn->weights_h2h3, new_h2h3_m);
     for (int i = 0; i < h; i++) { nn->bias_h3[i] -= h3_gradients_m.data[i][0] * nn->lr; }
@@ -384,7 +382,6 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     // Update Weights H1H2 and Bias H2
     Matrix h1_out_t_m = matrix_transpose(nn->hidden1_outputs);
     Matrix delta_h1h2_m = matrix_dot(h2_gradients_m, h1_out_t_m);
-    // FIXED: Correct use of matrix_add_subtract result as Matrix type argument
     Matrix new_h1h2_m = matrix_add_subtract(nn->weights_h1h2, matrix_multiply_scalar(delta_h1h2_m, nn->lr), false);
     matrix_copy_in(nn->weights_h1h2, new_h1h2_m);
     for (int i = 0; i < h; i++) { nn->bias_h2[i] -= h2_gradients_m.data[i][0] * nn->lr; }
@@ -398,7 +395,6 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     // Update Weights IH1 and Bias H1
     Matrix inputs_t_m = matrix_transpose(nn->inputs);
     Matrix delta_ih1_m = matrix_dot(h1_gradients_m, inputs_t_m);
-    // FIXED: Correct use of matrix_add_subtract result as Matrix type argument
     Matrix new_ih1_m = matrix_add_subtract(nn->weights_ih1, matrix_multiply_scalar(delta_ih1_m, nn->lr), false);
     matrix_copy_in(nn->weights_ih1, new_ih1_m);
     for (int i = 0; i < h; i++) { nn->bias_h1[i] -= h1_gradients_m.data[i][0] * nn->lr; }
@@ -481,9 +477,184 @@ double test_network(NeuralNetwork* nn, double* test_time) {
 }
 
 
-// --- SVG Utility Functions (Simplified for presentation) ---
+// --- SVG Utility Functions (Restored) ---
 
-/* NOTE: SVG functions omitted for brevity */
+void svg_init_storage() {
+    svg_capacity = INITIAL_SVG_CAPACITY;
+    svg_strings = (SvgString*)malloc(svg_capacity * sizeof(SvgString));
+    if (!svg_strings) {
+        fprintf(stderr, "FATAL ERROR: Could not allocate memory for SVG storage.\n");
+        exit(EXIT_FAILURE);
+    }
+    svg_count = 0;
+}
+
+void svg_add_string(const char* format, ...) {
+    if (svg_count >= svg_capacity) {
+        svg_capacity *= 2;
+        svg_strings = (SvgString*)realloc(svg_strings, svg_capacity * sizeof(SvgString));
+        if (!svg_strings) {
+            fprintf(stderr, "FATAL ERROR: Could not reallocate memory for SVG storage.\n");
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    va_list args;
+    va_start(args, format);
+    
+    // Determine the required buffer size
+    int size = vsnprintf(NULL, 0, format, args);
+    va_end(args);
+
+    // Allocate memory for the string
+    svg_strings[svg_count].str = (char*)malloc(size + 1);
+    svg_strings[svg_count].length = size;
+    svg_strings[svg_count].is_valid = true;
+    
+    if (!svg_strings[svg_count].str) {
+        fprintf(stderr, "FATAL ERROR: Could not allocate memory for SVG string.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    va_start(args, format);
+    vsnprintf(svg_strings[svg_count].str, size + 1, format, args);
+    va_end(args);
+
+    svg_count++;
+}
+
+void svg_free_storage() {
+    for (size_t i = 0; i < svg_count; i++) {
+        free(svg_strings[i].str);
+    }
+    free(svg_strings);
+    svg_strings = NULL;
+    svg_count = 0;
+    svg_capacity = 0;
+}
+
+void save_network_as_svg(NeuralNetwork* nn) {
+    svg_init_storage();
+    
+    svg_add_string("<svg width=\"%d\" height=\"%d\" xmlns=\"http://www.w3.org/2000/svg\">\n", SVG_WIDTH, SVG_HEIGHT);
+    svg_add_string("<style>\n");
+    svg_add_string("  .neuron { stroke: black; stroke-width: 1; }\n");
+    svg_add_string("  .positive { stroke: #0088ff; stroke-width: 0.5; }\n"); // Blue
+    svg_add_string("  .negative { stroke: #ff0044; stroke-width: 0.5; }\n"); // Red
+    svg_add_string("  .bias { fill: #aaaaaa; }\n"); // Grey for biases
+    svg_add_string("</style>\n");
+
+    // --- Helper for Layer Coordinates ---
+    int layer_sizes[] = {NN_INPUT_SIZE, NN_HIDDEN_SIZE, NN_HIDDEN_SIZE, NN_HIDDEN_SIZE, NN_HIDDEN_SIZE, NN_OUTPUT_SIZE};
+    int num_layers = sizeof(layer_sizes) / sizeof(layer_sizes[0]);
+    int x_coords[num_layers];
+    
+    for (int i = 0; i < num_layers; i++) {
+        x_coords[i] = 50 + i * LAYER_SPACING;
+    }
+
+    // --- Draw Connections (Edges) ---
+    for (int i = 0; i < num_layers - 1; i++) {
+        Matrix* weights = NULL;
+        if (i == 0) weights = &nn->weights_ih1;
+        else if (i == 1) weights = &nn->weights_h1h2;
+        else if (i == 2) weights = &nn->weights_h2h3;
+        else if (i == 3) weights = &nn->weights_h3h4;
+        else if (i == 4) weights = &nn->weights_h4o;
+        
+        if (!weights) continue;
+        
+        int prev_size = layer_sizes[i];
+        int curr_size = layer_sizes[i+1];
+        
+        // Calculate the starting Y coordinate to center the layer
+        int y_offset_prev = SVG_HEIGHT / 2 - (prev_size * (NODE_RADIUS + NODE_SPACING)) / 2;
+        int y_offset_curr = SVG_HEIGHT / 2 - (curr_size * (NODE_RADIUS + NODE_SPACING)) / 2;
+
+        for (int j = 0; j < curr_size; j++) { // Current Layer (rows in matrix)
+            for (int k = 0; k < prev_size; k++) { // Previous Layer (cols in matrix)
+                double weight = weights->data[j][k];
+                double abs_weight = fabs(weight);
+                const char* css_class = (weight >= 0) ? "positive" : "negative";
+                
+                // Scale line width based on absolute weight (e.g., max 2.5)
+                double stroke_width = 0.2 + abs_weight * 2.0;
+                
+                int x1 = x_coords[i] + NODE_RADIUS;
+                int y1 = y_offset_prev + k * (NODE_RADIUS * 2 + NODE_SPACING) + NODE_RADIUS;
+                int x2 = x_coords[i+1] - NODE_RADIUS;
+                int y2 = y_offset_curr + j * (NODE_RADIUS * 2 + NODE_SPACING) + NODE_RADIUS;
+                
+                svg_add_string("<line x1=\"%d\" y1=\"%d\" x2=\"%d\" y2=\"%d\" class=\"%s\" style=\"stroke-width:%.2f\" />\n", 
+                               x1, y1, x2, y2, css_class, stroke_width);
+            }
+        }
+    }
+
+    // --- Draw Nodes (Neurons) ---
+    for (int i = 0; i < num_layers; i++) {
+        int size = layer_sizes[i];
+        // Calculate the starting Y coordinate to center the layer
+        int y_offset = SVG_HEIGHT / 2 - (size * (NODE_RADIUS + NODE_SPACING)) / 2;
+
+        for (int j = 0; j < size; j++) {
+            int cx = x_coords[i];
+            int cy = y_offset + j * (NODE_RADIUS * 2 + NODE_SPACING) + NODE_RADIUS;
+            
+            const char* fill_color = "#ffffff"; // Default white
+            if (i == 0) fill_color = "#cccccc"; // Input: Grey
+            
+            // Draw circle
+            svg_add_string("<circle cx=\"%d\" cy=\"%d\" r=\"%d\" fill=\"%s\" class=\"neuron\" />\n", 
+                           cx, cy, NODE_RADIUS, fill_color);
+
+            // Add Bias Labels (for hidden and output layers)
+            if (i > 0) {
+                double bias = 0.0;
+                if (i == 1) bias = nn->bias_h1[j];
+                else if (i == 2) bias = nn->bias_h2[j];
+                else if (i == 3) bias = nn->bias_h3[j];
+                else if (i == 4) bias = nn->bias_h4[j];
+                else if (i == 5) bias = nn->bias_o[j];
+                
+                // Add a small rectangle or text for the bias
+                svg_add_string("<text x=\"%d\" y=\"%d\" font-size=\"8\" fill=\"#666666\" class=\"bias\">%.2f</text>\n",
+                               cx + NODE_RADIUS + 2, cy + 3, bias);
+            }
+        }
+        
+        // Add Layer Labels
+        const char* label = "";
+        if (i == 0) label = "INPUT (32)";
+        else if (i == 1) label = "HIDDEN 1 (32)";
+        else if (i == 2) label = "HIDDEN 2 (32)";
+        else if (i == 3) label = "HIDDEN 3 (32)";
+        else if (i == 4) label = "HIDDEN 4 (32)";
+        else if (i == 5) label = "OUTPUT (1)";
+        
+        svg_add_string("<text x=\"%d\" y=\"%d\" font-size=\"12\" font-weight=\"bold\" text-anchor=\"middle\">%s</text>\n",
+                       cx, SVG_HEIGHT - 10, label);
+    }
+
+    svg_add_string("</svg>\n");
+
+    // --- Save to File ---
+    FILE* fp = fopen(SVG_FILENAME, "w");
+    if (fp == NULL) {
+        fprintf(stderr, "FATAL ERROR: Could not open file %s for writing.\n", SVG_FILENAME);
+        svg_free_storage();
+        return;
+    }
+
+    for (size_t i = 0; i < svg_count; i++) {
+        if (svg_strings[i].is_valid) {
+            fwrite(svg_strings[i].str, 1, svg_strings[i].length, fp);
+        }
+    }
+
+    fclose(fp);
+    svg_free_storage();
+}
 
 // --- Main Execution ---
 
@@ -579,6 +750,10 @@ int main() {
     printf("Total Training Time: %.0f seconds.\n", difftime(time(NULL), start_time));
     printf("#####################################################\n");
     fflush(stdout);
+
+    // --- POST-TRAINING SVG SAVE (Restored) ---
+    save_network_as_svg(&nn);
+    printf("Final network SVG saved to %s.\n", SVG_FILENAME);
 
     // --- Cleanup ---
     if (prime_cache != NULL) {
