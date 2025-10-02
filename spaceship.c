@@ -505,6 +505,9 @@ void apply_thrust(Ship* ship, double dt) {
     
     double thrust_force = check_double(THRUST_POWER * dt / SIMULATION_DT, "thrust_force", "apply_thrust");
 
+    // The original code used 'cos' and 'sin', which is standard C99.
+    // The linker error suggests the compiler optimized to the non-standard 'sincos'.
+    // We stick to 'cos' and 'sin' which are correct.
     ship->velocity.x = check_double(ship->velocity.x + cos(ship->angle) * thrust_force, "ship_vx", "apply_thrust");
     ship->velocity.y = check_double(ship->velocity.y + sin(ship->angle) * thrust_force, "ship_vy", "apply_thrust");
 }
@@ -525,9 +528,10 @@ bool check_collision(Ship* ship) {
     bool collision_detected = false;
     double ground_y = CANVAS_HEIGHT - GROUND_HEIGHT;
 
-    // Obstacle collision
+    // Obstacle collision - uses fmax and fmin
     for (int i = 0; i < NUM_OBSTACLES; i++) {
         Obstacle* obs = &state.obstacles[i];
+        // FIX: The functions fmax and fmin are correctly used but need the math library linked.
         double closest_x = fmax(obs->x, fmin(ship->x, obs->x + obs->w));
         double closest_y = fmax(obs->y, fmin(ship->y, obs->y + obs->h));
         double dx = check_double(ship->x - closest_x, "coll_dx", "check_collision");
@@ -547,6 +551,7 @@ bool check_collision(Ship* ship) {
         if (d->collected) continue;
         double dx = check_double(ship->x - d->x, "diamond_dx_coll", "check_collision");
         double dy = check_double(ship->y - d->y, "diamond_dy_coll", "check_collision");
+        // FIX: The function sqrt is correctly used but needs the math library linked.
         double distance = check_double(sqrt(dx * dx + dy * dy), "diamond_dist", "check_collision");
 
         if (distance < ship_radius + d->size) {
@@ -598,6 +603,7 @@ void update_game(double dt) {
     if (ship->y + ship->size > collision_y) {
         ship->y = collision_y - ship->size;
 
+        // FIX: The function sqrt is correctly used but needs the math library linked.
         double speed_magnitude = check_double(sqrt(ship->velocity.x * ship->velocity.x + ship->velocity.y * ship->velocity.y), "speed_mag", "update_game");
         
         if (fabs(ship->velocity.y) > CRITICAL_VELOCITY || speed_magnitude > CRITICAL_VELOCITY) {
@@ -717,7 +723,7 @@ int main() {
     while (1) {
         // --- Game Step ---
         if (state.playthroughs < NN_MAX_PLAYTHROUGHS) {
-            if (state.playthroughs == NN_MAX_PLAYTHROUGHS - 1 && !state.ship.is_alive && state.ship.y > 500) {
+            if (state.playthroughs == NN_MAX_PLAYTHROUGHS - 1 && (!state.ship.is_alive || state.ship.has_landed)) {
                  // Last playthrough finished. Break to start training.
                  update_game(SIMULATION_DT); // One final update to handle state change
                  break;
@@ -734,7 +740,7 @@ int main() {
         }
 
         // --- End Condition Check for Data Collection ---
-        if (state.playthroughs >= NN_MAX_PLAYTHROUGHS && state.playthroughs < NN_MAX_PLAYTHROUGHS + 1) {
+        if (state.playthroughs >= NN_MAX_PLAYTHROUGHS) {
             break; 
         }
 
