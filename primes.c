@@ -12,7 +12,7 @@
 #define NN_INPUT_SIZE (BASE2_BITS + BASE3_BITS + REMAINDER_INPUTS) // 32
 
 #define NUM_EXAMPLES 10000          
-#define MAX_VAL_NEEDED 104729       // Max value we need to classify/store.
+#define MAX_VAL_NEEDED 104729       
 
 #define MAX_TRAINING_SECONDS 120.0  
 #define BATCH_SIZE_HALF 512         
@@ -21,7 +21,7 @@
 
 // --- NN Architecture Constants (Deep and Narrow) ---
 #define NN_OUTPUT_SIZE 1
-#define NN_HIDDEN_SIZE 32           // NEW: Uniform size for all hidden layers
+#define NN_HIDDEN_SIZE 32           
 #define NN_LEARNING_RATE 0.0005     
 
 // --- SVG Constants (Updated to match smaller layers) ---
@@ -41,14 +41,14 @@ typedef struct {
     // Weights and Biases for 4 Hidden Layers
     Matrix weights_ih1;         // Input -> Hidden 1
     Matrix weights_h1h2;        // Hidden 1 -> Hidden 2
-    Matrix weights_h2h3;        // Hidden 2 -> Hidden 3 (NEW)
-    Matrix weights_h3h4;        // Hidden 3 -> Hidden 4 (NEW)
+    Matrix weights_h2h3;        // Hidden 2 -> Hidden 3 
+    Matrix weights_h3h4;        // Hidden 3 -> Hidden 4 
     Matrix weights_h4o;         // Hidden 4 -> Output
 
     double* bias_h1;
     double* bias_h2;            
-    double* bias_h3;            // NEW
-    double* bias_h4;            // NEW
+    double* bias_h3;            
+    double* bias_h4;            
     double* bias_o;
 
     double lr;
@@ -57,8 +57,8 @@ typedef struct {
     Matrix inputs;
     Matrix hidden1_outputs;
     Matrix hidden2_outputs;
-    Matrix hidden3_outputs;     // NEW
-    Matrix hidden4_outputs;     // NEW
+    Matrix hidden3_outputs;     
+    Matrix hidden4_outputs;     
     Matrix output_outputs;
 } NeuralNetwork;
 
@@ -120,7 +120,6 @@ bool is_prime(int n) {
     return prime_cache[n];
 }
 
-// FEATURE ENGINEERING: Generates the 32 inputs
 void generate_nn_input(int n, double* arr) {
     int current_idx = 0;
 
@@ -198,6 +197,19 @@ Matrix matrix_transpose(Matrix m) {
     }
     return result;
 }
+
+// FIX: Definition for matrix_add_subtract to resolve implicit declaration and type errors
+Matrix matrix_add_subtract(Matrix A, Matrix B, bool is_add) {
+    Matrix result = matrix_create(A.rows, A.cols, 0);
+    for (int i = 0; i < A.rows; i++) {
+        for (int j = 0; j < A.cols; j++) {
+            if (is_add) { result.data[i][j] = A.data[i][j] + B.data[i][j]; }
+            else { result.data[i][j] = A.data[i][j] - B.data[i][j]; }
+        }
+    }
+    return result;
+}
+
 Matrix matrix_multiply_elem(Matrix A, Matrix B) {
     Matrix result = matrix_create(A.rows, A.cols, 0);
     for (int i = 0; i < A.rows; i++) {
@@ -233,36 +245,36 @@ void nn_init(NeuralNetwork* nn) {
     // Weights
     nn->weights_ih1 = matrix_create(h_size, NN_INPUT_SIZE, NN_INPUT_SIZE);
     nn->weights_h1h2 = matrix_create(h_size, h_size, h_size);
-    nn->weights_h2h3 = matrix_create(h_size, h_size, h_size); // NEW
-    nn->weights_h3h4 = matrix_create(h_size, h_size, h_size); // NEW
+    nn->weights_h2h3 = matrix_create(h_size, h_size, h_size); 
+    nn->weights_h3h4 = matrix_create(h_size, h_size, h_size); 
     nn->weights_h4o = matrix_create(NN_OUTPUT_SIZE, h_size, h_size);
     
     // Biases
     nn->bias_h1 = (double*)calloc(h_size, sizeof(double));
     nn->bias_h2 = (double*)calloc(h_size, sizeof(double));
-    nn->bias_h3 = (double*)calloc(h_size, sizeof(double)); // NEW
-    nn->bias_h4 = (double*)calloc(h_size, sizeof(double)); // NEW
+    nn->bias_h3 = (double*)calloc(h_size, sizeof(double)); 
+    nn->bias_h4 = (double*)calloc(h_size, sizeof(double)); 
     nn->bias_o = (double*)calloc(NN_OUTPUT_SIZE, sizeof(double));
 
     // Intermediate Outputs
     nn->inputs = matrix_create(NN_INPUT_SIZE, 1, 0);
     nn->hidden1_outputs = matrix_create(h_size, 1, 0);
     nn->hidden2_outputs = matrix_create(h_size, 1, 0);
-    nn->hidden3_outputs = matrix_create(h_size, 1, 0); // NEW
-    nn->hidden4_outputs = matrix_create(h_size, 1, 0); // NEW
+    nn->hidden3_outputs = matrix_create(h_size, 1, 0); 
+    nn->hidden4_outputs = matrix_create(h_size, 1, 0); 
     nn->output_outputs = matrix_create(NN_OUTPUT_SIZE, 1, 0);
 }
 
 void nn_free(NeuralNetwork* nn) {
     matrix_free(nn->weights_ih1); matrix_free(nn->weights_h1h2); 
-    matrix_free(nn->weights_h2h3); matrix_free(nn->weights_h3h4); // NEW
+    matrix_free(nn->weights_h2h3); matrix_free(nn->weights_h3h4); 
     matrix_free(nn->weights_h4o);
 
-    free(nn->bias_h1); free(nn->bias_h2); free(nn->bias_h3); free(nn->bias_h4); free(nn->bias_o); // NEW
+    free(nn->bias_h1); free(nn->bias_h2); free(nn->bias_h3); free(nn->bias_h4); free(nn->bias_o); 
     
     matrix_free(nn->inputs); matrix_free(nn->hidden1_outputs);
-    matrix_free(nn->hidden2_outputs); matrix_free(nn->hidden3_outputs); // NEW
-    matrix_free(nn->hidden4_outputs); // NEW
+    matrix_free(nn->hidden2_outputs); matrix_free(nn->hidden3_outputs); 
+    matrix_free(nn->hidden4_outputs); 
     matrix_free(nn->output_outputs);
 }
 
@@ -280,12 +292,12 @@ void nn_forward(NeuralNetwork* nn, const double* input_array, double* output_arr
     for (int i = 0; i < h; i++) h2_in_m.data[i][0] += nn->bias_h2[i];
     Matrix h2_out_m = matrix_map(h2_in_m, tanh_activation);
 
-    // 3. H2 -> H3 (NEW)
+    // 3. H2 -> H3
     Matrix h3_in_m = matrix_dot(nn->weights_h2h3, h2_out_m);
     for (int i = 0; i < h; i++) h3_in_m.data[i][0] += nn->bias_h3[i];
     Matrix h3_out_m = matrix_map(h3_in_m, tanh_activation);
     
-    // 4. H3 -> H4 (NEW)
+    // 4. H3 -> H4
     Matrix h4_in_m = matrix_dot(nn->weights_h3h4, h3_out_m);
     for (int i = 0; i < h; i++) h4_in_m.data[i][0] += nn->bias_h4[i];
     Matrix h4_out_m = matrix_map(h4_in_m, tanh_activation);
@@ -299,8 +311,8 @@ void nn_forward(NeuralNetwork* nn, const double* input_array, double* output_arr
     matrix_copy_in(nn->inputs, inputs_m);
     matrix_copy_in(nn->hidden1_outputs, h1_out_m);
     matrix_copy_in(nn->hidden2_outputs, h2_out_m);
-    matrix_copy_in(nn->hidden3_outputs, h3_out_m); // NEW
-    matrix_copy_in(nn->hidden4_outputs, h4_out_m); // NEW
+    matrix_copy_in(nn->hidden3_outputs, h3_out_m); 
+    matrix_copy_in(nn->hidden4_outputs, h4_out_m); 
     matrix_copy_in(nn->output_outputs, output_out_m);
 
     // Copy result to output array
@@ -309,8 +321,8 @@ void nn_forward(NeuralNetwork* nn, const double* input_array, double* output_arr
     // Cleanup (only local temporaries)
     matrix_free(inputs_m); matrix_free(h1_in_m); matrix_free(h1_out_m); 
     matrix_free(h2_in_m); matrix_free(h2_out_m); 
-    matrix_free(h3_in_m); matrix_free(h3_out_m); // NEW
-    matrix_free(h4_in_m); matrix_free(h4_out_m); // NEW
+    matrix_free(h3_in_m); matrix_free(h3_out_m); 
+    matrix_free(h4_in_m); matrix_free(h4_out_m); 
     matrix_free(output_in_m); matrix_free(output_out_m);
 }
 
@@ -319,10 +331,8 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     Matrix targets_m = array_to_matrix(target_array, NN_OUTPUT_SIZE);
     int h = NN_HIDDEN_SIZE;
     
-    // NOTE: For brevity, the cleanup of all temporary matrices at the end is omitted here, 
-    // but the full C implementation must free them.
-
     // --- 1. Output Layer ---
+    // FIXED: matrix_add_subtract is now correctly declared/defined
     Matrix output_errors_m = matrix_add_subtract(nn->output_outputs, targets_m, false);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) { mse_loss += output_errors_m.data[i][0] * output_errors_m.data[i][0]; }
     mse_loss /= NN_OUTPUT_SIZE;
@@ -332,10 +342,12 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     // Update Weights H4O and Bias O
     Matrix h4_out_t_m = matrix_transpose(nn->hidden4_outputs);
     Matrix delta_h4o_m = matrix_dot(output_gradients_m, h4_out_t_m);
-    matrix_copy_in(nn->weights_h4o, matrix_add_subtract(nn->weights_h4o, matrix_multiply_scalar(delta_h4o_m, nn->lr), false));
+    // FIXED: Correct use of matrix_add_subtract result as Matrix type argument
+    Matrix new_h4o_m = matrix_add_subtract(nn->weights_h4o, matrix_multiply_scalar(delta_h4o_m, nn->lr), false);
+    matrix_copy_in(nn->weights_h4o, new_h4o_m);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) { nn->bias_o[i] -= output_gradients_m.data[i][0] * nn->lr; }
 
-    // --- 2. Hidden Layer 4 (NEW) ---
+    // --- 2. Hidden Layer 4 ---
     Matrix weights_h4o_t_m = matrix_transpose(nn->weights_h4o);
     Matrix h4_errors_m = matrix_dot(weights_h4o_t_m, output_gradients_m);
     Matrix h4_d_m = matrix_map(nn->hidden4_outputs, tanh_derivative);
@@ -344,10 +356,12 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     // Update Weights H3H4 and Bias H4
     Matrix h3_out_t_m = matrix_transpose(nn->hidden3_outputs);
     Matrix delta_h3h4_m = matrix_dot(h4_gradients_m, h3_out_t_m);
-    matrix_copy_in(nn->weights_h3h4, matrix_add_subtract(nn->weights_h3h4, matrix_multiply_scalar(delta_h3h4_m, nn->lr), false));
+    // FIXED: Correct use of matrix_add_subtract result as Matrix type argument
+    Matrix new_h3h4_m = matrix_add_subtract(nn->weights_h3h4, matrix_multiply_scalar(delta_h3h4_m, nn->lr), false);
+    matrix_copy_in(nn->weights_h3h4, new_h3h4_m);
     for (int i = 0; i < h; i++) { nn->bias_h4[i] -= h4_gradients_m.data[i][0] * nn->lr; }
 
-    // --- 3. Hidden Layer 3 (NEW) ---
+    // --- 3. Hidden Layer 3 ---
     Matrix weights_h3h4_t_m = matrix_transpose(nn->weights_h3h4);
     Matrix h3_errors_m = matrix_dot(weights_h3h4_t_m, h4_gradients_m);
     Matrix h3_d_m = matrix_map(nn->hidden3_outputs, tanh_derivative);
@@ -356,7 +370,9 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     // Update Weights H2H3 and Bias H3
     Matrix h2_out_t_m = matrix_transpose(nn->hidden2_outputs);
     Matrix delta_h2h3_m = matrix_dot(h3_gradients_m, h2_out_t_m);
-    matrix_copy_in(nn->weights_h2h3, matrix_add_subtract(nn->weights_h2h3, matrix_multiply_scalar(delta_h2h3_m, nn->lr), false));
+    // FIXED: Correct use of matrix_add_subtract result as Matrix type argument
+    Matrix new_h2h3_m = matrix_add_subtract(nn->weights_h2h3, matrix_multiply_scalar(delta_h2h3_m, nn->lr), false);
+    matrix_copy_in(nn->weights_h2h3, new_h2h3_m);
     for (int i = 0; i < h; i++) { nn->bias_h3[i] -= h3_gradients_m.data[i][0] * nn->lr; }
 
     // --- 4. Hidden Layer 2 ---
@@ -368,7 +384,9 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     // Update Weights H1H2 and Bias H2
     Matrix h1_out_t_m = matrix_transpose(nn->hidden1_outputs);
     Matrix delta_h1h2_m = matrix_dot(h2_gradients_m, h1_out_t_m);
-    matrix_copy_in(nn->weights_h1h2, matrix_add_subtract(nn->weights_h1h2, matrix_multiply_scalar(delta_h1h2_m, nn->lr), false));
+    // FIXED: Correct use of matrix_add_subtract result as Matrix type argument
+    Matrix new_h1h2_m = matrix_add_subtract(nn->weights_h1h2, matrix_multiply_scalar(delta_h1h2_m, nn->lr), false);
+    matrix_copy_in(nn->weights_h1h2, new_h1h2_m);
     for (int i = 0; i < h; i++) { nn->bias_h2[i] -= h2_gradients_m.data[i][0] * nn->lr; }
     
     // --- 5. Hidden Layer 1 ---
@@ -380,13 +398,23 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     // Update Weights IH1 and Bias H1
     Matrix inputs_t_m = matrix_transpose(nn->inputs);
     Matrix delta_ih1_m = matrix_dot(h1_gradients_m, inputs_t_m);
-    matrix_copy_in(nn->weights_ih1, matrix_add_subtract(nn->weights_ih1, matrix_multiply_scalar(delta_ih1_m, nn->lr), false));
+    // FIXED: Correct use of matrix_add_subtract result as Matrix type argument
+    Matrix new_ih1_m = matrix_add_subtract(nn->weights_ih1, matrix_multiply_scalar(delta_ih1_m, nn->lr), false);
+    matrix_copy_in(nn->weights_ih1, new_ih1_m);
     for (int i = 0; i < h; i++) { nn->bias_h1[i] -= h1_gradients_m.data[i][0] * nn->lr; }
 
-    // Final Cleanup (Crucial: all temporary Matrix objects must be freed here to prevent memory leaks)
-    // ...
+    // Final Cleanup (Temporary matrices must be freed in a complete implementation)
     matrix_free(targets_m); 
-    // ... (Free all other temporary matrices used in the backward pass)
+    matrix_free(output_errors_m); matrix_free(output_d_m); matrix_free(output_gradients_m);
+    matrix_free(h4_out_t_m); matrix_free(delta_h4o_m); matrix_free(new_h4o_m); 
+    matrix_free(weights_h4o_t_m); matrix_free(h4_errors_m); matrix_free(h4_d_m); matrix_free(h4_gradients_m);
+    matrix_free(h3_out_t_m); matrix_free(delta_h3h4_m); matrix_free(new_h3h4_m); 
+    matrix_free(weights_h3h4_t_m); matrix_free(h3_errors_m); matrix_free(h3_d_m); matrix_free(h3_gradients_m);
+    matrix_free(h2_out_t_m); matrix_free(delta_h2h3_m); matrix_free(new_h2h3_m); 
+    matrix_free(weights_h2h3_t_m); matrix_free(h2_errors_m); matrix_free(h2_d_m); matrix_free(h2_gradients_m);
+    matrix_free(h1_out_t_m); matrix_free(delta_h1h2_m); matrix_free(new_h1h2_m); 
+    matrix_free(weights_h1h2_t_m); matrix_free(h1_errors_m); matrix_free(h1_d_m); matrix_free(h1_gradients_m);
+    matrix_free(inputs_t_m); matrix_free(delta_ih1_m); matrix_free(new_ih1_m);
     
     return mse_loss;
 }
@@ -423,7 +451,6 @@ double train_sequential_batch(NeuralNetwork* nn, int batch_index, double* bp_tim
     }
     
     clock_t end_bp = clock();
-    // FIXED: Corrected timing calculation
     *bp_time = ((double)(end_bp - start_bp)) / CLOCKS_PER_SEC; 
 
     return total_mse / (current_batch_size_half * 2);
@@ -456,12 +483,7 @@ double test_network(NeuralNetwork* nn, double* test_time) {
 
 // --- SVG Utility Functions (Simplified for presentation) ---
 
-/*
-NOTE: The full SVG utility functions (generate_network_svg, save_network_as_svg, etc.) 
-are lengthy but remain unchanged in their logic (though the drawing constants like SVG_HEIGHT/WIDTH 
-and layer positions would need adjustment to neatly fit the new 5-layer structure).
-They are omitted here for brevity and focus on the NN core logic.
-*/
+/* NOTE: SVG functions omitted for brevity */
 
 // --- Main Execution ---
 
