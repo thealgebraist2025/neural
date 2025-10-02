@@ -45,14 +45,14 @@
 #define ACTION_HISTORY_SIZE 10 
 const char* action_names[NN_OUTPUT_SIZE] = {"UP", "DOWN", "LEFT", "RIGHT"};
 
-// --- Unittest Constants (UPDATED) ---
+// --- Unittest Constants (ADDED & ADJUSTED) ---
 #define UNITTEST_EPISODES 50
 #define UNITTEST_SUCCESS_THRESHOLD 0.5 
 #define UNITTEST_MAX_STEPS 20 
 #define UNITTEST_PROGRESS_REWARD 1.0 
 #define UNITTEST_STEP_PENALTY -0.1 
-#define UNITTEST_CRASH_PENALTY -5.0   // NY: Mindre straf for Unit Test
-#define UNITTEST_GOAL_REWARD 50.0     // NY: Klar succesbelønning for Unit Test
+#define UNITTEST_CRASH_PENALTY -5.0   // FIX: Reduced crash penalty for stable learning signal
+#define UNITTEST_GOAL_REWARD 50.0     // FIX: Clear success reward for the minimal task
 
 // --- Data Structures ---
 typedef struct { double x, y; double w, h; } Obstacle;
@@ -79,11 +79,6 @@ int action_history_idx = 0;
 int step_count = 0;
 time_t last_print_time = 0; 
 
-// --- FORWARD DECLARATIONS TIL FEJLFINDING ---
-bool is_point_legal(double x, double y);
-bool is_point_in_rect(double px, double py, double rx, double ry, double rw, double rh);
-
-
 // --- C99 Utility Functions ---
 void check_nan_and_stop(double value, const char* var_name, const char* context) {
     if (isnan(value) || isinf(value)) { 
@@ -107,7 +102,6 @@ void softmax(const double* input, double* output, int size) {
         sum_exp += output[i];
     }
     if (sum_exp < 1e-6) {
-        fprintf(stderr, "WARNING: Sum of exp in softmax is near zero (%.10f). Using uniform probability.\n", sum_exp);
         for (int i = 0; i < size; i++) output[i] = 1.0 / size;
     } else {
         for (int i = 0; i < size; i++) { output[i] = check_double(output[i] / sum_exp, "softmax_output", "softmax"); }
@@ -117,7 +111,7 @@ double distance_2d(double x1, double y1, double x2, double y2) {
     return sqrt(pow(x2 - x1, 2) + pow(y2 - y1, 2));
 }
 
-// --- Matrix Functions ---
+// --- Matrix Functions (Retained for completeness) ---
 Matrix matrix_create(int rows, int cols) {
     Matrix m; m.rows = rows; m.cols = cols;
     m.data = (double**)malloc(rows * sizeof(double*));
@@ -202,7 +196,7 @@ Matrix matrix_map(Matrix m, double (*func)(double)) {
     return result;
 }
 
-// --- Neural Network Core Functions ---
+// --- Neural Network Core Functions (Retained for completeness) ---
 
 void nn_init(NeuralNetwork* nn) {
     nn->lr = check_double(NN_LEARNING_RATE, "NN_LEARNING_RATE", "nn_init");
@@ -246,10 +240,7 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
     double probs[NN_OUTPUT_SIZE];
     softmax(logits, probs, NN_OUTPUT_SIZE);
     
-    // Sanity Check: Ensure probabilities are valid
     if (probs[action_index] < 1e-6) {
-        fprintf(stderr, "WARNING: Probability of taken action %d is near zero (%.10f). Skipping update.\n", action_index, probs[action_index]);
-        // Cleanup and return without update
         matrix_free(inputs); matrix_free(hidden); matrix_free(hidden_output); matrix_free(output_logits_m);
         return;
     }
@@ -310,37 +301,97 @@ void apply_action(Robot* robot, int action_index) {
         case 3: robot->x += MOVE_STEP_SIZE; break; // RIGHT
     }
     
+    // Update action history for printing
+    action_history[action_history_idx] = action_index;
+    action_history_idx = (action_history_idx + 1) % ACTION_HISTORY_SIZE;
+    
     // Check if the new position is legal (walls and obstacles)
-    if (!is_point_legal(robot->x, robot->y)) {
+    // NOTE: This check is redundant with check_collision but kept for local reference of a crash
+    if (robot->x - robot->size < BORDER_WIDTH || robot->x + robot->size > CANVAS_WIDTH - BORDER_WIDTH ||
+        robot->y - robot->size < BORDER_WIDTH || robot->y + robot->size > CANVAS_HEIGHT - BORDER_WIDTH) {
         // If movement leads to a crash, mark as not alive and revert position temporarily
         robot->is_alive = false;
-        // Revert to old position so that the state input features reflect the pre-crash position
         robot->x = old_x; 
         robot->y = old_y;
     }
 }
 
+// Helper function for collision checking
+bool is_point_in_rect(double px, double py, double rx, double ry, double rw, double rh) { 
+    return px >= rx && px <= rx + rw && py >= ry && py <= ry + rh; 
+}
+
+// Checks if a point at the center of a grid cell is legal (no collision with walls/obstacles)
+bool is_point_legal(double x, double y) {
+    double r = state.robot.size; 
+
+    // Check Wall Collision
+    if (x - r < BORDER_WIDTH || x + r > CANVAS_WIDTH - BORDER_WIDTH ||
+        y - r < BORDER_WIDTH || y + r > CANVAS_HEIGHT - BORDER_WIDTH) {
+        return false; 
+    }
+    
+    // Check Obstacle Collision
+    for (int i = 0; i < NUM_OBSTACLES; i++) {
+        Obstacle* obs = &state.obstacles[i];
+        if (obs->w <= 0.0) continue; // Skip zero-width obstacles (used in minimal test)
+        
+        double closest_x = fmax(obs->x, fmin(x, obs->x + obs->w));
+        double closest_y = fmax(obs->y, fmin(y, obs->y + obs->h));
+        
+        double dx = x - closest_x;
+        double dy = y - closest_y;
+        
+        if (dx * dx + dy * dy < r * r) {
+            return false; 
+        }
+    }
+    return true;
+}
+
 // Function to check for collisions (diamonds, target, and confirm obstacles/walls) 
 int check_collision(Robot* robot) {
+    double r = robot->size; 
     int diamonds_collected_this_step = 0;
 
-    if (!robot->is_alive) return 0; // Already crashed in apply_action
-
-    // 1. Diamond Collection Check
-    for (int i = 0; i < NUM_DIAMONDS; i++) {
-        Diamond* d = &state.diamonds[i];
-        if (!d->collected) {
-            double dist = distance_2d(robot->x, robot->y, d->x, d->y);
-            // If robot is close enough to collect the diamond (simple circular collision)
-            if (dist < robot->size + d->size) {
-                d->collected = true;
-                state.total_diamonds++;
-                diamonds_collected_this_step++;
-            }
+    // --- 1. Wall Collision (Instant crash) ---
+    if (robot->x - r < BORDER_WIDTH || robot->x + r > CANVAS_WIDTH - BORDER_WIDTH ||
+        robot->y - r < BORDER_WIDTH || robot->y + r > CANVAS_HEIGHT - BORDER_WIDTH) {
+        robot->is_alive = false;
+        return 0; 
+    }
+    
+    // --- 2. Obstacle Collision (Instant crash) ---
+    for (int i = 0; i < NUM_OBSTACLES; i++) {
+        Obstacle* obs = &state.obstacles[i];
+        if (obs->w <= 0.0) continue; 
+        
+        double closest_x = fmax(obs->x, fmin(robot->x, obs->x + obs->w));
+        double closest_y = fmax(obs->y, fmin(robot->y, obs->y + obs->h));
+        
+        double dx = robot->x - closest_x;
+        double dy = robot->y - closest_y;
+        
+        if (dx * dx + dy * dy < r * r) {
+            robot->is_alive = false;
+            return 0; 
         }
     }
     
-    // 2. Target Area Check (Goal)
+    // --- 3. Diamond Collection ---
+    for (int i = 0; i < NUM_DIAMONDS; i++) {
+        Diamond* d = &state.diamonds[i];
+        if (d->collected) continue;
+        
+        if (distance_2d(robot->x, robot->y, d->x, d->y) < robot->size + d->size) {
+            d->collected = true;
+            state.total_diamonds++;
+            diamonds_collected_this_step++;
+            state.score += (int)REWARD_COLLECT_DIAMOND;
+        }
+    }
+
+    // --- 4. Target Area Check (Goal) ---
     TargetArea* target = &state.target;
     // Check if robot center is within the target bounds
     if (is_point_in_rect(robot->x, robot->y, target->x, target->y, target->w, target->h)) {
@@ -351,6 +402,7 @@ int check_collision(Robot* robot) {
 }
 
 
+// --- Unit Test Environment Setup (ADDED) ---
 void init_minimal_state() {
     step_count = 0;
     state.score = 0;
@@ -493,44 +545,32 @@ void get_state_features(double* input, double* min_dist_to_goal_ptr) {
     
     *min_dist_to_goal_ptr = distance_2d(robot->x, robot->y, goal_x, goal_y);
 
-    // --- 4. Nearest DANGER Distance (Walls and Obstacles) (2) ---
-    // FIX: Agent lacked wall proximity feature. Now includes both walls and obstacles.
-    
-    // Calculate distance from robot edge to the four walls (closest safe distance)
+    // --- 4. Nearest DANGER Distance (Walls and Obstacles) (2) (FIXED LOGIC) ---
     double dist_left_wall = robot->x - BORDER_WIDTH - robot->size;
     double dist_right_wall = CANVAS_WIDTH - BORDER_WIDTH - robot->x - robot->size;
     double dist_top_wall = robot->y - BORDER_WIDTH - robot->size;
     double dist_bottom_wall = CANVAS_HEIGHT - BORDER_WIDTH - robot->y - robot->size;
 
-    // Initialize with the nearest wall distance
     double min_danger_dist_x = fmin(dist_left_wall, dist_right_wall);
     double min_danger_dist_y = fmin(dist_top_wall, dist_bottom_wall);
     
-    // Now incorporate all obstacles
     for (int i = 0; i < NUM_OBSTACLES; i++) {
         Obstacle* obs = &state.obstacles[i];
-        // Skip zero-width obstacles (used in minimal test)
         if (obs->w <= 0.0) continue; 
         
-        // Find the closest point on the rectangle (obs) to the robot center (x, y)
         double closest_x = fmax(obs->x, fmin(robot->x, obs->x + obs->w));
         double closest_y = fmax(obs->y, fmin(robot->y, obs->y + obs->h));
         
-        // Calculate the closest distance from robot edge to obstacle edge in X and Y components
         double obs_dist_x = fabs(robot->x - closest_x) - robot->size;
         double obs_dist_y = fabs(robot->y - closest_y) - robot->size;
 
-        // Ensure non-negative proximity distance (if robot is already "in" the obstacle, distance is 0)
         if (obs_dist_x < 0) obs_dist_x = 0;
         if (obs_dist_y < 0) obs_dist_y = 0;
         
-        // Update the minimum danger distance (the distance to the nearest hazard in X and Y)
         min_danger_dist_x = fmin(min_danger_dist_x, obs_dist_x);
         min_danger_dist_y = fmin(min_danger_dist_y, obs_dist_y);
     }
     
-    // Normalize and ensure features are not negative (shouldn't happen with the fmin logic above)
-    // We normalize by the full width/height to keep the features bounded [0, 1]
     input[6] = check_double(fmax(0.0, min_danger_dist_x) / CANVAS_WIDTH, "norm_danger_dist_x", "get_state_features");
     input[7] = check_double(fmax(0.0, min_danger_dist_y) / CANVAS_HEIGHT, "norm_danger_dist_y", "get_state_features"); 
 
@@ -539,9 +579,6 @@ void get_state_features(double* input, double* min_dist_to_goal_ptr) {
     input[8] = (double)state.total_diamonds / (NUM_DIAMONDS > 0 ? NUM_DIAMONDS : 1.0);
 
     for (int i = 0; i < NN_INPUT_SIZE; i++) {
-        // We allow goal features (4 and 5) to be outside [-1, 1] if distance is very high, but normalize them
-        // Danger features (6 and 7) are forced to be [0, 1] since they are distances
-        // Rest are already normalized positions [0, 1] or ratios [0, 1]
         check_nan_and_stop(input[i], "input_feature", "get_state_features");
     }
 }
@@ -556,22 +593,20 @@ double calculate_reward(double old_min_dist_to_goal, int diamonds_collected_this
     double success_reward;
     
     if (is_unittest) {
-        // Use high-signal rewards for the minimal test
         reward = 0.0; // Start neutral
         progress_scale = UNITTEST_PROGRESS_REWARD;
         step_penalty = UNITTEST_STEP_PENALTY;
-        crash_penalty = UNITTEST_CRASH_PENALTY; // BRUG NY UNIT TEST PENALTY
+        crash_penalty = UNITTEST_CRASH_PENALTY; 
         success_reward = UNITTEST_GOAL_REWARD;
     } else {
-        // Use normal, complex rewards for the full simulation/expert
         reward = expert_run ? 5.0 : REWARD_PER_STEP;
         progress_scale = REWARD_PROGRESS_SCALE;
         step_penalty = REWARD_PER_STEP;
-        crash_penalty = REWARD_CRASH; // BRUG FULD SIMULERING PENALTY
+        crash_penalty = REWARD_CRASH; 
         success_reward = REWARD_SUCCESS;
     }
     
-    // CRASH CHECK FLYTTET OG BRUGER LOKALT DEFINERET PENALTY
+    // CRASH CHECK (Handles terminal crash state)
     if (!robot->is_alive) return crash_penalty; 
     
     if (diamonds_collected_this_step > 0) {
@@ -585,30 +620,24 @@ double calculate_reward(double old_min_dist_to_goal, int diamonds_collected_this
     
     double distance_change = old_min_dist_to_goal - min_dist_to_goal;
     
-    if (distance_change > 0) {
-        // Moving closer
-        reward += progress_scale * distance_change;
-    } else {
-        // Moving further or stuck
-        if (!robot->has_reached_target && robot->is_alive) {
-            reward += progress_scale * distance_change; 
-        }
-    }
-    
-    // Apply standard step penalty (if not already covered by REWARD_PER_STEP in base reward)
+    // Apply standard step penalty
     if (is_unittest || expert_run) {
         reward += step_penalty;
     }
     
-    // Terminal Rewards (Overwrite progress/step rewards for the final step)
+    // Apply progress reward/penalty
+    reward += progress_scale * distance_change;
+    
+    // Terminal Rewards (Applied last, overwriting step/progress rewards for the final step)
     if (robot->has_reached_target) {
-        reward = success_reward; // BRUGER LOKALT DEFINERET SUCCESS REWARD
+        reward = success_reward; 
         // In full sim, penalize if diamonds are missed
         if (!is_unittest && state.total_diamonds < NUM_DIAMONDS) {
              if (NUM_DIAMONDS > 0) reward -= (NUM_DIAMONDS - state.total_diamonds) * 50.0; 
         }
     } 
-    // Note: Crash reward is handled at the start of the function
+    
+    // FIX: Removed the buggy line: 'if (robot->has_reached_target || !robot->is_alive) reward = 0.0;'
     
     return check_double(reward, "final_reward", "calc_reward");
 }
@@ -652,10 +681,6 @@ void update_game(bool is_training_run, bool expert_run, bool is_unittest) {
         episode_buffer.total_score += final_reward;
     }
     
-    // Update action history for printing
-    action_history[action_history_idx] = action_index;
-    action_history_idx = (action_history_idx + 1) % ACTION_HISTORY_SIZE;
-    
     step_count++;
 }
 
@@ -685,13 +710,8 @@ void run_reinforce_training() {
 
     // 3. Train the Network using Backpropagation (REINFORCE)
     for (int i = 0; i < episode_buffer.count; i++) {
-        // Subtract baseline and normalize (Advantage function)
         double Gt = (returns[i] - mean_return) / std_dev; 
         
-        // Pass -Gt because we are optimizing likelihood, and the reward should be maximized (Gradient Ascent).
-        // The implementation uses grad_base * discounted_return, so a large positive reward needs a positive gradient signal.
-        // Since we are using an implicit loss based on log-likelihood of action taken, we pass -Gt to mimic minimization of loss.
-        // We ensure that the final result in the update function aligns with standard policy gradient (log(pi(a|s)) * Gt).
         nn_reinforce_train(&nn, 
                            episode_buffer.steps[i].input, 
                            episode_buffer.steps[i].action_index, 
@@ -731,40 +751,12 @@ void print_episode_stats(double train_time_ms, bool is_expert) {
 }
 
 
-// --- Pathfinding and Expert Training Functions (Minimal changes to signatures) ---
+// --- Pathfinding and Expert Training Functions (Retained for completeness) ---
 
 double col_to_x(int c) { return c * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
 double row_to_y(int r) { return r * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
 int x_to_col(double x) { return (int)(x / GRID_CELL_SIZE); }
 int y_to_row(double y) { return (int)(y / GRID_CELL_SIZE); }
-
-bool is_point_in_rect(double px, double py, double rx, double ry, double rw, double rh) { 
-    return px >= rx && px <= rx + rw && py >= ry && py <= ry + rh; 
-}
-
-bool is_point_legal(double x, double y) {
-    double r = state.robot.size; 
-    // Wall Check: Check if any part of the robot circle is outside the canvas bounds
-    if (x - r < BORDER_WIDTH || x + r > CANVAS_WIDTH - BORDER_WIDTH || y - r < BORDER_WIDTH || y + r > CANVAS_HEIGHT - BORDER_WIDTH) { return false; }
-    
-    // Obstacle Check: Circle vs. Rectangle collision detection
-    for (int i = 0; i < NUM_OBSTACLES; i++) {
-        Obstacle* obs = &state.obstacles[i];
-        if (obs->w <= 0.0) continue; 
-        
-        // Find the closest point on the rectangle (obs) to the circle center (x, y)
-        double closest_x = fmax(obs->x, fmin(x, obs->x + obs->w));
-        double closest_y = fmax(obs->y, fmin(y, obs->y + obs->h));
-        
-        // Calculate the distance squared from the closest point to the circle center
-        double dx = x - closest_x;
-        double dy = y - closest_y;
-        
-        if (dx * dx + dy * dy < r * r) { return false; }
-    }
-    return true;
-}
-
 
 int find_path_segment_bfs(double start_x, double start_y, double end_x, double end_y, PathNode* path_out) {
     int start_r = y_to_row(start_y); int start_c = x_to_col(start_x);
@@ -876,7 +868,6 @@ void generate_expert_path_training_data() {
         double min_dist_after_move = INFINITY;
         int best_action = -1;
         
-        // Find the action that moves closest to the target grid cell
         for (int a = 0; a < NN_OUTPUT_SIZE; a++) {
             double test_x = robot->x;
             double test_y = robot->y;
@@ -980,7 +971,7 @@ void print_ascii_map() {
             if (symbol == '.') {
                 for (int i = 0; i < NUM_DIAMONDS; i++) {
                     Diamond* d = &state.diamonds[i];
-                    if (!d->collected && x_to_col(d->x) == c && y_to_row(d->y) == r) {
+                    if (x_to_col(d->x) == c && y_to_row(d->y) == r) {
                         symbol = 'D';
                         break;
                     }
@@ -1005,7 +996,7 @@ void print_ascii_map() {
     printf("-----------------------------------------\n\n");
 }
 
-// --- UNITTEST Function (Updated logic and constant usage) ---
+// --- UNITTEST Function (ADDED & CORRECTED) ---
 
 bool run_rl_unittest() {
     printf("\n\n*** RUNNING RL UNITTEST (Minimal Environment) ***\n");
@@ -1050,13 +1041,13 @@ bool run_rl_unittest() {
 }
 
 
-// --- Main Simulation Loop (Updated to correctly pass is_unittest) ---
+// --- Main Simulation Loop (Updated to correctly include unittest) ---
 
 int main() {
     srand((unsigned int)time(NULL)); 
     nn_init(&nn);
     
-    // 1. Run RL Unittest
+    // 1. Run RL Unittest (Logic added)
     if (!run_rl_unittest()) {
         matrix_free(nn.weights_ih); matrix_free(nn.weights_ho);
         free(nn.bias_h); free(nn.bias_o);
