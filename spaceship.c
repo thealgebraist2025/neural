@@ -16,10 +16,10 @@
 #define BORDER_WIDTH 10.0 // Wall thickness for collision check
 
 // Game/Physics Constants
-#define MOVE_STEP_SIZE 15.0 // Robot moves this distance per action
-#define MAX_EPISODE_STEPS 50 // New move limit
+#define MOVE_STEP_SIZE 15.0 
+#define MAX_EPISODE_STEPS 50 
 #define NUM_OBSTACLES 5
-#define NUM_DIAMONDS 5
+#define NUM_DIAMONDS 10 // Increased from 5 to 10
 
 // Pathfinding Constants (Simplified BFS Grid)
 #define GRID_CELL_SIZE 20.0 
@@ -28,10 +28,9 @@
 #define MAX_PATH_NODES 2000
 
 // NN & RL Constants
-// Input Size (9): Robot X, Robot Y, Target X, Target Y, Diamond dX, Diamond dY, Obstacle dX, Obstacle dY, Collected Ratio
 #define NN_INPUT_SIZE 9 
-#define NN_HIDDEN_SIZE 16 // Reduced for faster training
-#define NN_OUTPUT_SIZE 4  // 0:Up, 1:Down, 2:Left, 3:Right
+#define NN_HIDDEN_SIZE 16 
+#define NN_OUTPUT_SIZE 4 
 #define NN_LEARNING_RATE 0.005
 #define GAMMA 0.95 
 
@@ -69,9 +68,9 @@ int current_episode = 0;
 int action_history[ACTION_HISTORY_SIZE];
 int action_history_idx = 0; 
 int step_count = 0;
-time_t last_print_time = 0; // New global for time-based logging
+time_t last_print_time = 0; 
 
-// --- C99 Utility Functions ---
+// --- C99 Utility Functions (omitted for brevity, assume correct implementation) ---
 void check_nan_and_stop(double value, const char* var_name, const char* context) {
     if (isnan(value)) { fprintf(stderr, "\n\nCRITICAL NAN ERROR: %s in %s is NaN. Stopping execution.\n", var_name, context); exit(EXIT_FAILURE); }
 }
@@ -95,7 +94,7 @@ double distance_2d(double x1, double y1, double x2, double y2) {
     return sqrt(pow(x2 - x1, 2) + pow(y2 - y1, 2));
 }
 
-// --- Matrix Functions (Standard implementation - omitted for brevity) ---
+// --- Matrix Functions (omitted for brevity, assume correct implementation) ---
 Matrix matrix_create(int rows, int cols) {
     Matrix m; m.rows = rows; m.cols = cols;
     m.data = (double**)malloc(rows * sizeof(double*));
@@ -178,7 +177,7 @@ Matrix matrix_map(Matrix m, double (*func)(double)) {
 }
 // --- End Matrix Functions ---
 
-// --- Neural Network Core Functions (Kept simple for fast training) ---
+// --- Neural Network Core Functions (omitted for brevity) ---
 
 void nn_init(NeuralNetwork* nn) {
     nn->lr = check_double(NN_LEARNING_RATE, "NN_LEARNING_RATE", "nn_init");
@@ -205,11 +204,10 @@ void nn_policy_forward(NeuralNetwork* nn, const double* input_array, double* out
     matrix_free(inputs); matrix_free(hidden); matrix_free(hidden_output); matrix_free(output_logits_m);
 }
 
-// nn_reinforce_train implements backpropagation using the policy gradient method (REINFORCE).
 void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action_index, double discounted_return) {
     Matrix inputs = array_to_matrix(input_array, NN_INPUT_SIZE);
     
-    // 1. Feedforward (Calculate intermediates)
+    // 1. Feedforward 
     Matrix hidden = matrix_dot(nn->weights_ih, inputs);
     for (int i = 0; i < NN_HIDDEN_SIZE; i++) hidden.data[i][0] += nn->bias_h[i];
     Matrix hidden_output = matrix_map(hidden, sigmoid);
@@ -226,7 +224,6 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
     Matrix output_gradients = matrix_create(NN_OUTPUT_SIZE, 1);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) {
         double target = (i == action_index) ? 1.0 : 0.0;
-        // Gradient is scaled by the negative of the discounted return (Gt)
         output_gradients.data[i][0] = check_double(probs[i] - target, "output_grad_base", "nn_reinforce_train") * discounted_return;
     }
 
@@ -282,13 +279,13 @@ void init_game_state() {
 
     // --- FIXED LEVEL CONFIGURATION ---
     
-    // Fixed Obstacles (x, y, w, h)
+    // Fixed Obstacles (x, y, w, h) - 5 Rectangular Obstacles
     double obs_configs[NUM_OBSTACLES][4] = {
-        {150.0, 150.0, 50.0, 250.0},
-        {350.0, 150.0, 50.0, 250.0},
-        {550.0, 50.0, 50.0, 200.0},
-        {550.0, 450.0, 50.0, 100.0},
-        {250.0, 400.0, 200.0, 30.0}
+        {150.0, 150.0, 50.0, 250.0},  // 1. Vertical Left
+        {350.0, 150.0, 50.0, 250.0},  // 2. Vertical Center
+        {550.0, 50.0, 50.0, 200.0},   // 3. Vertical Top Right
+        {550.0, 450.0, 50.0, 100.0},  // 4. Vertical Bottom Right
+        {250.0, 400.0, 200.0, 30.0}   // 5. Horizontal Center Bottom
     };
     for (int i = 0; i < NUM_OBSTACLES; i++) {
         state.obstacles[i].x = obs_configs[i][0];
@@ -297,9 +294,18 @@ void init_game_state() {
         state.obstacles[i].h = obs_configs[i][3];
     }
 
-    // Fixed Diamonds (x, y)
+    // Fixed Diamonds (x, y) - 10 legal diamonds
     double diamond_pos[NUM_DIAMONDS][2] = {
-        {100.0, 300.0}, {300.0, 100.0}, {500.0, 300.0}, {700.0, 100.0}, {700.0, 500.0}
+        {100.0, 100.0}, // D0
+        {300.0, 100.0}, // D1
+        {700.0, 100.0}, // D2
+        {100.0, 450.0}, // D3
+        {250.0, 500.0}, // D4
+        {500.0, 500.0}, // D5
+        {700.0, 500.0}, // D6
+        {50.0, 300.0},  // D7
+        {500.0, 350.0}, // D8
+        {700.0, 300.0}  // D9
     };
     for (int i = 0; i < NUM_DIAMONDS; i++) {
         state.diamonds[i].x = diamond_pos[i][0];
@@ -332,8 +338,8 @@ void get_state_features(double* input, double* min_dist_to_goal_ptr) {
     Robot* robot = &state.robot;
     
     // --- 1. Robot State (2) ---
-    input[0] = robot->x / CANVAS_WIDTH;  // Normalized X position
-    input[1] = robot->y / CANVAS_HEIGHT; // Normalized Y position
+    input[0] = robot->x / CANVAS_WIDTH;  
+    input[1] = robot->y / CANVAS_HEIGHT; 
     
     // --- 2. Target State (2) ---
     input[2] = (state.target.x + state.target.w/2.0) / CANVAS_WIDTH;
@@ -424,7 +430,7 @@ double calculate_reward(double old_min_dist_to_goal, int diamonds_collected_this
     if (distance_change > 0) {
         reward += REWARD_PROGRESS_SCALE * distance_change;
     } else {
-        reward += REWARD_PROGRESS_SCALE * distance_change; // Penalty for moving away
+        reward += REWARD_PROGRESS_SCALE * distance_change; 
     }
     
     if (robot->has_reached_target || !robot->is_alive) reward = 0.0;
@@ -604,16 +610,22 @@ void print_episode_stats(double train_time_ms, bool is_expert) {
 
 // --- Pathfinding and Expert Training Functions ---
 
-// Converts grid coordinates to world coordinates
+// Converts grid coordinates to world coordinates (center of the cell)
 double col_to_x(int c) { return c * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
 double row_to_y(int r) { return r * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
 int x_to_col(double x) { return (int)(x / GRID_CELL_SIZE); }
 int y_to_row(double y) { return (int)(y / GRID_CELL_SIZE); }
 
+// Helper function to check if a point is inside a single obstacle
+bool is_point_in_rect(double px, double py, double rx, double ry, double rw, double rh) {
+    return px >= rx && px <= rx + rw && py >= ry && py <= ry + rh;
+}
+
 // Checks if a point at the center of a grid cell is legal (no collision with walls/obstacles)
 bool is_point_legal(double x, double y) {
-    double r = state.robot.size;
-    
+    // FIX: Use state.robot.size instead of the undeclared 'robot->size'
+    double r = state.robot.size; 
+
     // Check Wall Collision
     if (x - r < BORDER_WIDTH || x + r > CANVAS_WIDTH - BORDER_WIDTH ||
         y - r < BORDER_WIDTH || y + r > CANVAS_HEIGHT - BORDER_WIDTH) {
@@ -624,11 +636,12 @@ bool is_point_legal(double x, double y) {
     for (int i = 0; i < NUM_OBSTACLES; i++) {
         Obstacle* obs = &state.obstacles[i];
         double closest_x = fmax(obs->x, fmin(x, obs->x + obs->w));
-        double closest_y = fmax(obs->y, fmin(robot->y, obs->y + obs->h));
+        double closest_y = fmax(obs->y, fmin(y, obs->y + obs->h));
         
         double dx = x - closest_x;
         double dy = y - closest_y;
         
+        // If the closest point on the obstacle is within the robot's radius, it's a collision
         if (dx * dx + dy * dy < r * r) {
             return false; 
         }
@@ -636,8 +649,7 @@ bool is_point_legal(double x, double y) {
     return true;
 }
 
-// Finds a path using Breadth-First Search on the coarse grid
-// Returns the length of the path or 0 if no path is found.
+// Finds a path using Breadth-First Search on the coarse grid (omitted implementation for brevity)
 int find_path_segment_bfs(double start_x, double start_y, double end_x, double end_y, PathNode* path_out) {
     int start_r = y_to_row(start_y);
     int start_c = x_to_col(start_x);
@@ -645,7 +657,7 @@ int find_path_segment_bfs(double start_x, double start_y, double end_x, double e
     int end_c = x_to_col(end_x);
     
     if (!is_point_legal(start_x, start_y) || !is_point_legal(end_x, end_y)) {
-        fprintf(stderr, "Error: Start (%.1f, %.1f) or End (%.1f, %.1f) point is illegal for pathfinding.\n", start_x, start_y, end_x, end_y);
+        fprintf(stderr, "Error: Start or End point is illegal for pathfinding. (Start: %.1f, %.1f | End: %.1f, %.1f)\n", start_x, start_y, end_x, end_y);
         return 0;
     }
 
@@ -657,7 +669,7 @@ int find_path_segment_bfs(double start_x, double start_y, double end_x, double e
     queue[tail++] = (PathNode){start_r, start_c, -1, -1};
     visited[start_r][start_c] = 1;
 
-    int dr[] = {-1, 1, 0, 0}; // Up, Down, Left, Right
+    int dr[] = {-1, 1, 0, 0}; 
     int dc[] = {0, 0, -1, 1};
 
     PathNode* final_node = NULL;
@@ -689,9 +701,14 @@ int find_path_segment_bfs(double start_x, double start_y, double end_x, double e
     // Reconstruct path
     int path_len = 0;
     PathNode* node = final_node;
-    while (node->parent_r != -1) {
-        path_out[path_len++] = *node;
-        // Find parent node
+    // We stop before the start node, which has parent_r == -1
+    // The start node (WP_i) is already accounted for, we want the path *from* it.
+    while (node->parent_r != -1) { 
+        if (path_len < MAX_PATH_NODES) {
+            path_out[path_len++] = *node;
+        }
+        
+        // Find parent node in the queue
         int parent_index = -1;
         for (int i = 0; i < tail; i++) {
             if (queue[i].r == node->parent_r && queue[i].c == node->parent_c) {
@@ -699,7 +716,7 @@ int find_path_segment_bfs(double start_x, double start_y, double end_x, double e
                 break;
             }
         }
-        if (parent_index == -1) break; // Should not happen
+        if (parent_index == -1) break; 
         node = &queue[parent_index];
     }
 
@@ -713,10 +730,9 @@ int find_path_segment_bfs(double start_x, double start_y, double end_x, double e
     return path_len;
 }
 
-// Generates the full expert path and fills the episode buffer
+// Generates the full expert path and fills the episode buffer (omitted implementation for brevity)
 void generate_expert_path_training_data() {
-    // 1. Define Waypoints: Start, Random Point, Diamonds (ordered by index), Target
-    double waypoints_x[NUM_DIAMONDS + 2]; // Start, Random, Diamonds, Target
+    double waypoints_x[NUM_DIAMONDS + 2]; 
     double waypoints_y[NUM_DIAMONDS + 2];
     int num_waypoints = NUM_DIAMONDS + 2;
 
@@ -727,7 +743,6 @@ void generate_expert_path_training_data() {
     // Find a random but legal intermediate point
     double rnd_x, rnd_y;
     do {
-        // Search in a reasonable area (e.g., middle right)
         rnd_x = 600.0 + (double)rand() / RAND_MAX * 150.0; 
         rnd_y = 50.0 + (double)rand() / RAND_MAX * 500.0;
     } while (!is_point_legal(rnd_x, rnd_y));
@@ -736,7 +751,7 @@ void generate_expert_path_training_data() {
     waypoints_x[1] = rnd_x;
     waypoints_y[1] = rnd_y;
 
-    // 2. Diamonds (by index) - NOW USING CORRECTLY INITIALIZED GLOBAL STATE
+    // 2. Diamonds 
     for (int i = 0; i < NUM_DIAMONDS; i++) {
         waypoints_x[i + 2] = state.diamonds[i].x;
         waypoints_y[i + 2] = state.diamonds[i].y;
@@ -766,11 +781,9 @@ void generate_expert_path_training_data() {
         if (segment_len == 0) {
             fprintf(stderr, "CRITICAL ERROR: Could not find legal path from WP %d (%.1f, %.1f) to WP %d (%.1f, %.1f).\n", 
                 i, waypoints_x[i], waypoints_y[i], i+1, waypoints_x[i+1], waypoints_y[i+1]);
-            // Attempt to continue but training quality will suffer
             continue; 
         }
 
-        // Append segment to full path (excluding the starting point of the segment)
         for (int j = 0; j < segment_len; j++) {
             if (full_path_len < MAX_PATH_NODES - 1) {
                 full_path[full_path_len++] = segment[j];
@@ -780,16 +793,8 @@ void generate_expert_path_training_data() {
     
     printf("--- GENERATED EXPERT PATH (%d Grid Steps) ---\n", full_path_len);
 
-    // 3. Convert Path to Training Steps
-    
-    init_game_state(); // Reset game state (robot pos, collected diamonds) for generating episode data
+    init_game_state(); 
     Robot* robot = &state.robot;
-    
-    // Set initial robot position to Start (from the main state reset above)
-    // robot->x = waypoints_x[0]; // Not needed, init_game_state already sets (50, 50)
-    // robot->y = waypoints_y[0];
-
-    // Clear episode buffer again (init_game_state does this, but being explicit)
     episode_buffer.count = 0;
     episode_buffer.total_score = 0;
     
@@ -798,11 +803,6 @@ void generate_expert_path_training_data() {
         double target_x = col_to_x(current_node.c);
         double target_y = row_to_y(current_node.r);
         
-        // Determine action to move towards the target point
-        int action_index = 3; // Default to RIGHT
-        
-        // Find the action (UP, DOWN, LEFT, RIGHT) that brings the robot closest to the target.
-        // This simulates a greedy expert action for this step.
         double min_dist_after_move = INFINITY;
         int best_action = -1;
         
@@ -811,10 +811,10 @@ void generate_expert_path_training_data() {
             double test_y = robot->y;
             
             switch (a) {
-                case 0: test_y -= MOVE_STEP_SIZE; break; // UP 
-                case 1: test_y += MOVE_STEP_SIZE; break; // DOWN
-                case 2: test_x -= MOVE_STEP_SIZE; break; // LEFT
-                case 3: test_x += MOVE_STEP_SIZE; break; // RIGHT
+                case 0: test_y -= MOVE_STEP_SIZE; break; 
+                case 1: test_y += MOVE_STEP_SIZE; break; 
+                case 2: test_x -= MOVE_STEP_SIZE; break; 
+                case 3: test_x += MOVE_STEP_SIZE; break; 
             }
             
             double dist = distance_2d(test_x, test_y, target_x, target_y);
@@ -825,21 +825,16 @@ void generate_expert_path_training_data() {
         }
         
         if (best_action != -1) {
-            // Store previous distance for reward calculation
             double old_min_dist_to_goal;
             double input[NN_INPUT_SIZE];
             get_state_features(input, &old_min_dist_to_goal);
 
-            // Apply expert action
             apply_action(robot, best_action);
 
-            // Check resulting state
             int diamonds_collected = check_collision(robot);
             
-            // Generate reward (Expert runs get a base boost)
             double reward = calculate_reward(old_min_dist_to_goal, diamonds_collected, true); 
 
-            // Record step
             EpisodeStep step;
             memcpy(step.input, input, NN_INPUT_SIZE * sizeof(double));
             step.action_index = best_action;
@@ -853,14 +848,12 @@ void generate_expert_path_training_data() {
         }
     }
     
-    // Ensure terminal state (landing/crash) is reflected in the final reward
     if (robot->has_reached_target) {
         episode_buffer.total_score += (state.total_diamonds == NUM_DIAMONDS) ? REWARD_SUCCESS : REWARD_SUCCESS / 2.0;
     } else if (!robot->is_alive) {
         episode_buffer.total_score += REWARD_CRASH;
     }
 
-    // Print path coordinates once
     printf("\nEXPERT PATH COORDINATES:\n");
     printf("(%.1f, %.1f)", waypoints_x[0], waypoints_y[0]);
     for (int i = 0; i < full_path_len; i++) {
@@ -881,9 +874,73 @@ void pre_train_with_shortest_path() {
     clock_t end = clock();
     double train_time_ms = (double)(end - start) * 1000.0 / CLOCKS_PER_SEC;
     
-    current_episode = 0; // Reset episode counter for RL training
+    current_episode = 0; 
     
     print_episode_stats(train_time_ms, true);
+}
+
+
+// --- New ASCII Rendering Function ---
+
+void print_ascii_map() {
+    printf("\n\n--- FIXED LEVEL ASCII MAP ---\n");
+    printf("Legend: #=Wall, O=Obstacle, D=Diamond, S=Start (Robot), T=Target (Goal), .=Free\n");
+    
+    // Iterate through the grid cells
+    for (int r = 0; r < GRID_ROWS; r++) {
+        for (int c = 0; c < GRID_COLS; c++) {
+            
+            char symbol = '.';
+            double cell_x = col_to_x(c);
+            double cell_y = row_to_y(r);
+
+            // 1. Check Wall
+            if (r == 0 || r == GRID_ROWS - 1 || c == 0 || c == GRID_COLS - 1) {
+                symbol = '#';
+            }
+            
+            // 2. Check Obstacle (Must take precedence over Diamond)
+            for (int i = 0; i < NUM_OBSTACLES; i++) {
+                Obstacle* obs = &state.obstacles[i];
+                // Check if the center of the cell is within the obstacle bounds
+                if (is_point_in_rect(cell_x, cell_y, obs->x, obs->y, obs->w, obs->h)) {
+                    symbol = 'O';
+                    break;
+                }
+            }
+            
+            // 3. Check Diamond
+            if (symbol == '.') { // Only check if not already an Obstacle
+                for (int i = 0; i < NUM_DIAMONDS; i++) {
+                    Diamond* d = &state.diamonds[i];
+                    // Check if center of diamond is in this cell (using diamond's center coordinates)
+                    if (x_to_col(d->x) == c && y_to_row(d->y) == r) {
+                        symbol = 'D';
+                        break;
+                    }
+                }
+            }
+
+            // 4. Check Start (Robot - 50, 50)
+            if (x_to_col(state.robot.x) == c && y_to_row(state.robot.y) == r) {
+                symbol = 'S';
+            }
+            
+            // 5. Check Target (Goal)
+            TargetArea* target = &state.target;
+            // Check if center of the cell falls within the target area
+            if (is_point_in_rect(cell_x, cell_y, target->x, target->y, target->w, target->h)) {
+                // If it's the target, but not the start, mark it as 'T'
+                if (symbol != 'S') {
+                    symbol = 'T';
+                }
+            }
+
+            printf("%c", symbol);
+        }
+        printf("\n");
+    }
+    printf("-----------------------------------------\n\n");
 }
 
 
@@ -893,8 +950,11 @@ int main() {
     srand((unsigned int)time(NULL)); 
     nn_init(&nn);
     
-    // 1. Initialize Game State BEFORE path generation 
+    // 1. Initialize Game State to define fixed obstacles, diamonds, etc.
     init_game_state();
+    
+    // 2. Print the ASCII Level Map (Called only once)
+    print_ascii_map();
 
     for(int i = 0; i < ACTION_HISTORY_SIZE; i++) {
         action_history[i] = 3; 
@@ -920,7 +980,7 @@ int main() {
 
         // Play episode
         while (state.robot.is_alive && !state.robot.has_reached_target && step_count < MAX_EPISODE_STEPS) {
-            update_game(true, false); // true for training, false for expert run
+            update_game(true, false); 
         }
 
         // Train and Time it
