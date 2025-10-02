@@ -493,34 +493,55 @@ void get_state_features(double* input, double* min_dist_to_goal_ptr) {
     
     *min_dist_to_goal_ptr = distance_2d(robot->x, robot->y, goal_x, goal_y);
 
-    // --- 4. Nearest Obstacle Distance (2) ---
-    Obstacle* nearest_obs = NULL;
-    double min_obs_dist = INFINITY;
+    // --- 4. Nearest DANGER Distance (Walls and Obstacles) (2) ---
+    // FIX: Agent lacked wall proximity feature. Now includes both walls and obstacles.
+    
+    // Calculate distance from robot edge to the four walls (closest safe distance)
+    double dist_left_wall = robot->x - BORDER_WIDTH - robot->size;
+    double dist_right_wall = CANVAS_WIDTH - BORDER_WIDTH - robot->x - robot->size;
+    double dist_top_wall = robot->y - BORDER_WIDTH - robot->size;
+    double dist_bottom_wall = CANVAS_HEIGHT - BORDER_WIDTH - robot->y - robot->size;
+
+    // Initialize with the nearest wall distance
+    double min_danger_dist_x = fmin(dist_left_wall, dist_right_wall);
+    double min_danger_dist_y = fmin(dist_top_wall, dist_bottom_wall);
+    
+    // Now incorporate all obstacles
     for (int i = 0; i < NUM_OBSTACLES; i++) {
         Obstacle* obs = &state.obstacles[i];
         // Skip zero-width obstacles (used in minimal test)
         if (obs->w <= 0.0) continue; 
         
-        double obs_center_x = obs->x + obs->w / 2.0;
-        double obs_center_y = obs->y + obs->h / 2.0;
+        // Find the closest point on the rectangle (obs) to the robot center (x, y)
+        double closest_x = fmax(obs->x, fmin(robot->x, obs->x + obs->w));
+        double closest_y = fmax(obs->y, fmin(robot->y, obs->y + obs->h));
         
-        double dist = distance_2d(robot->x, robot->y, obs_center_x, obs_center_y);
-        if (dist < min_obs_dist) { min_obs_dist = dist; nearest_obs = obs; }
+        // Calculate the closest distance from robot edge to obstacle edge in X and Y components
+        double obs_dist_x = fabs(robot->x - closest_x) - robot->size;
+        double obs_dist_y = fabs(robot->y - closest_y) - robot->size;
+
+        // Ensure non-negative proximity distance (if robot is already "in" the obstacle, distance is 0)
+        if (obs_dist_x < 0) obs_dist_x = 0;
+        if (obs_dist_y < 0) obs_dist_y = 0;
+        
+        // Update the minimum danger distance (the distance to the nearest hazard in X and Y)
+        min_danger_dist_x = fmin(min_danger_dist_x, obs_dist_x);
+        min_danger_dist_y = fmin(min_danger_dist_y, obs_dist_y);
     }
     
-    double obs_dx = nearest_obs ? (nearest_obs->x + nearest_obs->w / 2.0) - robot->x : 0.0;
-    double obs_dy = nearest_obs ? (nearest_obs->y + nearest_obs->h / 2.0) - robot->y : 0.0;
-    
-    // Normalise based on min_obs_dist instead of CANVAS dimensions for more responsive feature
-    input[6] = check_double(obs_dx / (min_obs_dist > 1.0 ? min_obs_dist : CANVAS_WIDTH), "norm_obs_dx", "get_state_features");
-    input[7] = check_double(obs_dy / (min_obs_dist > 1.0 ? min_obs_dist : CANVAS_HEIGHT), "norm_obs_dy", "get_state_features"); 
+    // Normalize and ensure features are not negative (shouldn't happen with the fmin logic above)
+    // We normalize by the full width/height to keep the features bounded [0, 1]
+    input[6] = check_double(fmax(0.0, min_danger_dist_x) / CANVAS_WIDTH, "norm_danger_dist_x", "get_state_features");
+    input[7] = check_double(fmax(0.0, min_danger_dist_y) / CANVAS_HEIGHT, "norm_danger_dist_y", "get_state_features"); 
+
 
     // --- 5. Collected Ratio (1) ---
     input[8] = (double)state.total_diamonds / (NUM_DIAMONDS > 0 ? NUM_DIAMONDS : 1.0);
 
     for (int i = 0; i < NN_INPUT_SIZE; i++) {
-        if (input[i] > 1.0) input[i] = 1.0;
-        if (input[i] < -1.0) input[i] = -1.0;
+        // We allow goal features (4 and 5) to be outside [-1, 1] if distance is very high, but normalize them
+        // Danger features (6 and 7) are forced to be [0, 1] since they are distances
+        // Rest are already normalized positions [0, 1] or ratios [0, 1]
         check_nan_and_stop(input[i], "input_feature", "get_state_features");
     }
 }
@@ -710,8 +731,6 @@ double row_to_y(int r) { return r * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
 int x_to_col(double x) { return (int)(x / GRID_CELL_SIZE); }
 int y_to_row(double y) { return (int)(y / GRID_CELL_SIZE); }
 
-// *** IMPLEMENTERING AF FORKLARATIONER ***
-// Flyttet fra bunden til efter forward declarations
 bool is_point_in_rect(double px, double py, double rx, double ry, double rw, double rh) { 
     return px >= rx && px <= rx + rw && py >= ry && py <= ry + rh; 
 }
@@ -738,7 +757,6 @@ bool is_point_legal(double x, double y) {
     }
     return true;
 }
-// *** SLUT IMPLEMENTERING AF FORKLARATIONER ***
 
 
 int find_path_segment_bfs(double start_x, double start_y, double end_x, double end_y, PathNode* path_out) {
