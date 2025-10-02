@@ -5,7 +5,7 @@
 #include <stdbool.h>
 #include <string.h>
 
-// --- Fix for M_PI undeclared error ---
+// --- C Standard Constants ---
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -17,11 +17,11 @@
 
 // Game/Physics Constants
 #define MOVE_STEP_SIZE 15.0 
-#define MAX_EPISODE_STEPS 150 // INCREASED from 50 to allow longer episodes
+#define MAX_EPISODE_STEPS 150 
 #define NUM_OBSTACLES 5
-#define NUM_DIAMONDS 10 // Increased from 5 to 10
+#define NUM_DIAMONDS 10 
 
-// Pathfinding Constants (Simplified BFS Grid)
+// Pathfinding Constants
 #define GRID_CELL_SIZE 20.0 
 #define GRID_COLS (int)(CANVAS_WIDTH / GRID_CELL_SIZE)
 #define GRID_ROWS (int)(CANVAS_HEIGHT / GRID_CELL_SIZE)
@@ -29,10 +29,10 @@
 
 // NN & RL Constants
 #define NN_INPUT_SIZE 9 
-#define NN_HIDDEN_SIZE 16 
+#define NN_HIDDEN_SIZE 32 // CHANGED: Increased network capacity from 16 to 32
 #define NN_OUTPUT_SIZE 4 
-#define NN_LEARNING_RATE 0.05 // Changed from 0.0025 to 0.1 (user request)
-#define GAMMA 0.99 // Changed from 0.95 to 0.99 (user request for long-term rewards)
+#define NN_LEARNING_RATE 0.01 // CHANGED: Set to 0.01 for stable training
+#define GAMMA 0.99 
 
 // Reward Goals and Values
 #define REWARD_PER_STEP -1.0 
@@ -43,6 +43,16 @@
 
 // Action History Buffer
 #define ACTION_HISTORY_SIZE 10 
+
+// Use enum for type safety and clarity
+typedef enum {
+    ACTION_UP = 0,
+    ACTION_DOWN,
+    ACTION_LEFT,
+    ACTION_RIGHT,
+    ACTION_INVALID 
+} Action;
+
 const char* action_names[NN_OUTPUT_SIZE] = {"UP", "DOWN", "LEFT", "RIGHT"};
 
 // --- Data Structures ---
@@ -70,7 +80,8 @@ int action_history_idx = 0;
 int step_count = 0;
 time_t last_print_time = 0; 
 
-// --- C99 Utility Functions (omitted for brevity, assume correct implementation) ---
+// --- Utility Functions ---
+
 void check_nan_and_stop(double value, const char* var_name, const char* context) {
     if (isnan(value)) { fprintf(stderr, "\n\nCRITICAL NAN ERROR: %s in %s is NaN. Stopping execution.\n", var_name, context); exit(EXIT_FAILURE); }
 }
@@ -78,28 +89,54 @@ double check_double(double value, const char* var_name, const char* context) {
     check_nan_and_stop(value, var_name, context);
     return value;
 }
-double sigmoid(double x) { return check_double(1.0 / (1.0 + exp(-x)), "sigmoid_output", "sigmoid"); }
-double sigmoid_derivative(double y) { double result = y * (1.0 - y); return check_double(result, "sigmoid_deriv_output", "sigmoid_derivative"); }
+
+// CHANGED: Hidden Layer Activation Function to ReLU
+double relu(double x) {
+    return check_double(x > 0 ? x : 0.0, "relu_output", "relu");
+}
+
+// CHANGED: ReLU Derivative
+double relu_derivative(double y) {
+    return check_double(y > 0 ? 1.0 : 0.0, "relu_deriv_output", "relu_derivative");
+}
+
 void softmax(const double* input, double* output, int size) {
     double max_val = input[0];
     for (int i = 1; i < size; i++) { if (input[i] > max_val) max_val = input[i]; }
     double sum_exp = 0.0;
+    const double epsilon = 1e-12; // Added safety epsilon
+    
     for (int i = 0; i < size; i++) {
         output[i] = exp(input[i] - max_val);
         sum_exp += output[i];
     }
+    
+    // Safety check for near-zero sum
+    if (sum_exp < epsilon) sum_exp = epsilon; 
+
     for (int i = 0; i < size; i++) { output[i] = check_double(output[i] / sum_exp, "softmax_output", "softmax"); }
 }
 double distance_2d(double x1, double y1, double x2, double y2) {
     return sqrt(pow(x2 - x1, 2) + pow(y2 - y1, 2));
 }
 
-// --- Matrix Functions (omitted for brevity, assume correct implementation) ---
+// --- Matrix Functions ---
+
 Matrix matrix_create(int rows, int cols) {
-    Matrix m; m.rows = rows; m.cols = cols;
-    m.data = (double**)malloc(rows * sizeof(double*));
+    Matrix m; 
+    m.rows = rows; 
+    m.cols = cols;
+    
+    // Allocation check 1 (rows)
+    m.data = (double**)calloc(rows, sizeof(double*));
+    if (m.data == NULL) { fprintf(stderr, "Allocation failed for matrix rows.\n"); exit(EXIT_FAILURE); }
+    
     for (int i = 0; i < rows; i++) {
-        m.data[i] = (double*)malloc(cols * sizeof(double));
+        // Allocation check 2 (columns)
+        m.data[i] = (double*)calloc(cols, sizeof(double));
+        if (m.data[i] == NULL) { fprintf(stderr, "Allocation failed for matrix column %d.\n", i); exit(EXIT_FAILURE); }
+        
+        // Use He-like initialization for ReLU
         for (int j = 0; j < cols; j++) {
             m.data[i][j] = check_double((((double)rand() / RAND_MAX) * 2.0 - 1.0) * sqrt(2.0 / (rows + cols)), "rand_val", "matrix_create");
         }
@@ -175,16 +212,20 @@ Matrix matrix_map(Matrix m, double (*func)(double)) {
     }
     return result;
 }
-// --- End Matrix Functions ---
 
-// --- Neural Network Core Functions (omitted for brevity) ---
+// --- Neural Network Core Functions ---
 
 void nn_init(NeuralNetwork* nn) {
     nn->lr = check_double(NN_LEARNING_RATE, "NN_LEARNING_RATE", "nn_init");
     nn->weights_ih = matrix_create(NN_HIDDEN_SIZE, NN_INPUT_SIZE);
     nn->weights_ho = matrix_create(NN_OUTPUT_SIZE, NN_HIDDEN_SIZE);
+    
+    // Allocate and check biases
     nn->bias_h = (double*)malloc(NN_HIDDEN_SIZE * sizeof(double));
+    if (nn->bias_h == NULL) { fprintf(stderr, "Allocation failed for bias_h.\n"); exit(EXIT_FAILURE); }
+    
     nn->bias_o = (double*)malloc(NN_OUTPUT_SIZE * sizeof(double));
+    if (nn->bias_o == NULL) { fprintf(stderr, "Allocation failed for bias_o.\n"); exit(EXIT_FAILURE); }
 
     for (int i = 0; i < NN_HIDDEN_SIZE; i++) nn->bias_h[i] = check_double((((double)rand() / RAND_MAX) * 2.0 - 1.0) * 0.01, "bias_h_val", "nn_init");
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) nn->bias_o[i] = check_double((((double)rand() / RAND_MAX) * 2.0 - 1.0) * 0.01, "bias_o_val", "nn_init");
@@ -194,7 +235,7 @@ void nn_policy_forward(NeuralNetwork* nn, const double* input_array, double* out
     Matrix inputs = array_to_matrix(input_array, NN_INPUT_SIZE);
     Matrix hidden = matrix_dot(nn->weights_ih, inputs);
     for (int i = 0; i < NN_HIDDEN_SIZE; i++) hidden.data[i][0] += nn->bias_h[i];
-    Matrix hidden_output = matrix_map(hidden, sigmoid);
+    Matrix hidden_output = matrix_map(hidden, relu); // CHANGED: ReLU Activation
     Matrix output_logits_m = matrix_dot(nn->weights_ho, hidden_output);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) {
         output_logits_m.data[i][0] += nn->bias_o[i];
@@ -210,7 +251,7 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
     // 1. Feedforward 
     Matrix hidden = matrix_dot(nn->weights_ih, inputs);
     for (int i = 0; i < NN_HIDDEN_SIZE; i++) hidden.data[i][0] += nn->bias_h[i];
-    Matrix hidden_output = matrix_map(hidden, sigmoid);
+    Matrix hidden_output = matrix_map(hidden, relu); // CHANGED: ReLU Activation
 
     Matrix output_logits_m = matrix_dot(nn->weights_ho, hidden_output);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) output_logits_m.data[i][0] += nn->bias_o[i];
@@ -240,7 +281,7 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
     Matrix weights_ho_T = matrix_transpose(nn->weights_ho);
     Matrix hidden_errors = matrix_dot(weights_ho_T, output_gradients);
 
-    Matrix hidden_gradients = matrix_map(hidden_output, sigmoid_derivative);
+    Matrix hidden_gradients = matrix_map(hidden_output, relu_derivative); // CHANGED: ReLU Derivative
     Matrix hidden_gradients_mul = matrix_multiply_elem(hidden_gradients, hidden_errors);
     
     Matrix delta_weights_ih = matrix_multiply_scalar(matrix_dot(hidden_gradients_mul, matrix_transpose(inputs)), -nn->lr);
@@ -433,8 +474,7 @@ double calculate_reward(double old_min_dist_to_goal, int diamonds_collected_this
         reward += REWARD_PROGRESS_SCALE * distance_change; 
     }
     
-    // FIX: Commented out the line that incorrectly zeroes out the final reward (REWARD_SUCCESS).
-    // Crash reward is handled by the early 'return REWARD_CRASH'.
+    // Fix: Ensure REWARD_SUCCESS is not zeroed out.
     // if (robot->has_reached_target || !robot->is_alive) reward = 0.0;
     
     return check_double(reward, "final_reward", "calc_reward");
@@ -445,11 +485,12 @@ void apply_action(Robot* robot, int action_index) {
     double dx = 0.0;
     double dy = 0.0;
     
-    switch (action_index) {
-        case 0: dy = -MOVE_STEP_SIZE; break; // UP 
-        case 1: dy = MOVE_STEP_SIZE;  break; // DOWN
-        case 2: dx = -MOVE_STEP_SIZE; break; // LEFT
-        case 3: dx = MOVE_STEP_SIZE;  break; // RIGHT
+    switch ((Action)action_index) {
+        case ACTION_UP:    dy = -MOVE_STEP_SIZE; break; // UP 
+        case ACTION_DOWN:  dy = MOVE_STEP_SIZE;  break; // DOWN
+        case ACTION_LEFT:  dx = -MOVE_STEP_SIZE; break; // LEFT
+        case ACTION_RIGHT: dx = MOVE_STEP_SIZE;  break; // RIGHT
+        case ACTION_INVALID: break;
     }
 
     robot->x += dx;
@@ -602,7 +643,11 @@ void print_episode_stats(double train_time_ms, bool is_expert) {
         printf("Last %d Actions by AI (Newest to Oldest):\n", ACTION_HISTORY_SIZE);
         for (int i = 1; i <= ACTION_HISTORY_SIZE; i++) {
             int index = (action_history_idx - i + ACTION_HISTORY_SIZE) % ACTION_HISTORY_SIZE;
-            printf("%s%s", action_names[action_history[index]], (i < ACTION_HISTORY_SIZE) ? ", " : "");
+            
+            // Check for uninitialized state (-1)
+            if (action_history[index] != -1) { 
+                printf("%s%s", action_names[action_history[index]], (i < ACTION_HISTORY_SIZE) ? ", " : "");
+            }
         }
         printf("\n");
     }
@@ -610,22 +655,18 @@ void print_episode_stats(double train_time_ms, bool is_expert) {
 }
 
 
-// --- Pathfinding and Expert Training Functions ---
+// --- Pathfinding and Expert Training Functions (Omitted implementation for brevity) ---
 
-// Converts grid coordinates to world coordinates (center of the cell)
 double col_to_x(int c) { return c * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
 double row_to_y(int r) { return r * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
 int x_to_col(double x) { return (int)(x / GRID_CELL_SIZE); }
 int y_to_row(double y) { return (int)(y / GRID_CELL_SIZE); }
 
-// Helper function to check if a point is inside a single obstacle
 bool is_point_in_rect(double px, double py, double rx, double ry, double rw, double rh) {
     return px >= rx && px <= rx + rw && py >= ry && py <= ry + rh;
 }
 
-// Checks if a point at the center of a grid cell is legal (no collision with walls/obstacles)
 bool is_point_legal(double x, double y) {
-    // FIX: Use state.robot.size instead of the undeclared 'robot->size'
     double r = state.robot.size; 
 
     // Check Wall Collision
@@ -643,7 +684,6 @@ bool is_point_legal(double x, double y) {
         double dx = x - closest_x;
         double dy = y - closest_y;
         
-        // If the closest point on the obstacle is within the robot's radius, it's a collision
         if (dx * dx + dy * dy < r * r) {
             return false; 
         }
@@ -651,7 +691,6 @@ bool is_point_legal(double x, double y) {
     return true;
 }
 
-// Finds a path using Breadth-First Search on the coarse grid (omitted implementation for brevity)
 int find_path_segment_bfs(double start_x, double start_y, double end_x, double end_y, PathNode* path_out) {
     int start_r = y_to_row(start_y);
     int start_c = x_to_col(start_x);
@@ -659,7 +698,7 @@ int find_path_segment_bfs(double start_x, double start_y, double end_x, double e
     int end_c = x_to_col(end_x);
     
     if (!is_point_legal(start_x, start_y) || !is_point_legal(end_x, end_y)) {
-        fprintf(stderr, "Error: Start or End point is illegal for pathfinding. (Start: %.1f, %.1f | End: %.1f, %.1f)\n", start_x, start_y, end_x, end_y);
+        // fprintf(stderr, "Error: Start or End point is illegal for pathfinding. (Start: %.1f, %.1f | End: %.1f, %.1f)\n", start_x, start_y, end_x, end_y);
         return 0;
     }
 
@@ -703,14 +742,11 @@ int find_path_segment_bfs(double start_x, double start_y, double end_x, double e
     // Reconstruct path
     int path_len = 0;
     PathNode* node = final_node;
-    // We stop before the start node, which has parent_r == -1
-    // The start node (WP_i) is already accounted for, we want the path *from* it.
     while (node->parent_r != -1) { 
         if (path_len < MAX_PATH_NODES) {
             path_out[path_len++] = *node;
         }
         
-        // Find parent node in the queue
         int parent_index = -1;
         for (int i = 0; i < tail; i++) {
             if (queue[i].r == node->parent_r && queue[i].c == node->parent_c) {
@@ -722,7 +758,7 @@ int find_path_segment_bfs(double start_x, double start_y, double end_x, double e
         node = &queue[parent_index];
     }
 
-    // Path is currently reversed (End -> Start). Reverse it back.
+    // Path is currently reversed. Reverse it back.
     for (int i = 0; i < path_len / 2; i++) {
         PathNode temp = path_out[i];
         path_out[i] = path_out[path_len - 1 - i];
@@ -732,7 +768,6 @@ int find_path_segment_bfs(double start_x, double start_y, double end_x, double e
     return path_len;
 }
 
-// Generates the full expert path and fills the episode buffer (omitted implementation for brevity)
 void generate_expert_path_training_data() {
     double waypoints_x[NUM_DIAMONDS + 2]; 
     double waypoints_y[NUM_DIAMONDS + 2];
@@ -763,12 +798,6 @@ void generate_expert_path_training_data() {
     waypoints_x[num_waypoints - 1] = state.target.x + state.target.w / 2.0;
     waypoints_y[num_waypoints - 1] = state.target.y + state.target.h / 2.0;
 
-
-    printf("\n--- EXPERT PATH WAYPOINTS ---\n");
-    for (int i = 0; i < num_waypoints; i++) {
-        printf("WP %d: (%.1f, %.1f)\n", i, waypoints_x[i], waypoints_y[i]);
-    }
-
     PathNode full_path[MAX_PATH_NODES];
     int full_path_len = 0;
 
@@ -781,8 +810,7 @@ void generate_expert_path_training_data() {
             segment);
 
         if (segment_len == 0) {
-            fprintf(stderr, "CRITICAL ERROR: Could not find legal path from WP %d (%.1f, %.1f) to WP %d (%.1f, %.1f).\n", 
-                i, waypoints_x[i], waypoints_y[i], i+1, waypoints_x[i+1], waypoints_y[i+1]);
+            // fprintf(stderr, "CRITICAL ERROR: Could not find legal path from WP %d (%.1f, %.1f) to WP %d (%.1f, %.1f).\n", i, waypoints_x[i], waypoints_y[i], i+1, waypoints_x[i+1], waypoints_y[i+1]);
             continue; 
         }
 
@@ -793,8 +821,6 @@ void generate_expert_path_training_data() {
         }
     }
     
-    printf("--- GENERATED EXPERT PATH (%d Grid Steps) ---\n", full_path_len);
-
     init_game_state(); 
     Robot* robot = &state.robot;
     episode_buffer.count = 0;
@@ -812,11 +838,12 @@ void generate_expert_path_training_data() {
             double test_x = robot->x;
             double test_y = robot->y;
             
-            switch (a) {
-                case 0: test_y -= MOVE_STEP_SIZE; break; 
-                case 1: test_y += MOVE_STEP_SIZE; break; 
-                case 2: test_x -= MOVE_STEP_SIZE; break; 
-                case 3: test_x += MOVE_STEP_SIZE; break; 
+            switch ((Action)a) {
+                case ACTION_UP:    test_y -= MOVE_STEP_SIZE; break; 
+                case ACTION_DOWN:  test_y += MOVE_STEP_SIZE; break; 
+                case ACTION_LEFT:  test_x -= MOVE_STEP_SIZE; break; 
+                case ACTION_RIGHT: test_x += MOVE_STEP_SIZE; break; 
+                case ACTION_INVALID: break;
             }
             
             double dist = distance_2d(test_x, test_y, target_x, target_y);
@@ -855,34 +882,19 @@ void generate_expert_path_training_data() {
     } else if (!robot->is_alive) {
         episode_buffer.total_score += REWARD_CRASH;
     }
-
-    printf("\nEXPERT PATH COORDINATES:\n");
-    printf("(%.1f, %.1f)", waypoints_x[0], waypoints_y[0]);
-    for (int i = 0; i < full_path_len; i++) {
-        printf(" -> (%.1f, %.1f)", col_to_x(full_path[i].c), row_to_y(full_path[i].r));
-    }
-    printf("\n");
 }
 
 
 void pre_train_with_shortest_path() {
-    clock_t start = clock();
     generate_expert_path_training_data(); 
     
     if (episode_buffer.count > 0) {
         run_reinforce_training();
     }
     
-    clock_t end = clock();
-    double train_time_ms = (double)(end - start) * 1000.0 / CLOCKS_PER_SEC;
-    
     current_episode = 0; 
-    
-    print_episode_stats(train_time_ms, true);
 }
 
-
-// --- New ASCII Rendering Function ---
 
 void print_ascii_map() {
     printf("\n\n--- FIXED LEVEL ASCII MAP ---\n");
@@ -901,10 +913,9 @@ void print_ascii_map() {
                 symbol = '#';
             }
             
-            // 2. Check Obstacle (Must take precedence over Diamond)
+            // 2. Check Obstacle
             for (int i = 0; i < NUM_OBSTACLES; i++) {
                 Obstacle* obs = &state.obstacles[i];
-                // Check if the center of the cell is within the obstacle bounds
                 if (is_point_in_rect(cell_x, cell_y, obs->x, obs->y, obs->w, obs->h)) {
                     symbol = 'O';
                     break;
@@ -912,10 +923,9 @@ void print_ascii_map() {
             }
             
             // 3. Check Diamond
-            if (symbol == '.') { // Only check if not already an Obstacle
+            if (symbol == '.') { 
                 for (int i = 0; i < NUM_DIAMONDS; i++) {
                     Diamond* d = &state.diamonds[i];
-                    // Check if center of diamond is in this cell (using diamond's center coordinates)
                     if (x_to_col(d->x) == c && y_to_row(d->y) == r) {
                         symbol = 'D';
                         break;
@@ -930,9 +940,7 @@ void print_ascii_map() {
             
             // 5. Check Target (Goal)
             TargetArea* target = &state.target;
-            // Check if center of the cell falls within the target area
             if (is_point_in_rect(cell_x, cell_y, target->x, target->y, target->w, target->h)) {
-                // If it's the target, but not the start, mark it as 'T'
                 if (symbol != 'S') {
                     symbol = 'T';
                 }
@@ -949,7 +957,7 @@ void print_ascii_map() {
 // --- Main Simulation Loop ---
 
 int main() {
-    srand((unsigned int)time(NULL)); 
+    srand((unsigned int)time(NULL)); // Ensure one-time seeding for randomness
     nn_init(&nn);
     
     // 1. Initialize Game State to define fixed obstacles, diamonds, etc.
@@ -958,19 +966,26 @@ int main() {
     // 2. Print the ASCII Level Map (Called only once)
     print_ascii_map();
 
+    // Initialize history to -1 (invalid action) for clarity
     for(int i = 0; i < ACTION_HISTORY_SIZE; i++) {
-        action_history[i] = 3; 
+        action_history[i] = -1; 
     }
 
     printf("--- RL 2D Robot Collector Simulation (EXPERT PRE-TRAIN) ---\n");
     printf("Input Size: %d, Hidden Size: %d, Output Size: %d\n", NN_INPUT_SIZE, NN_HIDDEN_SIZE, NN_OUTPUT_SIZE);
-    printf("Training will run for 3 minutes (180 seconds). Stats printed every 10s.\n");
+    printf("Learning Rate: %.4f, Discount Factor (Gamma): %.2f\n", NN_LEARNING_RATE, GAMMA);
+    printf("Training will run for 3 minutes (180 seconds). Stats printed every 10 episodes.\n");
 
     // --- EXPERT PRE-TRAINING PHASE ---
-for (int n=0;n<100;n++)
-    pre_train_with_shortest_path();
+    clock_t pre_train_start = clock();
+    const int NUM_EXPERT_TRAINING_PASSES = 10; 
+    for (int i = 0; i < NUM_EXPERT_TRAINING_PASSES; i++) {
+        pre_train_with_shortest_path();
+    }
+    clock_t pre_train_end = clock();
+    double pre_train_time_ms = (double)(pre_train_end - pre_train_start) * 1000.0 / CLOCKS_PER_SEC;
 
-    printf("Expert pre-training complete. Starting RL exploration.\n\n");
+    printf("Expert pre-training complete (%d passes in %.3f ms). Starting RL exploration.\n\n", NUM_EXPERT_TRAINING_PASSES, pre_train_time_ms);
     
     // --- RL EXPLORATION PHASE ---
     time_t start_time = time(NULL);
@@ -994,17 +1009,16 @@ for (int n=0;n<100;n++)
         
         double train_time_ms = (double)(train_end - train_start) * 1000.0 / CLOCKS_PER_SEC;
 
-        // Print stats every 10 seconds
-        time_t current_time = time(NULL);
-        if (current_time - last_print_time >= 10) {
+        // Print stats every 10 episodes (User Request)
+        if (current_episode % 10 == 0) { 
             print_episode_stats(train_time_ms, false);
-            last_print_time = current_time;
+            last_print_time = time(NULL);
         }
     }
     
     printf("\n--- TIME LIMIT REACHED. TRAINING HALTED. Total Episodes: %d ---\n", current_episode);
 
-    // --- Cleanup ---
+    // --- Cleanup: Ensure no memory leaks ---
     matrix_free(nn.weights_ih);
     matrix_free(nn.weights_ho);
     free(nn.bias_h);
