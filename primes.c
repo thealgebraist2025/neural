@@ -365,7 +365,7 @@ double train_sequential_batch(NeuralNetwork* nn, int batch_index, double* bp_tim
     }
     
     clock_t end_bp = clock();
-    *bp_time = ((double)(end - start_bp)) / CLOCKS_PER_SEC;
+    *bp_time = ((double)(end_bp - start_bp)) / CLOCKS_PER_SEC;
 
     return total_mse / (current_batch_size_half * 2);
 }
