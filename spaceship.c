@@ -15,23 +15,18 @@
 #define GROUND_HEIGHT 50.0
 
 // Tunnel & Ship Constants
-#define TUNNEL_WIDTH 100.0
 #define SHIP_FIXED_X (CANVAS_WIDTH / 2.0)
 #define LANDING_PAD_Y (CANVAS_HEIGHT - GROUND_HEIGHT)
 
-// Physics Constants
+// Physics Constants (Unchanged)
 #define GRAVITY 0.05
 #define THRUST_POWER 0.35 
 #define MAX_VELOCITY_FOR_NORM 15.0
 #define CRITICAL_LANDING_VELOCITY 1.0 
 
-// Dynamic Obstacle Constants
-#define OBSTACLE_VELOCITY 3.0 
-
-// NN & RL Constants
-// Input Size (7): Y, Vy, Diamond Y-Dist, Obs Y-Dist, Obs X-Pos, Obs Width, Collected Count
+// NN & RL Constants (NN_HIDDEN_SIZE reduced for faster training)
 #define NN_INPUT_SIZE 7 
-#define NN_HIDDEN_SIZE 32
+#define NN_HIDDEN_SIZE 16 // Reduced from 32
 #define NN_OUTPUT_SIZE 2 // 0:Thrust Up, 1:No Thrust
 #define NN_LEARNING_RATE 0.005
 #define GAMMA 0.99 
@@ -41,7 +36,7 @@
 #define NUM_DIAMONDS 10
 #define SIMULATION_DT (1.0 / 60.0) 
 
-// Reward Goals and Values
+// Reward Goals and Values (Unchanged)
 #define REWARD_PER_STEP -0.01 
 #define REWARD_CRASH -200.0
 #define REWARD_SAFE_LAND 50.0
@@ -56,6 +51,7 @@
 const char* action_names[NN_OUTPUT_SIZE] = {"THRUST", "PASSIVE"};
 
 // --- Data Structures ---
+// (No changes to structures)
 typedef struct { double x, y; double w, h; double vx; } Obstacle;
 typedef struct { double x, y; double size; bool collected; } Diamond;
 typedef struct { double x, y; double vy; double size; bool is_thrusting; bool is_alive; bool has_landed; } Ship;
@@ -242,6 +238,7 @@ void nn_policy_forward(NeuralNetwork* nn, const double* input_array, double* out
     matrix_free(inputs); matrix_free(hidden); matrix_free(hidden_output); matrix_free(output_logits_m);
 }
 
+// nn_reinforce_train implements backpropagation using the policy gradient method.
 void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action_index, double discounted_return) {
     Matrix inputs = array_to_matrix(input_array, NN_INPUT_SIZE);
     
@@ -259,9 +256,11 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
     softmax(logits, probs, NN_OUTPUT_SIZE);
 
     // --- 2. Calculate Output Gradient (dLoss/dLogits) ---
+    // The core backpropagation step for Policy Gradient (REINFORCE)
     Matrix output_gradients = matrix_create(NN_OUTPUT_SIZE, 1);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) {
         double target = (i == action_index) ? 1.0 : 0.0;
+        // The gradient is scaled by the negative of the discounted return (Advantage)
         output_gradients.data[i][0] = check_double(probs[i] - target, "output_grad_base", "nn_reinforce_train") * discounted_return;
     }
 
@@ -274,7 +273,7 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
         nn->bias_o[i] = check_double(nn->bias_o[i], "bias_o", "nn_train_upd") - check_double(output_gradients.data[i][0], "grad_o", "nn_train_upd") * nn->lr;
     }
 
-    // --- 4. Calculate Hidden Errors and Update Weights IH and Bias H ---
+    // --- 4. Calculate Hidden Errors and Update Weights IH and Bias H (Backprop to Hidden Layer) ---
     Matrix weights_ho_T = matrix_transpose(nn->weights_ho);
     Matrix hidden_errors = matrix_dot(weights_ho_T, output_gradients);
 
@@ -302,9 +301,9 @@ void init_game_state() {
     state.score = 0;
     state.total_diamonds = 0;
 
-    // Ship setup (Fixed X, only Y and Vy matter)
+    // Ship setup
     state.ship.x = SHIP_FIXED_X;
-    state.ship.y = CANVAS_HEIGHT / 2.0; // Start in the middle of the tunnel
+    state.ship.y = CANVAS_HEIGHT / 2.0; 
     state.ship.vy = 0.0;
     state.ship.size = 15.0;
     state.ship.is_thrusting = false;
@@ -315,23 +314,35 @@ void init_game_state() {
     episode_buffer.count = 0;
     episode_buffer.total_score = 0;
 
-    // Dynamic Obstacles
-    srand((unsigned int)time(NULL) * (current_episode + 1)); 
+    // --- FIXED LEVEL CONFIGURATION ---
+    
+    // Fixed Obstacles (No randomization, vx=0)
+    double obs_configs[NUM_OBSTACLES][4] = {
+        // y, x, w, h
+        {120.0, 300.0, 200.0, 20.0},
+        {280.0, 450.0, 150.0, 20.0},
+        {420.0, 350.0, 100.0, 20.0},
+        {50.0, 380.0, 50.0, 20.0},
+        {520.0, 400.0, 120.0, 20.0}
+    };
+    
     for (int i = 0; i < NUM_OBSTACLES; i++) {
-        // Obstacles span the tunnel width (w) but move horizontally (x)
-        state.obstacles[i].x = check_double(((double)rand() / RAND_MAX) * (CANVAS_WIDTH - 200.0) + 100.0, "obs_x", "init_game"); 
-        state.obstacles[i].y = check_double(((double)rand() / RAND_MAX) * (CANVAS_HEIGHT - GROUND_HEIGHT - 100.0) + 50.0, "obs_y", "init_game");
-        state.obstacles[i].w = 100.0 + ((double)rand() / RAND_MAX) * 50.0; // Variable width
-        state.obstacles[i].h = 20.0;
-        // Alternate directions and speed variation
-        double speed_sign = (i % 2 == 0) ? 1.0 : -1.0;
-        state.obstacles[i].vx = check_double(speed_sign * (OBSTACLE_VELOCITY + ((double)rand() / RAND_MAX) * 1.0), "obs_vx", "init_game");
+        state.obstacles[i].y = check_double(obs_configs[i][0], "obs_y", "init_game");
+        state.obstacles[i].x = check_double(obs_configs[i][1], "obs_x", "init_game");
+        state.obstacles[i].w = check_double(obs_configs[i][2], "obs_w", "init_game");
+        state.obstacles[i].h = check_double(obs_configs[i][3], "obs_h", "init_game");
+        state.obstacles[i].vx = 0.0; // Fixed obstacles
     }
 
-    // Diamonds
+    // Fixed Diamonds (Fixed X, spread vertically)
+    double diamond_y_positions[NUM_DIAMONDS] = {
+        100.0, 150.0, 200.0, 250.0, 300.0, 
+        350.0, 400.0, 450.0, 500.0, 550.0
+    };
+    
     for (int i = 0; i < NUM_DIAMONDS; i++) {
-        state.diamonds[i].x = SHIP_FIXED_X; // Fixed X at tunnel center
-        state.diamonds[i].y = check_double(((double)rand() / RAND_MAX) * (CANVAS_HEIGHT - GROUND_HEIGHT - 100.0) + 50.0, "diamond_y", "init_game");
+        state.diamonds[i].x = SHIP_FIXED_X; 
+        state.diamonds[i].y = check_double(diamond_y_positions[i], "diamond_y", "init_game");
         state.diamonds[i].size = 5.0;
         state.diamonds[i].collected = false;
     }
@@ -354,8 +365,8 @@ void get_state_features(double* input) {
     Ship* ship = &state.ship;
     
     // --- 1. Ship State Features (2) ---
-    input[0] = check_double(ship->y / CANVAS_HEIGHT, "norm_y", "get_state_features"); // Normalized Y position
-    input[1] = check_double(ship->vy / MAX_VELOCITY_FOR_NORM, "norm_vy", "get_state_features"); // Normalized Vertical Velocity
+    input[0] = check_double(ship->y / CANVAS_HEIGHT, "norm_y", "get_state_features"); 
+    input[1] = check_double(ship->vy / MAX_VELOCITY_FOR_NORM, "norm_vy", "get_state_features"); 
     
     // --- 2. Nearest Diamond Features (1) ---
     Diamond* nearest_diamond = NULL;
@@ -367,7 +378,6 @@ void get_state_features(double* input) {
             if (fabs(y_dist) < fabs(min_diamond_y_dist)) { min_diamond_y_dist = y_dist; nearest_diamond = d; }
         }
     }
-    // Normalized Y distance (positive if diamond is below, negative if above)
     input[2] = check_double(min_diamond_y_dist / CANVAS_HEIGHT, "norm_d_y_dist", "get_state_features");
     
     // --- 3. Nearest Obstacle Features (3) ---
@@ -380,11 +390,8 @@ void get_state_features(double* input) {
         if (fabs(y_dist) < fabs(min_obs_y_dist)) { min_obs_y_dist = y_dist; nearest_obs = obs; }
     }
     
-    // Normalized Y distance to nearest obstacle (signed)
     input[3] = check_double(min_obs_y_dist / CANVAS_HEIGHT, "norm_o_y_dist", "get_state_features"); 
-    // Normalized X position of the nearest obstacle center
     input[4] = nearest_obs ? check_double((nearest_obs->x + nearest_obs->w / 2.0) / CANVAS_WIDTH, "norm_o_x", "get_state_features") : 0.5;
-    // Normalized nearest obstacle width
     input[5] = nearest_obs ? check_double(nearest_obs->w / CANVAS_WIDTH, "norm_o_w", "get_state_features") : 0.0;
 
     // --- 4. All Collected Flag (1) ---
@@ -402,38 +409,32 @@ double calculate_reward(Ship* ship, double old_min_diamond_y_dist, int diamonds_
     
     if (!ship->is_alive) return REWARD_CRASH;
     
-    // STABILIZE: Negative reward based on speed magnitude (only Vy matters)
+    // Stabilize: Negative reward based on speed magnitude
     double speed_magnitude_sq = check_double(ship->vy * ship->vy, "speed_sq", "calc_reward");
     reward += REWARD_VELOCITY_PENALTY_SCALE * speed_magnitude_sq;
     
-    // Get normalized state for obstacle/diamond distances
     double input[NN_INPUT_SIZE];
     get_state_features(input);
     
-    // Check for imminent obstacle collision (blocking the tunnel)
+    // Obstacle proximity penalty (Still valid as obstacles are fixed blocks)
     for (int i = 0; i < NUM_OBSTACLES; i++) {
         Obstacle* obs = &state.obstacles[i];
         
-        // Vertical check: is the ship's vertical profile overlapping the obstacle's vertical profile?
         bool y_overlap = (ship->y + ship->size > obs->y && ship->y - ship->size < obs->y + obs->h);
-
-        // Horizontal check: is the obstacle's X range blocking the ship's fixed X?
         bool x_blocking = (SHIP_FIXED_X >= obs->x && SHIP_FIXED_X <= obs->x + obs->w);
 
         if (y_overlap && x_blocking) {
-            // Penalize based on how close the ship is vertically to the obstacle
             double y_dist = fabs(ship->y - (obs->y + obs->h / 2.0));
-            double proximity_factor = 1.0 - fmin(1.0, y_dist / 50.0); // Close proximity (e.g., < 50px)
+            double proximity_factor = 1.0 - fmin(1.0, y_dist / 50.0); 
             reward += REWARD_OBSTACLE_PROXIMITY_SCALE * proximity_factor;
         }
     }
     
-    // TOWARDS_DIAMOND: Reward collection
+    // Reward for collection and progress
     if (diamonds_collected_this_step > 0) {
         reward += REWARD_COLLECT_DIAMOND * diamonds_collected_this_step;
     }
 
-    // TOWARDS_DIAMOND: Small reward for progress if diamonds remain 
     if (state.total_diamonds < NUM_DIAMONDS) {
         double new_min_diamond_y_dist = input[2] * CANVAS_HEIGHT;
         double distance_change = fabs(old_min_diamond_y_dist) - fabs(new_min_diamond_y_dist);
@@ -442,13 +443,9 @@ double calculate_reward(Ship* ship, double old_min_diamond_y_dist, int diamonds_
         }
     }
     
-    // LANDING: Final Goal
+    // Landing Goal
     if (ship->has_landed) {
-        if (state.total_diamonds == NUM_DIAMONDS) {
-            reward += REWARD_SAFE_LAND_ALL_COLLECTED;
-        } else {
-            reward += REWARD_SAFE_LAND;
-        }
+        reward += (state.total_diamonds == NUM_DIAMONDS) ? REWARD_SAFE_LAND_ALL_COLLECTED : REWARD_SAFE_LAND;
     }
     
     return check_double(reward, "final_reward", "calc_reward");
@@ -456,14 +453,8 @@ double calculate_reward(Ship* ship, double old_min_diamond_y_dist, int diamonds_
 
 
 void apply_action(Ship* ship, int action_index) {
-    ship->is_thrusting = false; 
+    ship->is_thrusting = (action_index == 0); 
     
-    if (action_index == 0) { // Thrust Up
-        ship->is_thrusting = true;
-    } 
-    // Action 1 is No Thrust / Passive
-    
-    // Record action for stats
     action_history[action_history_idx] = action_index;
     action_history_idx = (action_history_idx + 1) % ACTION_HISTORY_SIZE;
 }
@@ -471,33 +462,18 @@ void apply_action(Ship* ship, int action_index) {
 void apply_thrust(Ship* ship, double dt) {
     if (!ship->is_thrusting) return;
     
-    // Thrust is applied upward (negative Y direction)
     double thrust_force = check_double(THRUST_POWER * dt / SIMULATION_DT, "thrust_force", "apply_thrust");
     ship->vy = check_double(ship->vy - thrust_force, "ship_vy", "apply_thrust");
 }
 
 void update_physics(Ship* ship, double dt) {
-    // Apply Gravity (always down, positive y is down)
+    // Apply Gravity
     ship->vy = check_double(ship->vy + GRAVITY * dt / SIMULATION_DT, "ship_vy_grav", "update_physics");
 
     // Update Y position
     ship->y = check_double(ship->y + ship->vy * dt, "ship_y", "update_physics");
 
-    // Dynamic Obstacle Movement (Horizontal)
-    for (int i = 0; i < NUM_OBSTACLES; i++) {
-        Obstacle* obs = &state.obstacles[i];
-        obs->x += obs->vx * dt;
-
-        // Reverse direction upon hitting canvas edges (including the obstacle's width)
-        if (obs->x < -obs->w) {
-            obs->vx *= -1.0;
-            obs->x = -obs->w; // Reset to boundary
-        }
-        if (obs->x + obs->w > CANVAS_WIDTH + obs->w) {
-            obs->vx *= -1.0;
-            obs->x = CANVAS_WIDTH; // Reset to boundary
-        }
-    }
+    // Obstacle movement logic REMOVED - the level is fixed.
 }
 
 int check_collision(Ship* ship) {
@@ -513,7 +489,7 @@ int check_collision(Ship* ship) {
 
         if (y_overlap && x_blocking) {
             ship->is_alive = false;
-            return diamonds_collected_this_step; // Crash
+            return diamonds_collected_this_step; 
         }
     }
     
@@ -574,42 +550,37 @@ void update_game(double dt, bool is_training_run) {
     
     if (!ship->is_alive || ship->has_landed) return; 
 
-    // --- 1. Get current state features and previous diamond proximity ---
     double input[NN_INPUT_SIZE];
     get_state_features(input);
-    // input[2] holds the normalized Y distance to the nearest uncollected diamond
     double old_min_diamond_y_dist = input[2] * CANVAS_HEIGHT; 
 
-    // --- 2. Feedforward and Action Selection ---
     double logit_output[NN_OUTPUT_SIZE];
     double probabilities[NN_OUTPUT_SIZE];
     nn_policy_forward(&nn, input, probabilities, logit_output);
 
     int action_index = select_action(probabilities);
 
-    // --- 3. Apply Action, Physics, and Collision ---
     apply_action(ship, action_index);
     apply_thrust(ship, dt);
     update_physics(ship, dt);
 
     int diamonds_collected = check_collision(ship);
     
-    // --- 4. Check Landing ---
+    // Check Landing
     double ground_y = LANDING_PAD_Y;
     if (ship->y + ship->size > ground_y) {
         ship->y = ground_y - ship->size;
         
         if (fabs(ship->vy) > CRITICAL_LANDING_VELOCITY) {
-            ship->is_alive = false; // Crash due to high speed
+            ship->is_alive = false; 
         } else {
-            ship->has_landed = true; // Safe landing
+            ship->has_landed = true; 
         }
         
         ship->vy = 0.0;
         ship->is_thrusting = false;
     }
 
-    // --- 5. Calculate Reward and Store Step ---
     double reward = calculate_reward(ship, old_min_diamond_y_dist, diamonds_collected);
     
     if (is_training_run && episode_buffer.count < 4000) {
@@ -647,28 +618,31 @@ void run_reinforce_training() {
     double variance = (sum_sq_returns / episode_buffer.count) - (mean_return * mean_return);
     double std_dev = sqrt(variance > 1e-6 ? variance : 1.0); 
 
-    // --- 3. Train the Network ---
+    // --- 3. Train the Network using Backpropagation ---
     for (int i = 0; i < episode_buffer.count; i++) {
+        // Gt acts as the advantage for the policy gradient update
         double Gt = (returns[i] - mean_return) / std_dev; 
         
         nn_reinforce_train(&nn, 
                            episode_buffer.steps[i].input, 
                            episode_buffer.steps[i].action_index, 
-                           -Gt); 
+                           -Gt); // Pass -Gt for the policy gradient implementation
     }
 }
 
 // --- Main Simulation Loop ---
 
 int main() {
-    srand((unsigned int)time(NULL));
+    // Seed is still necessary for initial weight randomization and action sampling
+    srand((unsigned int)time(NULL)); 
     nn_init(&nn);
     
     for(int i = 0; i < ACTION_HISTORY_SIZE; i++) {
-        action_history[i] = 1; // Default to PASSIVE
+        action_history[i] = 1; 
     }
 
-    printf("--- RL 1D Tunnel Lander Simulation (REINFORCE) ---\n");
+    printf("--- RL 1D Tunnel Lander Simulation (FIXED LEVEL / Simplified NN) ---\n");
+    printf("Hidden Layer Size: %d\n", NN_HIDDEN_SIZE);
     printf("Training will run for 4 minutes (240 seconds).\n");
     
     time_t start_time = time(NULL);
