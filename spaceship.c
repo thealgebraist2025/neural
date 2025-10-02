@@ -37,7 +37,7 @@
 // Exploration Constants 
 #define EPSILON_START 1.0 
 #define EPSILON_END 0.01 
-#define EPSILON_DECAY_EPISODES 50000 
+#define EPSILON_DECAY_EPISODES 500000 
 
 // Reward Goals and Values
 #define REWARD_PER_STEP -1.0 
