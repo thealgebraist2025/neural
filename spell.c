@@ -14,9 +14,9 @@
 #define NN_INPUT_SIZE MAX_WORD_LEN  // 10
 #define NN_OUTPUT_SIZE MAX_WORD_LEN // 10
 
-#define NUM_TRAIN_WORDS 16          // Number of base words in one batch half
-#define MISSPELLED_PER_WORD 16      // Number of misspellings per base word
-#define BATCH_SIZE (NUM_TRAIN_WORDS * MISSPELLED_PER_WORD) // 256
+#define NUM_TRAIN_WORDS 32          // Number of base words in one batch (Increased from 16 to 32)
+#define MISSPELLED_PER_WORD 64      // Number of misspellings per base word (Increased from 16 to 64)
+#define BATCH_SIZE (NUM_TRAIN_WORDS * MISSPELLED_PER_WORD) // 2048
 #define MAX_VAL_NEEDED 1            // Placeholder (not used for this problem)
 
 #define MAX_TRAINING_SECONDS 240.0  
@@ -165,7 +165,7 @@ void encode_word(const char* word, double* arr) {
             if (char_code == -1) char_code = CHAR_TO_INT[' ']; // Fallback for safety
             arr[i] = (double)char_code / (ALPHABET_SIZE - 1); // Scale by 1/26.0
         } else {
-            arr[i] = 0.0; // Pad with space (encoded as 0, which corresponds to 'a' if scaled by 1/26, but we use 0.0 as padding which is fine)
+            arr[i] = 0.0; // Pad with 0.0
         }
     }
 }
@@ -184,7 +184,7 @@ void decode_word(const double* arr, char* word_out) {
     }
     word_out[MAX_WORD_LEN] = '\0';
 
-    // Trim trailing spaces if the word was shorter than 10 chars
+    // Trim trailing spaces
     for (int i = MAX_WORD_LEN - 1; i >= 0; i--) {
         if (word_out[i] == ' ') {
             word_out[i] = '\0';
@@ -197,8 +197,9 @@ void decode_word(const double* arr, char* word_out) {
 // Generates a misspelled word by changing one random letter
 void generate_misspelled_word(const char* original_word, char* misspelled_word_out) {
     int len = strlen(original_word);
-    if (len == 0) {
-        misspelled_word_out[0] = '\0';
+    if (len == 0 || len > MAX_WORD_LEN) {
+        strncpy(misspelled_word_out, original_word, MAX_WORD_LEN);
+        misspelled_word_out[MAX_WORD_LEN] = '\0';
         return;
     }
 
@@ -310,9 +311,6 @@ Matrix matrix_map(Matrix m, double (*func)(double)) {
 }
 double tanh_activation(double x) { return tanh(x); }
 double tanh_derivative(double y) { return 1.0 - (y * y); }
-double sigmoid_activation(double x) { return 1.0 / (1.0 + exp(-x)); }
-double sigmoid_derivative(double y) { return y * (1.0 - y); }
-// Use Tanh for all layers now for consistent character encoding output range (0 to ~1)
 
 // --- Neural Network Functions (5-Layer Architecture: I->H1->H2->H3->H4->O) ---
 
@@ -384,10 +382,8 @@ void nn_forward(NeuralNetwork* nn, const double* input_array, double* output_arr
     Matrix output_in_m = matrix_dot(nn->weights_h4o, h4_out_m);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) output_in_m.data[i][0] += nn->bias_o[i];
     
-    // Map Tanh output (range -1 to 1) to a value in the scaled character range (0 to 1)
+    // Map Tanh output from (-1, 1) to (0, 1) to match input/target encoding
     Matrix output_out_m = matrix_map(output_in_m, tanh_activation);
-    
-    // Rescale Tanh output from (-1, 1) to (0, 1) to match input/target encoding
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) {
         output_out_m.data[i][0] = (output_out_m.data[i][0] + 1.0) / 2.0; 
     }
@@ -416,19 +412,12 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     Matrix targets_m = array_to_matrix(target_array, NN_OUTPUT_SIZE);
     int h = NN_HIDDEN_SIZE;
     
-    // --- 1. Output Layer (Trained to be 0-1, but actual activation is Tanh (-1 to 1)) ---
+    // --- 1. Output Layer ---
     Matrix output_errors_m = matrix_add_subtract(nn->output_outputs, targets_m, false);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) { mse_loss += output_errors_m.data[i][0] * output_errors_m.data[i][0]; }
     mse_loss /= NN_OUTPUT_SIZE;
     
-    // IMPORTANT: The output_outputs are already (tanh_output + 1)/2. 
-    // We need the gradient relative to the Tanh INPUT, not the Tanh OUTPUT.
-    // Error = O - T. We need d(E^2)/d(W) = 2*E * dO/dW.
-    // O = (tanh(Z) + 1)/2. dO/dZ = 1/2 * (1 - tanh(Z)^2).
-    // The matrix `output_outputs` stores O.
-    // The Tanh derivative function gives (1 - y^2), where y=tanh(Z).
-    
-    // Calculate 1 - tanh(Z)^2. We need to convert O back to tanh(Z)
+    // Convert O back to tanh(Z)
     Matrix output_tanh_m = matrix_create(NN_OUTPUT_SIZE, 1, 0);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) {
         // Tanh_output = 2 * O - 1
@@ -438,7 +427,6 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     Matrix output_d_m = matrix_map(output_tanh_m, tanh_derivative); 
     matrix_free(output_tanh_m); 
     
-    // Chain rule step (dO/dZ = 1/2 * (1-tanh^2)). The 2*Error from MSE cancels the 1/2.
     // Gradient relative to Tanh INPUT (Z): (O - T) * (1 - tanh^2(Z))
     Matrix output_gradients_m = matrix_multiply_elem(output_errors_m, output_d_m);
     
@@ -556,14 +544,15 @@ double train_sequential_batch(NeuralNetwork* nn, int* word_indices, double* bp_t
 double test_network(NeuralNetwork* nn, double* test_time, bool verbose) {
     clock_t start_test = clock();
     int correct_words = 0;
-    int total_tests = NUM_TRAIN_WORDS;
+    // Test on 32 words, same size as the training words sample
+    int total_tests = 32; 
     double input_arr[NN_INPUT_SIZE]; 
     double output_arr[NN_OUTPUT_SIZE];
     
     char misspelled_word[MAX_WORD_LEN + 1];
     char decoded_output[MAX_WORD_LEN + 1];
 
-    // Pick 16 random words from the vocabulary for testing
+    // Pick 32 random words from the vocabulary for testing
     for (int i = 0; i < total_tests; i++) {
         int word_idx = rand() % VOCAB_SIZE;
         const char* correct_word = ENGLISH_WORDS[word_idx];
@@ -593,7 +582,7 @@ double test_network(NeuralNetwork* nn, double* test_time, bool verbose) {
 }
 
 
-// --- SVG Utility Functions ---
+// --- SVG Utility Functions (Unchanged) ---
 
 void svg_init_storage() {
     svg_capacity = INITIAL_SVG_CAPACITY;
@@ -779,43 +768,42 @@ int main() {
     srand((unsigned int)time(NULL));
     init_char_mapping();
     
-    printf("Spelling Corrector Initializing with %d word vocabulary...\n", VOCAB_SIZE);
+    printf("Spelling Corrector Initializing with %d word vocabulary.\n", VOCAB_SIZE);
 
     // --- Initialize NN with NEW Architecture ---
     NeuralNetwork nn;
     nn_init(&nn);
 
-    printf("\nNeural Network Corrector Initialized with Deep and Narrow Architecture.\n");
-    printf("Input/Output Size: %d (10 characters max)\n", MAX_WORD_LEN);
-    printf("Architecture: Input(10) -> H1(32) -> H2(32) -> H3(32) -> H4(32) -> Output(10)\n");
-    printf("Training Batch Size: %d (16 words * 16 misspellings)\n", BATCH_SIZE);
-    printf("Maximum Training Time: %.0f seconds.\n", MAX_TRAINING_SECONDS); 
+    printf("Architecture: Input(%d) -> H1(32) -> H2(32) -> H3(32) -> H4(32) -> Output(%d)\n", NN_INPUT_SIZE, NN_OUTPUT_SIZE);
+    printf("Training Batch Size: %d words * %d misspellings = %d examples/batch.\n", NUM_TRAIN_WORDS, MISSPELLED_PER_WORD, BATCH_SIZE);
+    printf("Maximum Training Time: %.0f seconds. Testing occurs every %.0f seconds.\n", MAX_TRAINING_SECONDS, TEST_INTERVAL_SECONDS); 
     printf("--------------------------------------------------------------------------------------------------\n");
-    printf("Batch No. | Avg MSE (Batch) | Word Correctness (Test) | Backprop Time (sec) | Test Time (sec)\n");
+    printf("Time (sec) | Batches Run | Avg MSE (Last Batch) | Word Correctness (Test) | Test Time (sec)\n");
     printf("--------------------------------------------------------------------------------------------------\n");
     fflush(stdout);
 
     time_t start_time = time(NULL);
     time_t last_test_time = start_time - TEST_INTERVAL_SECONDS; // Force immediate first test
     double current_success_rate = 0.0;
+    double last_batch_mse = 0.0;
     int next_milestone_percent = 10;
     int total_batches_run = 0;
     int max_epochs = 10000; 
 
-    // Indices to select 16 random words from the vocabulary for the current batch
+    // Indices to select 32 random words from the vocabulary for the current batch
     int word_indices[NUM_TRAIN_WORDS];
 
     for (int epoch = 0; epoch < max_epochs; epoch++) {
         bool time_limit_reached = false;
         
-        // --- Randomly select 16 unique words for the batch ---
+        // --- Randomly select words for the batch ---
         for (int i = 0; i < NUM_TRAIN_WORDS; i++) {
             word_indices[i] = rand() % VOCAB_SIZE;
         }
 
         // --- Training Step (One batch) ---
         double bp_time = 0.0;
-        double avg_mse = train_sequential_batch(&nn, word_indices, &bp_time);
+        last_batch_mse = train_sequential_batch(&nn, word_indices, &bp_time);
         total_batches_run++;
 
         // --- Testing Step (Every 10 seconds) ---
@@ -825,29 +813,25 @@ int main() {
             current_success_rate = test_network(&nn, &test_time, false); 
             last_test_time = current_time;
             
-            // Log stats after test
-            printf("%-9d | %-15.8f | %-25.2f | %-19.4f | %-15.4f\n", 
+            // Log stats after test (Only print happens here)
+            printf("%-10.0f | %-11d | %-20.8f | %-25.2f | %-15.4f\n", 
+                   difftime(current_time, start_time),
                    total_batches_run, 
-                   avg_mse, current_success_rate, bp_time, test_time);
+                   last_batch_mse, 
+                   current_success_rate, 
+                   test_time);
             fflush(stdout);
             
             // Log milestones
             while (current_success_rate >= next_milestone_percent) {
-                printf("--- MILESTONE REACHED --- Batch: %d | Time: %.0f sec | Correctness: %.2f%%\n",
-                       total_batches_run, difftime(current_time, start_time), current_success_rate);
+                printf("--- MILESTONE REACHED --- Correctness: %.2f%%\n", current_success_rate);
                 fflush(stdout);
                 
                 if (next_milestone_percent == 90) { next_milestone_percent = 95; } 
                 else if (next_milestone_percent >= 95) { break; } 
                 else { next_milestone_percent += 10; }
             }
-        } else {
-            // Log stats without testing (less verbose)
-             printf("%-9d | %-15.8f | %-25s | %-19.4f | %-15s\n", 
-                   total_batches_run, 
-                   avg_mse, "N/A", bp_time, "N/A");
-             fflush(stdout);
-        }
+        } 
 
         // Check time limit or goal
         if (difftime(current_time, start_time) >= MAX_TRAINING_SECONDS) {
@@ -869,7 +853,7 @@ int main() {
     printf("--------------------------------------------------------------------------------------------------\n");
     printf("\n#####################################################\n");
     printf("## TRAINING TERMINATED ##\n");
-    printf("Final correctness (Tested on 16 new misspellings): %.2f%%\n", current_success_rate);
+    printf("Final correctness (Tested on 32 new misspellings): %.2f%%\n", current_success_rate);
     printf("Total Batches Run: %d\n", total_batches_run);
     printf("Total Training Time: %.0f seconds.\n", difftime(time(NULL), start_time));
     printf("#####################################################\n");
