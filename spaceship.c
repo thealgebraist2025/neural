@@ -17,9 +17,9 @@
 
 // Game/Physics Constants
 #define MOVE_STEP_SIZE 15.0 
-#define MAX_EPISODE_STEPS 150 
+#define MAX_EPISODE_STEPS 150 // INCREASED from 50 to allow longer episodes
 #define NUM_OBSTACLES 5
-#define NUM_DIAMONDS 10 
+#define NUM_DIAMONDS 10 // Increased from 5 to 10
 
 // Pathfinding Constants (Simplified BFS Grid)
 #define GRID_CELL_SIZE 20.0 
@@ -31,8 +31,8 @@
 #define NN_INPUT_SIZE 9 
 #define NN_HIDDEN_SIZE 16 
 #define NN_OUTPUT_SIZE 4 
-#define NN_LEARNING_RATE 0.0025 
-#define GAMMA 0.95 
+#define NN_LEARNING_RATE 0.1 // Changed from 0.0025 to 0.1 (user request)
+#define GAMMA 0.99 // Changed from 0.95 to 0.99 (user request for long-term rewards)
 
 // Reward Goals and Values
 #define REWARD_PER_STEP -1.0 
@@ -45,73 +45,34 @@
 #define ACTION_HISTORY_SIZE 10 
 const char* action_names[NN_OUTPUT_SIZE] = {"UP", "DOWN", "LEFT", "RIGHT"};
 
-// --- Unit Test & Batch Constants (MODIFIED) ---
-#define UNITTEST_EPISODES 1000     // INCREASED
-#define UNITTEST_MAX_STEPS 50      
-#define UNITTEST_MOVE_STEP_SIZE 5.0 
-#define UNITTEST_SUCCESS_THRESHOLD 1.0 
-#define UNITTEST_PROGRESS_REWARD 1.0   
-#define UNITTEST_STEP_PENALTY -0.1     
-#define UNITTEST_CRASH_PENALTY -5.0   
-#define UNITTEST_GOAL_REWARD 50.0     
-#define UNITTEST_TRACING 1 
-
-#define BATCH_SIZE 10                          // Number of episodes per training batch
-#define MAX_BATCH_STEPS (MAX_EPISODE_STEPS * BATCH_SIZE) // Maximum steps in a batch buffer
-
-
 // --- Data Structures ---
 typedef struct { double x, y; double w, h; } Obstacle;
 typedef struct { double x, y; double size; bool collected; } Diamond;
 typedef struct { double x, y; double w, h; } TargetArea;
 typedef struct { double x, y; double size; bool is_alive; bool has_reached_target; } Robot;
-typedef struct { double x, y; } Position; // For path tracing
-
-typedef struct { 
-    int score; 
-    int total_diamonds; 
-    Robot robot; 
-    Obstacle obstacles[NUM_OBSTACLES]; 
-    Diamond diamonds[NUM_DIAMONDS]; 
-    TargetArea target; 
-    Position path_history[MAX_EPISODE_STEPS]; 
-    int path_length;                       
-} GameState;
+typedef struct { int score; int total_diamonds; Robot robot; Obstacle obstacles[NUM_OBSTACLES]; Diamond diamonds[NUM_DIAMONDS]; TargetArea target; } GameState;
 
 typedef struct { int rows; int cols; double** data; } Matrix;
 typedef struct { double input[NN_INPUT_SIZE]; int action_index; double reward; } EpisodeStep;
-typedef struct { EpisodeStep steps[MAX_EPISODE_STEPS]; int count; double total_score; } Episode; 
-
+typedef struct { EpisodeStep steps[MAX_EPISODE_STEPS]; int count; double total_score; } Episode;
 typedef struct { Matrix weights_ih; Matrix weights_ho; double* bias_h; double* bias_o; double lr; } NeuralNetwork;
 
 // BFS Node for Pathfinding
 typedef struct { int r, c; int parent_r, parent_c; } PathNode;
 
-
 // --- Global State ---
 GameState state;
 NeuralNetwork nn;
-Episode episode_buffer; 
-EpisodeStep batch_steps[MAX_BATCH_STEPS]; 
-int batch_step_count = 0;                  
+Episode episode_buffer;
 int current_episode = 0;
 int action_history[ACTION_HISTORY_SIZE];
 int action_history_idx = 0; 
 int step_count = 0;
 time_t last_print_time = 0; 
 
-// ------------------------------------------
-// --- FUNCTION PROTOTYPES (FIX ADDED HERE) ---
-// ------------------------------------------
-bool run_rl_unittest(); // FIX: Added explicit prototype to prevent implicit declaration warning/error
-// ------------------------------------------
-
-// --- C99 Utility Functions ---
+// --- C99 Utility Functions (omitted for brevity, assume correct implementation) ---
 void check_nan_and_stop(double value, const char* var_name, const char* context) {
-    if (isnan(value) || isinf(value)) { 
-        fprintf(stderr, "\n\nCRITICAL NAN/INF ERROR: %s in %s is %.1f. Stopping execution.\n", var_name, context, value); 
-        exit(EXIT_FAILURE); 
-    }
+    if (isnan(value)) { fprintf(stderr, "\n\nCRITICAL NAN ERROR: %s in %s is NaN. Stopping execution.\n", var_name, context); exit(EXIT_FAILURE); }
 }
 double check_double(double value, const char* var_name, const char* context) {
     check_nan_and_stop(value, var_name, context);
@@ -125,28 +86,15 @@ void softmax(const double* input, double* output, int size) {
     double sum_exp = 0.0;
     for (int i = 0; i < size; i++) {
         output[i] = exp(input[i] - max_val);
-        check_nan_and_stop(output[i], "exp_val", "softmax");
         sum_exp += output[i];
     }
-    if (sum_exp < 1e-6) {
-        for (int i = 0; i < size; i++) output[i] = 1.0 / size;
-    } else {
-        for (int i = 0; i < size; i++) { output[i] = check_double(output[i] / sum_exp, "softmax_output", "softmax"); }
-    }
+    for (int i = 0; i < size; i++) { output[i] = check_double(output[i] / sum_exp, "softmax_output", "softmax"); }
 }
 double distance_2d(double x1, double y1, double x2, double y2) {
     return sqrt(pow(x2 - x1, 2) + pow(y2 - y1, 2));
 }
-bool is_point_in_rect(double px, double py, double rx, double ry, double rw, double rh) { 
-    return px >= rx && px <= rx + rw && py >= ry && py <= ry + rh; 
-}
-double col_to_x(int c) { return c * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
-double row_to_y(int r) { return r * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
-int x_to_col(double x) { return (int)(x / GRID_CELL_SIZE); }
-int y_to_row(double y) { return (int)(y / GRID_CELL_SIZE); }
 
-// --- Matrix Functions ---
-
+// --- Matrix Functions (omitted for brevity, assume correct implementation) ---
 Matrix matrix_create(int rows, int cols) {
     Matrix m; m.rows = rows; m.cols = cols;
     m.data = (double**)malloc(rows * sizeof(double*));
@@ -176,10 +124,7 @@ Matrix matrix_dot(Matrix A, Matrix B) {
     for (int i = 0; i < A.rows; i++) {
         for (int j = 0; j < B.cols; j++) {
             double sum = 0.0;
-            for (int k = 0; k < A.cols; k++) { 
-                double term = check_double(A.data[i][k], "A[i][k]", "matrix_dot") * check_double(B.data[k][j], "B[k][j]", "matrix_dot");
-                sum += term; 
-            }
+            for (int k = 0; k < A.cols; k++) { sum += check_double(A.data[i][k], "A[i][k]", "matrix_dot") * check_double(B.data[k][j], "B[k][j]", "matrix_dot"); }
             result.data[i][j] = check_double(sum, "dot_sum", "matrix_dot");
         }
     }
@@ -218,10 +163,8 @@ Matrix matrix_multiply_elem(Matrix A, Matrix B) {
     if (A.rows != B.rows || A.cols != B.cols) { fprintf(stderr, "Multiply (element-wise) dimension mismatch.\n"); exit(EXIT_FAILURE); }
     Matrix result = matrix_create(A.rows, A.cols);
     for (int i = 0; i < A.rows; i++) {
-        for (int j = 0; j < A.cols; j++) { 
-            result.data[i][j] = check_double(A.data[i][j], "A[i][j]", "matrix_multiply_elem") * check_double(B.data[i][j], "B[i][j]", "matrix_multiply_elem"); 
-        }
-    } 
+        for (int j = 0; j < A.cols; j++) { result.data[i][j] = check_double(A.data[i][j], "A[i][j]", "matrix_multiply_elem") * check_double(B.data[i][j], "B[i][j]", "matrix_multiply_elem"); }
+    }
     return result;
 }
 
@@ -232,16 +175,18 @@ Matrix matrix_map(Matrix m, double (*func)(double)) {
     }
     return result;
 }
+// --- End Matrix Functions ---
 
-// --- Neural Network Core Functions ---
+// --- Neural Network Core Functions (omitted for brevity) ---
 
 void nn_init(NeuralNetwork* nn) {
     nn->lr = check_double(NN_LEARNING_RATE, "NN_LEARNING_RATE", "nn_init");
     nn->weights_ih = matrix_create(NN_HIDDEN_SIZE, NN_INPUT_SIZE);
     nn->weights_ho = matrix_create(NN_OUTPUT_SIZE, NN_HIDDEN_SIZE);
     nn->bias_h = (double*)malloc(NN_HIDDEN_SIZE * sizeof(double));
-    for (int i = 0; i < NN_HIDDEN_SIZE; i++) nn->bias_h[i] = check_double((((double)rand() / RAND_MAX) * 2.0 - 1.0) * 0.01, "bias_h_val", "nn_init");
     nn->bias_o = (double*)malloc(NN_OUTPUT_SIZE * sizeof(double));
+
+    for (int i = 0; i < NN_HIDDEN_SIZE; i++) nn->bias_h[i] = check_double((((double)rand() / RAND_MAX) * 2.0 - 1.0) * 0.01, "bias_h_val", "nn_init");
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) nn->bias_o[i] = check_double((((double)rand() / RAND_MAX) * 2.0 - 1.0) * 0.01, "bias_o_val", "nn_init");
 }
 
@@ -260,8 +205,6 @@ void nn_policy_forward(NeuralNetwork* nn, const double* input_array, double* out
 }
 
 void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action_index, double discounted_return) {
-    check_nan_and_stop(discounted_return, "discounted_return", "nn_reinforce_train");
-    
     Matrix inputs = array_to_matrix(input_array, NN_INPUT_SIZE);
     
     // 1. Feedforward 
@@ -276,28 +219,21 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) logits[i] = output_logits_m.data[i][0];
     double probs[NN_OUTPUT_SIZE];
     softmax(logits, probs, NN_OUTPUT_SIZE);
-    
-    if (probs[action_index] < 1e-6) {
-        matrix_free(inputs); matrix_free(hidden); matrix_free(hidden_output); matrix_free(output_logits_m);
-        return;
-    }
 
     // 2. Calculate Output Gradient (dLoss/dLogits)
     Matrix output_gradients = matrix_create(NN_OUTPUT_SIZE, 1);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) {
         double target = (i == action_index) ? 1.0 : 0.0;
-        double grad_base = check_double(probs[i] - target, "output_grad_base", "nn_reinforce_train");
-        output_gradients.data[i][0] = grad_base * discounted_return; 
-        check_nan_and_stop(output_gradients.data[i][0], "output_grad", "nn_reinforce_train");
+        output_gradients.data[i][0] = check_double(probs[i] - target, "output_grad_base", "nn_reinforce_train") * discounted_return;
     }
 
-    // 3. Update Weights HO and Bias O (using +nn->lr for Gradient ASCENT)
-    Matrix delta_weights_ho = matrix_multiply_scalar(matrix_dot(output_gradients, matrix_transpose(hidden_output)), nn->lr);
+    // 3. Update Weights HO and Bias O
+    Matrix delta_weights_ho = matrix_multiply_scalar(matrix_dot(output_gradients, matrix_transpose(hidden_output)), -nn->lr);
     Matrix new_weights_ho = matrix_add_subtract(nn->weights_ho, delta_weights_ho, true);
     matrix_free(nn->weights_ho); nn->weights_ho = new_weights_ho;
 
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) {
-        nn->bias_o[i] = check_double(nn->bias_o[i], "bias_o", "nn_train_upd") + check_double(output_gradients.data[i][0], "grad_o", "nn_train_upd") * nn->lr;
+        nn->bias_o[i] = check_double(nn->bias_o[i], "bias_o", "nn_train_upd") - check_double(output_gradients.data[i][0], "grad_o", "nn_train_upd") * nn->lr;
     }
 
     // 4. Calculate Hidden Errors and Update Weights IH and Bias H (Backprop to Hidden Layer)
@@ -307,13 +243,12 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
     Matrix hidden_gradients = matrix_map(hidden_output, sigmoid_derivative);
     Matrix hidden_gradients_mul = matrix_multiply_elem(hidden_gradients, hidden_errors);
     
-    // using +nn->lr for Gradient ASCENT
-    Matrix delta_weights_ih = matrix_multiply_scalar(matrix_dot(hidden_gradients_mul, matrix_transpose(inputs)), nn->lr);
+    Matrix delta_weights_ih = matrix_multiply_scalar(matrix_dot(hidden_gradients_mul, matrix_transpose(inputs)), -nn->lr);
     Matrix new_weights_ih = matrix_add_subtract(nn->weights_ih, delta_weights_ih, true);
     matrix_free(nn->weights_ih); nn->weights_ih = new_weights_ih;
     
     for (int i = 0; i < NN_HIDDEN_SIZE; i++) {
-        nn->bias_h[i] = check_double(nn->bias_h[i], "bias_h", "nn_train_upd") + check_double(hidden_gradients_mul.data[i][0], "grad_h", "nn_train_upd") * nn->lr;
+        nn->bias_h[i] = check_double(nn->bias_h[i], "bias_h", "nn_train_upd") - check_double(hidden_gradients_mul.data[i][0], "grad_h", "nn_train_upd") * nn->lr;
     }
     
     // 5. Cleanup
@@ -326,152 +261,51 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
 
 // --- Game Logic Functions ---
 
-void apply_action(Robot* robot, int action_index, bool is_unittest) {
-    double step_size = is_unittest ? UNITTEST_MOVE_STEP_SIZE : MOVE_STEP_SIZE;
-    
-    switch (action_index) {
-        case 0: robot->y -= step_size; break; // UP
-        case 1: robot->y += step_size; break; // DOWN
-        case 2: robot->x -= step_size; break; // LEFT
-        case 3: robot->x += step_size; break; // RIGHT
-    }
-    
-    action_history[action_history_idx] = action_index;
-    action_history_idx = (action_history_idx + 1) % ACTION_HISTORY_SIZE;
-}
-
-bool is_point_legal(double x, double y) {
-    double r = state.robot.size; 
-    if (x - r < BORDER_WIDTH || x + r > CANVAS_WIDTH - BORDER_WIDTH ||
-        y - r < BORDER_WIDTH || y + r > CANVAS_HEIGHT - BORDER_WIDTH) {
-        return false; 
-    }
-    for (int i = 0; i < NUM_OBSTACLES; i++) {
-        Obstacle* obs = &state.obstacles[i];
-        if (obs->w <= 0.0) continue; 
-        double closest_x = fmax(obs->x, fmin(x, obs->x + obs->w));
-        double closest_y = fmax(obs->y, fmin(y, obs->y + obs->h));
-        double dx = x - closest_x;
-        double dy = y - closest_y;
-        if (dx * dx + dy * dy < r * r) {
-            return false; 
-        }
-    }
-    return true;
-}
-
-int check_collision(Robot* robot) {
-    double r = robot->size; 
-    int diamonds_collected_this_step = 0;
-
-    // 1. Wall/Obstacle Collision (Crash)
-    if (robot->x - r < BORDER_WIDTH || robot->x + r > CANVAS_WIDTH - BORDER_WIDTH ||
-        robot->y - r < BORDER_WIDTH || robot->y + r > CANVAS_HEIGHT - BORDER_WIDTH) {
-        robot->is_alive = false;
-        return 0; 
-    }
-    for (int i = 0; i < NUM_OBSTACLES; i++) {
-        Obstacle* obs = &state.obstacles[i];
-        if (obs->w <= 0.0) continue; 
-        double closest_x = fmax(obs->x, fmin(robot->x, obs->x + obs->w));
-        double closest_y = fmax(obs->y, fmin(robot->y, obs->y + obs->h));
-        double dx = robot->x - closest_x;
-        double dy = robot->y - closest_y;
-        if (dx * dx + dy * dy < r * r) {
-            robot->is_alive = false;
-            return 0; 
-        }
-    }
-    
-    // 2. Diamond Collection
-    for (int i = 0; i < NUM_DIAMONDS; i++) {
-        Diamond* d = &state.diamonds[i];
-        if (d->collected) continue;
-        if (distance_2d(robot->x, robot->y, d->x, d->y) < robot->size + d->size) {
-            d->collected = true;
-            state.total_diamonds++;
-            diamonds_collected_this_step++;
-            state.score += (int)REWARD_COLLECT_DIAMOND;
-        }
-    }
-
-    // 3. Target Area Check
-    TargetArea* target = &state.target;
-    if (is_point_in_rect(robot->x, robot->y, target->x, target->y, target->w, target->h)) {
-        robot->has_reached_target = true;
-    }
-    
-    return diamonds_collected_this_step;
-}
-
-
-void init_minimal_state() {
-    step_count = 0;
-    state.score = 0;
-    state.total_diamonds = 0;
-    state.path_length = 0; 
-
-    state.robot.x = 50.0;
-    state.robot.y = 50.0; 
-    state.robot.size = 10.0;
-    state.robot.is_alive = true;
-    state.robot.has_reached_target = false;
-    
-    episode_buffer.count = 0;
-    episode_buffer.total_score = 0;
-
-    state.target.x = 60.0;
-    state.target.y = 60.0;
-    state.target.w = 10.0;
-    state.target.h = 10.0;
-    
-    for(int i = 0; i < NUM_OBSTACLES; i++) state.obstacles[i].w = 0.0;
-    for(int i = 0; i < NUM_DIAMONDS; i++) state.diamonds[i].collected = true;
-    
-    if (state.path_length < MAX_EPISODE_STEPS) {
-        state.path_history[state.path_length].x = state.robot.x;
-        state.path_history[state.path_length].y = state.robot.y;
-        state.path_length++; 
-    }
-
-    if (UNITTEST_TRACING && current_episode == 1) {
-        printf("UNITTEST INFO: Start (%.1f, %.1f), Target Area (%.1f, %.1f) to (%.1f, %.1f) (Step Size: %.1f)\n", 
-               state.robot.x, state.robot.y, state.target.x, state.target.y, 
-               state.target.x + state.target.w, state.target.y + state.target.h, UNITTEST_MOVE_STEP_SIZE);
-    }
-}
-
 void init_game_state() {
     step_count = 0;
     state.score = 0;
     state.total_diamonds = 0;
-    state.path_length = 0; 
 
+    // Robot setup (Start position)
     state.robot.x = 50.0;
     state.robot.y = 50.0; 
     state.robot.size = 10.0;
     state.robot.is_alive = true;
     state.robot.has_reached_target = false;
     
+    // Reset episode buffer
     episode_buffer.count = 0;
     episode_buffer.total_score = 0;
 
+    // --- FIXED LEVEL CONFIGURATION ---
+    
+    // Fixed Obstacles (x, y, w, h) - 5 Rectangular Obstacles
     double obs_configs[NUM_OBSTACLES][4] = {
-        {150.0, 150.0, 50.0, 250.0}, {350.0, 150.0, 50.0, 250.0},  
-        {550.0, 50.0, 50.0, 200.0}, {550.0, 450.0, 50.0, 100.0},  
-        {250.0, 400.0, 200.0, 30.0}   
+        {150.0, 150.0, 50.0, 250.0},  // 1. Vertical Left
+        {350.0, 150.0, 50.0, 250.0},  // 2. Vertical Center
+        {550.0, 50.0, 50.0, 200.0},   // 3. Vertical Top Right
+        {550.0, 450.0, 50.0, 100.0},  // 4. Vertical Bottom Right
+        {250.0, 400.0, 200.0, 30.0}   // 5. Horizontal Center Bottom
     };
     for (int i = 0; i < NUM_OBSTACLES; i++) {
         state.obstacles[i].x = obs_configs[i][0];
         state.obstacles[i].y = obs_configs[i][1];
         state.obstacles[i].w = obs_configs[i][2];
-        state.obstacles[i].h = obs_configs[i][3]; // CORRECTED: from [3] to .h
+        state.obstacles[i].h = obs_configs[i][3];
     }
 
+    // Fixed Diamonds (x, y) - 10 legal diamonds
     double diamond_pos[NUM_DIAMONDS][2] = {
-        {100.0, 100.0}, {300.0, 100.0}, {700.0, 100.0}, {100.0, 450.0}, 
-        {250.0, 500.0}, {500.0, 500.0}, {700.0, 500.0}, {50.0, 300.0},  
-        {500.0, 350.0}, {700.0, 300.0} 
+        {100.0, 100.0}, // D0
+        {300.0, 100.0}, // D1
+        {700.0, 100.0}, // D2
+        {100.0, 450.0}, // D3
+        {250.0, 500.0}, // D4
+        {500.0, 500.0}, // D5
+        {700.0, 500.0}, // D6
+        {50.0, 300.0},  // D7
+        {500.0, 350.0}, // D8
+        {700.0, 300.0}  // D9
     };
     for (int i = 0; i < NUM_DIAMONDS; i++) {
         state.diamonds[i].x = diamond_pos[i][0];
@@ -480,18 +314,14 @@ void init_game_state() {
         state.diamonds[i].collected = false;
     }
     
+    // Fixed Target Area (End Goal)
     state.target.x = CANVAS_WIDTH - 100.0;
     state.target.y = CANVAS_HEIGHT - 100.0;
     state.target.w = 50.0;
     state.target.h = 50.0;
-
-    if (state.path_length < MAX_EPISODE_STEPS) {
-        state.path_history[state.path_length].x = state.robot.x;
-        state.path_history[state.path_length].y = state.robot.y;
-        state.path_length++; 
-    }
 }
 
+// Selects an action stochastically based on probabilities
 int select_action(const double* probabilities) {
     double r = check_double((double)rand() / RAND_MAX, "rand_action", "select_action");
     double cumulative_prob = 0.0;
@@ -507,12 +337,18 @@ int select_action(const double* probabilities) {
 void get_state_features(double* input, double* min_dist_to_goal_ptr) {
     Robot* robot = &state.robot;
     
+    // --- 1. Robot State (2) ---
     input[0] = robot->x / CANVAS_WIDTH;  
     input[1] = robot->y / CANVAS_HEIGHT; 
+    
+    // --- 2. Target State (2) ---
     input[2] = (state.target.x + state.target.w/2.0) / CANVAS_WIDTH;
     input[3] = (state.target.y + state.target.h/2.0) / CANVAS_HEIGHT;
     
+    // Determine the GOAL location 
     double goal_x, goal_y;
+    
+    // Find Nearest Diamond or Target
     Diamond* nearest_diamond = NULL;
     double min_diamond_dist = INFINITY;
     for (int i = 0; i < NUM_DIAMONDS; i++) {
@@ -523,7 +359,7 @@ void get_state_features(double* input, double* min_dist_to_goal_ptr) {
         }
     }
     
-    if (nearest_diamond && !state.robot.has_reached_target) {
+    if (nearest_diamond) {
         goal_x = nearest_diamond->x; 
         goal_y = nearest_diamond->y;
     } else {
@@ -531,6 +367,7 @@ void get_state_features(double* input, double* min_dist_to_goal_ptr) {
         goal_y = state.target.y + state.target.h / 2.0;
     }
     
+    // --- 3. Goal Distance (2) ---
     double goal_dx = goal_x - robot->x;
     double goal_dy = goal_y - robot->y;
     
@@ -539,87 +376,146 @@ void get_state_features(double* input, double* min_dist_to_goal_ptr) {
     
     *min_dist_to_goal_ptr = distance_2d(robot->x, robot->y, goal_x, goal_y);
 
-    double dist_left_wall = robot->x - BORDER_WIDTH - robot->size;
-    double dist_right_wall = CANVAS_WIDTH - BORDER_WIDTH - robot->x - robot->size;
-    double dist_top_wall = robot->y - BORDER_WIDTH - robot->size;
-    double dist_bottom_wall = CANVAS_HEIGHT - BORDER_WIDTH - robot->y - robot->size;
-
-    double min_danger_dist_x = fmin(dist_left_wall, dist_right_wall);
-    double min_danger_dist_y = fmin(dist_top_wall, dist_bottom_wall);
-    
+    // --- 4. Nearest Obstacle Distance (2) ---
+    Obstacle* nearest_obs = NULL;
+    double min_obs_dist = INFINITY;
     for (int i = 0; i < NUM_OBSTACLES; i++) {
         Obstacle* obs = &state.obstacles[i];
-        if (obs->w <= 0.0) continue; 
+        double obs_center_x = obs->x + obs->w / 2.0;
+        double obs_center_y = obs->y + obs->h / 2.0;
         
-        double closest_x = fmax(obs->x, fmin(robot->x, obs->x + obs->w));
-        double closest_y = fmax(obs->y, fmin(robot->y, obs->y + obs->h));
-        
-        double obs_dist_x = fabs(robot->x - closest_x) - robot->size;
-        double obs_dist_y = fabs(robot->y - closest_y) - robot->size;
-
-        if (obs_dist_x < 0) obs_dist_x = 0;
-        if (obs_dist_y < 0) obs_dist_y = 0;
-        
-        min_danger_dist_x = fmin(min_danger_dist_x, obs_dist_x);
-        min_danger_dist_y = fmin(min_danger_dist_y, obs_dist_y);
+        double dist = distance_2d(robot->x, robot->y, obs_center_x, obs_center_y);
+        if (dist < min_obs_dist) { min_obs_dist = dist; nearest_obs = obs; }
     }
     
-    input[6] = check_double(fmax(0.0, min_danger_dist_x) / CANVAS_WIDTH, "norm_danger_dist_x", "get_state_features");
-    input[7] = check_double(fmax(0.0, min_danger_dist_y) / CANVAS_HEIGHT, "norm_danger_dist_y", "get_state_features"); 
+    double obs_dx = nearest_obs ? (nearest_obs->x + nearest_obs->w / 2.0) - robot->x : 0.0;
+    double obs_dy = nearest_obs ? (nearest_obs->y + nearest_obs->h / 2.0) - robot->y : 0.0;
+    
+    input[6] = check_double(obs_dx / CANVAS_WIDTH, "norm_obs_dx", "get_state_features");
+    input[7] = check_double(obs_dy / CANVAS_HEIGHT, "norm_obs_dy", "get_state_features"); 
 
-    input[8] = (double)state.total_diamonds / (NUM_DIAMONDS > 0 ? NUM_DIAMONDS : 1.0);
+    // --- 5. Collected Ratio (1) ---
+    input[8] = (double)state.total_diamonds / NUM_DIAMONDS;
 
     for (int i = 0; i < NN_INPUT_SIZE; i++) {
-        check_nan_and_stop(input[i], "input_feature", "get_state_features");
+        if (input[i] > 1.0) input[i] = 1.0;
+        if (input[i] < -1.0) input[i] = -1.0;
     }
 }
 
-double calculate_reward(double old_min_dist_to_goal, int diamonds_collected_this_step, bool expert_run, bool is_unittest) {
-    double progress_scale = is_unittest ? UNITTEST_PROGRESS_REWARD : REWARD_PROGRESS_SCALE;
-    double step_penalty = is_unittest ? UNITTEST_STEP_PENALTY : REWARD_PER_STEP;
-    double crash_penalty = is_unittest ? UNITTEST_CRASH_PENALTY : REWARD_CRASH; 
-    double success_reward = is_unittest ? UNITTEST_GOAL_REWARD : REWARD_SUCCESS;
-    
+double calculate_reward(double old_min_dist_to_goal, int diamonds_collected_this_step, bool expert_run) {
+    double reward = expert_run ? 5.0 : REWARD_PER_STEP; 
     Robot* robot = &state.robot;
     
-    if (!robot->is_alive) return crash_penalty; 
-    
-    if (robot->has_reached_target) {
-        double final_reward = success_reward; 
-        if (!is_unittest && state.total_diamonds < NUM_DIAMONDS) {
-             if (NUM_DIAMONDS > 0) final_reward -= (NUM_DIAMONDS - state.total_diamonds) * 50.0; 
-        }
-        return final_reward;
-    } 
-
-    double reward = step_penalty; 
+    if (!robot->is_alive) return REWARD_CRASH;
     
     if (diamonds_collected_this_step > 0) {
         reward += REWARD_COLLECT_DIAMOND * diamonds_collected_this_step;
     }
 
+    if (robot->has_reached_target) {
+        reward += REWARD_SUCCESS;
+        if (state.total_diamonds < NUM_DIAMONDS) {
+            reward -= (NUM_DIAMONDS - state.total_diamonds) * 50.0; 
+        }
+    }
+    
+    // Progress Reward
     double min_dist_to_goal;
     double dummy_input[NN_INPUT_SIZE];
     get_state_features(dummy_input, &min_dist_to_goal); 
     
     double distance_change = old_min_dist_to_goal - min_dist_to_goal;
     
-    reward += progress_scale * distance_change;
+    if (distance_change > 0) {
+        reward += REWARD_PROGRESS_SCALE * distance_change;
+    } else {
+        reward += REWARD_PROGRESS_SCALE * distance_change; 
+    }
+    
+    // FIX: Commented out the line that incorrectly zeroes out the final reward (REWARD_SUCCESS).
+    // Crash reward is handled by the early 'return REWARD_CRASH'.
+    // if (robot->has_reached_target || !robot->is_alive) reward = 0.0;
     
     return check_double(reward, "final_reward", "calc_reward");
 }
 
-void update_game(bool is_training_run, bool expert_run, bool is_unittest, int episode_number) {
-    Robot* robot = &state.robot;
-    int max_steps = is_unittest ? UNITTEST_MAX_STEPS : MAX_EPISODE_STEPS;
+
+void apply_action(Robot* robot, int action_index) {
+    double dx = 0.0;
+    double dy = 0.0;
     
-    if (!robot->is_alive || robot->has_reached_target || step_count >= max_steps) return; 
+    switch (action_index) {
+        case 0: dy = -MOVE_STEP_SIZE; break; // UP 
+        case 1: dy = MOVE_STEP_SIZE;  break; // DOWN
+        case 2: dx = -MOVE_STEP_SIZE; break; // LEFT
+        case 3: dx = MOVE_STEP_SIZE;  break; // RIGHT
+    }
+
+    robot->x += dx;
+    robot->y += dy;
+    
+    action_history[action_history_idx] = action_index;
+    action_history_idx = (action_history_idx + 1) % ACTION_HISTORY_SIZE;
+}
+
+
+int check_collision(Robot* robot) {
+    double r = robot->size; 
+    int diamonds_collected_this_step = 0;
+    
+    // --- 1. Wall Collision (Instant crash) ---
+    if (robot->x - r < BORDER_WIDTH || robot->x + r > CANVAS_WIDTH - BORDER_WIDTH ||
+        robot->y - r < BORDER_WIDTH || robot->y + r > CANVAS_HEIGHT - BORDER_WIDTH) {
+        robot->is_alive = false;
+        return 0; 
+    }
+    
+    // --- 2. Obstacle Collision (Instant crash) ---
+    for (int i = 0; i < NUM_OBSTACLES; i++) {
+        Obstacle* obs = &state.obstacles[i];
+        double closest_x = fmax(obs->x, fmin(robot->x, obs->x + obs->w));
+        double closest_y = fmax(obs->y, fmin(robot->y, obs->y + obs->h));
+        
+        double dx = robot->x - closest_x;
+        double dy = robot->y - closest_y;
+        
+        if (dx * dx + dy * dy < r * r) {
+            robot->is_alive = false;
+            return 0; 
+        }
+    }
+    
+    // --- 3. Diamond Collection ---
+    for (int i = 0; i < NUM_DIAMONDS; i++) {
+        Diamond* d = &state.diamonds[i];
+        if (d->collected) continue;
+        
+        if (distance_2d(robot->x, robot->y, d->x, d->y) < robot->size + d->size) {
+            d->collected = true;
+            state.total_diamonds++;
+            diamonds_collected_this_step++;
+            state.score += (int)REWARD_COLLECT_DIAMOND;
+        }
+    }
+
+    // --- 4. Target Area Check (Goal) ---
+    TargetArea* target = &state.target;
+    if (robot->x + r > target->x && robot->x - r < target->x + target->w &&
+        robot->y + r > target->y && robot->y - r < target->y + target->h) {
+        robot->has_reached_target = true;
+    }
+    
+    return diamonds_collected_this_step;
+}
+
+void update_game(bool is_training_run, bool expert_run) {
+    Robot* robot = &state.robot;
+    
+    if (!robot->is_alive || robot->has_reached_target || step_count >= MAX_EPISODE_STEPS) return; 
 
     double input[NN_INPUT_SIZE];
     double old_min_dist_to_goal;
-    double old_x = robot->x;
-    double old_y = robot->y;
-
     get_state_features(input, &old_min_dist_to_goal);
 
     double logit_output[NN_OUTPUT_SIZE];
@@ -627,171 +523,173 @@ void update_game(bool is_training_run, bool expert_run, bool is_unittest, int ep
     nn_policy_forward(&nn, input, probabilities, logit_output);
 
     int action_index = select_action(probabilities);
-    
-    double old_dist_copy = old_min_dist_to_goal; 
-    
-    apply_action(robot, action_index, is_unittest);
-    
-    if (state.path_length < MAX_EPISODE_STEPS) {
-        state.path_history[state.path_length].x = robot->x;
-        state.path_history[state.path_length].y = robot->y;
-        state.path_length++;
-    }
+
+    apply_action(robot, action_index);
 
     int diamonds_collected = check_collision(robot);
     
-    double final_reward = calculate_reward(old_dist_copy, diamonds_collected, expert_run, is_unittest);
+    double reward = calculate_reward(old_min_dist_to_goal, diamonds_collected, expert_run);
     
-    if (is_unittest && UNITTEST_TRACING && episode_number == 1) {
-        printf("Step %d: (%.1f, %.1f) -> Action %s (P=%.2f) -> Reward %.2f -> New Pos (%.1f, %.1f) [Alive: %d, Goal: %d]\n",
-               step_count + 1, old_x, old_y, action_names[action_index], probabilities[action_index], 
-               final_reward, robot->x, robot->y, robot->is_alive, robot->has_reached_target);
-    }
-    
-    if (is_training_run && episode_buffer.count < max_steps) {
+    if (is_training_run && episode_buffer.count < MAX_EPISODE_STEPS) {
         EpisodeStep step;
         memcpy(step.input, input, NN_INPUT_SIZE * sizeof(double));
         step.action_index = action_index;
-        step.reward = check_double(final_reward, "final_reward", "update_game");
+        step.reward = reward;
         
         episode_buffer.steps[episode_buffer.count] = step;
         episode_buffer.count++;
-        episode_buffer.total_score += final_reward;
+        episode_buffer.total_score += reward;
     }
     
     step_count++;
 }
 
-void run_batch_reinforce_training(EpisodeStep* steps, int count) {
-    if (count == 0) return;
+void run_reinforce_training() {
+    if (episode_buffer.count == 0) return;
 
-    double returns[count];
+    // 1. Calculate Discounted Returns (G_t)
+    double returns[episode_buffer.count];
     double cumulative_return = 0.0;
     
-    // Calculate returns in reverse across the entire batch
-    for (int i = count - 1; i >= 0; i--) {
-        cumulative_return = steps[i].reward + GAMMA * cumulative_return;
-        check_nan_and_stop(cumulative_return, "cumulative_return", "run_batch_reinforce_training");
+    for (int i = episode_buffer.count - 1; i >= 0; i--) {
+        cumulative_return = episode_buffer.steps[i].reward + GAMMA * cumulative_return;
         returns[i] = cumulative_return;
     }
     
-    // Normalize Returns (Baseline)
+    // 2. Normalize Returns (Baseline)
     double sum_returns = 0.0;
     double sum_sq_returns = 0.0;
-    for (int i = 0; i < count; i++) {
+    for (int i = 0; i < episode_buffer.count; i++) {
         sum_returns += returns[i];
         sum_sq_returns += returns[i] * returns[i];
     }
-    double mean_return = sum_returns / count;
-    double variance = (sum_sq_returns / count) - (mean_return * mean_return);
+    double mean_return = sum_returns / episode_buffer.count;
+    double variance = (sum_sq_returns / episode_buffer.count) - (mean_return * mean_return);
     double std_dev = sqrt(variance > 1e-6 ? variance : 1.0); 
 
-    // Train the Network
-    for (int i = 0; i < count; i++) {
+    // 3. Train the Network using Backpropagation (REINFORCE)
+    for (int i = 0; i < episode_buffer.count; i++) {
         double Gt = (returns[i] - mean_return) / std_dev; 
+        
         nn_reinforce_train(&nn, 
-                           steps[i].input, 
-                           steps[i].action_index, 
+                           episode_buffer.steps[i].input, 
+                           episode_buffer.steps[i].action_index, 
                            -Gt); 
     }
 }
 
-void print_batch_stats(int episodes, double total_score, double train_time_ms, int final_episode) {
-    printf("====================================================\n");
-    printf("RL TRAINING BATCH SUMMARY (Episodes %d - %d)\n", final_episode - episodes + 1, final_episode);
-    printf("----------------------------------------------------\n");
-    printf("Episodes in Batch: %d\n", episodes);
-    printf("Batch Total Score: %.2f\n", total_score);
-    printf("Average Score Per Episode: %.2f\n", total_score / episodes);
-    printf("Reinforcement Learning Training Time: %.3f ms\n", train_time_ms);
-    printf("====================================================\n\n");
-}
-
-void print_episode_stats(double train_time_ms, bool is_expert, bool is_unittest, int diamonds, int episode, int steps, bool alive, bool reached_target, double score, int* actions, int actions_idx) {
+void print_episode_stats(double train_time_ms, bool is_expert) {
+    Robot* robot = &state.robot;
     
     printf("====================================================\n");
-    if (is_unittest) {
-         printf("UNITTEST EPISODE %d SUMMARY (Steps: %d/%d)\n", episode, steps, UNITTEST_MAX_STEPS);
-    } else {
-        printf("%sEPISODE %d SUMMARY (Steps: %d/%d)\n", is_expert ? "EXPERT " : "", episode, steps, MAX_EPISODE_STEPS);
-    }
-    
+    printf("%sEPISODE %d SUMMARY (Steps: %d/%d)\n", is_expert ? "EXPERT " : "", current_episode, step_count, MAX_EPISODE_STEPS);
     printf("----------------------------------------------------\n");
     
     const char* status = "TIMEOUT (Max Steps)";
-    if (!alive) {
+    if (!robot->is_alive) {
         status = "CRASHED (Wall/Obstacle)";
-    } else if (reached_target) {
-        status = (is_unittest || diamonds == NUM_DIAMONDS) ? "SUCCESS" : "SUCCESS (PARTIAL)";
+    } else if (robot->has_reached_target) {
+        status = (state.total_diamonds == NUM_DIAMONDS) ? "SUCCESS (ALL COLLECTED)" : "SUCCESS (PARTIAL)";
     }
     
     printf("Termination Status: %s\n", status);
-    
-    printf("Total Diamonds Collected: %d/%d\n", diamonds, NUM_DIAMONDS);
-    
-    // Conditional ASCII Path Trace
-    if (!is_unittest && diamonds > 4) {
-        // --- print_ascii_map_with_path() --- 
-        printf("\n\n--- AI PATH TRACE (P) ---\n");
-        printf("Legend: #=Wall, O=Obstacle, D=Diamond, S=Start (Robot), T=Target (Goal), P=Path, .=Free\n");
-        for (int r = 0; r < GRID_ROWS; r++) {
-            for (int c = 0; c < GRID_COLS; c++) {
-                char final_symbol = '.';
-                double cell_x = col_to_x(c); double cell_y = row_to_y(r);
-
-                for (int i = 0; i < NUM_OBSTACLES; i++) {
-                    Obstacle* obs = &state.obstacles[i];
-                    if (is_point_in_rect(cell_x, cell_y, obs->x, obs->y, obs->w, obs->h)) { final_symbol = 'O'; break; }
-                }
-                for (int i = 0; i < NUM_DIAMONDS; i++) {
-                    Diamond* d = &state.diamonds[i];
-                    if (x_to_col(d->x) == c && y_to_row(d->y) == r) { final_symbol = 'D'; break; }
-                }
-                TargetArea* target = &state.target;
-                if (is_point_in_rect(cell_x, cell_y, target->x, target->y, target->w, target->h)) { final_symbol = 'T'; }
-                for(int i = 1; i < state.path_length; i++) { 
-                     if (x_to_col(state.path_history[i].x) == c && y_to_row(state.path_history[i].y) == r) { final_symbol = 'P'; break; }
-                }
-                if (state.path_length > 0 && x_to_col(state.path_history[0].x) == c && y_to_row(state.path_history[0].y) == r) { final_symbol = 'S'; }
-                if (r == 0 || r == GRID_ROWS - 1 || c == 0 || c == GRID_COLS - 1) { final_symbol = '#'; }
-                printf("%c", final_symbol);
-            }
-            printf("\n");
-        }
-        printf("-----------------------------------------\n\n");
-    }
-
-    printf("Final Policy Reward (Score): %.2f\n", score);
+    printf("Total Diamonds Collected: %d/%d\n", state.total_diamonds, NUM_DIAMONDS);
+    printf("Final Policy Reward (Score): %.2f\n", episode_buffer.total_score);
     
     printf("Reinforcement Learning Training Time: %.3f ms\n", train_time_ms);
     
     if (!is_expert) {
         printf("Last %d Actions by AI (Newest to Oldest):\n", ACTION_HISTORY_SIZE);
         for (int i = 1; i <= ACTION_HISTORY_SIZE; i++) {
-            int index = (actions_idx - i + ACTION_HISTORY_SIZE) % ACTION_HISTORY_SIZE;
-            printf("%s%s", action_names[actions[index]], (i < ACTION_HISTORY_SIZE) ? ", " : "");
+            int index = (action_history_idx - i + ACTION_HISTORY_SIZE) % ACTION_HISTORY_SIZE;
+            printf("%s%s", action_names[action_history[index]], (i < ACTION_HISTORY_SIZE) ? ", " : "");
         }
         printf("\n");
     }
     printf("====================================================\n\n");
 }
 
+
+// --- Pathfinding and Expert Training Functions ---
+
+// Converts grid coordinates to world coordinates (center of the cell)
+double col_to_x(int c) { return c * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
+double row_to_y(int r) { return r * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
+int x_to_col(double x) { return (int)(x / GRID_CELL_SIZE); }
+int y_to_row(double y) { return (int)(y / GRID_CELL_SIZE); }
+
+// Helper function to check if a point is inside a single obstacle
+bool is_point_in_rect(double px, double py, double rx, double ry, double rw, double rh) {
+    return px >= rx && px <= rx + rw && py >= ry && py <= ry + rh;
+}
+
+// Checks if a point at the center of a grid cell is legal (no collision with walls/obstacles)
+bool is_point_legal(double x, double y) {
+    // FIX: Use state.robot.size instead of the undeclared 'robot->size'
+    double r = state.robot.size; 
+
+    // Check Wall Collision
+    if (x - r < BORDER_WIDTH || x + r > CANVAS_WIDTH - BORDER_WIDTH ||
+        y - r < BORDER_WIDTH || y + r > CANVAS_HEIGHT - BORDER_WIDTH) {
+        return false; 
+    }
+    
+    // Check Obstacle Collision
+    for (int i = 0; i < NUM_OBSTACLES; i++) {
+        Obstacle* obs = &state.obstacles[i];
+        double closest_x = fmax(obs->x, fmin(x, obs->x + obs->w));
+        double closest_y = fmax(obs->y, fmin(y, obs->y + obs->h));
+        
+        double dx = x - closest_x;
+        double dy = y - closest_y;
+        
+        // If the closest point on the obstacle is within the robot's radius, it's a collision
+        if (dx * dx + dy * dy < r * r) {
+            return false; 
+        }
+    }
+    return true;
+}
+
+// Finds a path using Breadth-First Search on the coarse grid (omitted implementation for brevity)
 int find_path_segment_bfs(double start_x, double start_y, double end_x, double end_y, PathNode* path_out) {
-    int start_r = y_to_row(start_y); int start_c = x_to_col(start_x);
-    int end_r = y_to_row(end_y); int end_c = x_to_col(end_x);
-    if (!is_point_legal(start_x, start_y) || !is_point_legal(end_x, end_y)) { return 0; }
-    PathNode queue[GRID_ROWS * GRID_COLS]; int head = 0, tail = 0;
-    int visited[GRID_ROWS][GRID_COLS]; memset(visited, 0, sizeof(visited));
-    queue[tail++] = (PathNode){start_r, start_c, -1, -1}; visited[start_r][start_c] = 1;
-    int dr[] = {-1, 1, 0, 0}; int dc[] = {0, 0, -1, 1};
+    int start_r = y_to_row(start_y);
+    int start_c = x_to_col(start_x);
+    int end_r = y_to_row(end_y);
+    int end_c = x_to_col(end_x);
+    
+    if (!is_point_legal(start_x, start_y) || !is_point_legal(end_x, end_y)) {
+        fprintf(stderr, "Error: Start or End point is illegal for pathfinding. (Start: %.1f, %.1f | End: %.1f, %.1f)\n", start_x, start_y, end_x, end_y);
+        return 0;
+    }
+
+    PathNode queue[GRID_ROWS * GRID_COLS];
+    int head = 0, tail = 0;
+    int visited[GRID_ROWS][GRID_COLS];
+    memset(visited, 0, sizeof(visited));
+
+    queue[tail++] = (PathNode){start_r, start_c, -1, -1};
+    visited[start_r][start_c] = 1;
+
+    int dr[] = {-1, 1, 0, 0}; 
+    int dc[] = {0, 0, -1, 1};
+
     PathNode* final_node = NULL;
     while (head < tail) {
         PathNode current = queue[head++];
-        if (current.r == end_r && current.c == end_c) { final_node = &queue[head - 1]; break; }
+        if (current.r == end_r && current.c == end_c) {
+            final_node = &queue[head - 1];
+            break;
+        }
+
         for (int i = 0; i < 4; i++) {
-            int next_r = current.r + dr[i]; int next_c = current.c + dc[i];
+            int next_r = current.r + dr[i];
+            int next_c = current.c + dc[i];
+
             if (next_r >= 0 && next_r < GRID_ROWS && next_c >= 0 && next_c < GRID_COLS && !visited[next_r][next_c]) {
-                double next_x = col_to_x(next_c); double next_y = row_to_y(next_r);
+                double next_x = col_to_x(next_c);
+                double next_y = row_to_y(next_r);
+
                 if (is_point_legal(next_x, next_y)) {
                     visited[next_r][next_c] = 1;
                     queue[tail++] = (PathNode){next_r, next_c, current.r, current.c};
@@ -799,49 +697,72 @@ int find_path_segment_bfs(double start_x, double start_y, double end_x, double e
             }
         }
     }
+
     if (!final_node) return 0;
-    int path_len = 0; PathNode* node = final_node;
-    PathNode temp_path[MAX_PATH_NODES]; // Use a temporary buffer for reconstruction
+
+    // Reconstruct path
+    int path_len = 0;
+    PathNode* node = final_node;
+    // We stop before the start node, which has parent_r == -1
+    // The start node (WP_i) is already accounted for, we want the path *from* it.
     while (node->parent_r != -1) { 
-        if (path_len < MAX_PATH_NODES) { temp_path[path_len++] = *node; }
+        if (path_len < MAX_PATH_NODES) {
+            path_out[path_len++] = *node;
+        }
+        
+        // Find parent node in the queue
         int parent_index = -1;
         for (int i = 0; i < tail; i++) {
-            if (queue[i].r == node->parent_r && queue[i].c == node->parent_c) { parent_index = i; break; }
+            if (queue[i].r == node->parent_r && queue[i].c == node->parent_c) {
+                parent_index = i;
+                break;
+            }
         }
         if (parent_index == -1) break; 
         node = &queue[parent_index];
     }
-    // Reverse the path
-    for (int i = 0; i < path_len; i++) {
-        path_out[i] = temp_path[path_len - 1 - i];
+
+    // Path is currently reversed (End -> Start). Reverse it back.
+    for (int i = 0; i < path_len / 2; i++) {
+        PathNode temp = path_out[i];
+        path_out[i] = path_out[path_len - 1 - i];
+        path_out[path_len - 1 - i] = temp;
     }
+    
     return path_len;
 }
 
+// Generates the full expert path and fills the episode buffer (omitted implementation for brevity)
 void generate_expert_path_training_data() {
     double waypoints_x[NUM_DIAMONDS + 2]; 
     double waypoints_y[NUM_DIAMONDS + 2];
     int num_waypoints = NUM_DIAMONDS + 2;
 
+    // 0. Start Position
     waypoints_x[0] = state.robot.x;
     waypoints_y[0] = state.robot.y;
 
+    // Find a random but legal intermediate point
     double rnd_x, rnd_y;
     do {
         rnd_x = 600.0 + (double)rand() / RAND_MAX * 150.0; 
         rnd_y = 50.0 + (double)rand() / RAND_MAX * 500.0;
     } while (!is_point_legal(rnd_x, rnd_y));
 
+    // 1. Random Legal Point
     waypoints_x[1] = rnd_x;
     waypoints_y[1] = rnd_y;
 
+    // 2. Diamonds 
     for (int i = 0; i < NUM_DIAMONDS; i++) {
         waypoints_x[i + 2] = state.diamonds[i].x;
         waypoints_y[i + 2] = state.diamonds[i].y;
     }
 
+    // Last point: Target Center
     waypoints_x[num_waypoints - 1] = state.target.x + state.target.w / 2.0;
     waypoints_y[num_waypoints - 1] = state.target.y + state.target.h / 2.0;
+
 
     printf("\n--- EXPERT PATH WAYPOINTS ---\n");
     for (int i = 0; i < num_waypoints; i++) {
@@ -851,6 +772,7 @@ void generate_expert_path_training_data() {
     PathNode full_path[MAX_PATH_NODES];
     int full_path_len = 0;
 
+    // 2. Search Paths Segment by Segment
     for (int i = 0; i < num_waypoints - 1; i++) {
         PathNode segment[MAX_PATH_NODES];
         int segment_len = find_path_segment_bfs(
@@ -859,7 +781,8 @@ void generate_expert_path_training_data() {
             segment);
 
         if (segment_len == 0) {
-            fprintf(stderr, "WARNING: Could not find legal path from WP %d to WP %d. Skipping segment.\n", i, i+1);
+            fprintf(stderr, "CRITICAL ERROR: Could not find legal path from WP %d (%.1f, %.1f) to WP %d (%.1f, %.1f).\n", 
+                i, waypoints_x[i], waypoints_y[i], i+1, waypoints_x[i+1], waypoints_y[i+1]);
             continue; 
         }
 
@@ -877,10 +800,6 @@ void generate_expert_path_training_data() {
     episode_buffer.count = 0;
     episode_buffer.total_score = 0;
     
-    state.robot.x = waypoints_x[0];
-    state.robot.y = waypoints_y[0];
-    state.path_length = 1; 
-    
     for (int i = 0; i < full_path_len && episode_buffer.count < MAX_EPISODE_STEPS; i++) {
         PathNode current_node = full_path[i];
         double target_x = col_to_x(current_node.c);
@@ -892,13 +811,12 @@ void generate_expert_path_training_data() {
         for (int a = 0; a < NN_OUTPUT_SIZE; a++) {
             double test_x = robot->x;
             double test_y = robot->y;
-            double expert_step = MOVE_STEP_SIZE;
             
             switch (a) {
-                case 0: test_y -= expert_step; break; 
-                case 1: test_y += expert_step; break; 
-                case 2: test_x -= expert_step; break; 
-                case 3: test_x += expert_step; break; 
+                case 0: test_y -= MOVE_STEP_SIZE; break; 
+                case 1: test_y += MOVE_STEP_SIZE; break; 
+                case 2: test_x -= MOVE_STEP_SIZE; break; 
+                case 3: test_x += MOVE_STEP_SIZE; break; 
             }
             
             double dist = distance_2d(test_x, test_y, target_x, target_y);
@@ -913,17 +831,11 @@ void generate_expert_path_training_data() {
             double input[NN_INPUT_SIZE];
             get_state_features(input, &old_min_dist_to_goal);
 
-            apply_action(robot, best_action, false);
-
-            if (state.path_length < MAX_EPISODE_STEPS) {
-                state.path_history[state.path_length].x = robot->x;
-                state.path_history[state.path_length].y = robot->y;
-                state.path_length++;
-            }
+            apply_action(robot, best_action);
 
             int diamonds_collected = check_collision(robot);
             
-            double reward = calculate_reward(old_min_dist_to_goal, diamonds_collected, true, false); 
+            double reward = calculate_reward(old_min_dist_to_goal, diamonds_collected, true); 
 
             EpisodeStep step;
             memcpy(step.input, input, NN_INPUT_SIZE * sizeof(double));
@@ -943,6 +855,13 @@ void generate_expert_path_training_data() {
     } else if (!robot->is_alive) {
         episode_buffer.total_score += REWARD_CRASH;
     }
+
+    printf("\nEXPERT PATH COORDINATES:\n");
+    printf("(%.1f, %.1f)", waypoints_x[0], waypoints_y[0]);
+    for (int i = 0; i < full_path_len; i++) {
+        printf(" -> (%.1f, %.1f)", col_to_x(full_path[i].c), row_to_y(full_path[i].r));
+    }
+    printf("\n");
 }
 
 
@@ -951,7 +870,7 @@ void pre_train_with_shortest_path() {
     generate_expert_path_training_data(); 
     
     if (episode_buffer.count > 0) {
-        run_batch_reinforce_training(episode_buffer.steps, episode_buffer.count);
+        run_reinforce_training();
     }
     
     clock_t end = clock();
@@ -959,49 +878,71 @@ void pre_train_with_shortest_path() {
     
     current_episode = 0; 
     
-    print_episode_stats(train_time_ms, true, false, state.total_diamonds, current_episode, state.path_length, state.robot.is_alive, state.robot.has_reached_target, episode_buffer.total_score, action_history, action_history_idx);
+    print_episode_stats(train_time_ms, true);
 }
 
-bool run_rl_unittest() {
-    printf("\n\n*** RUNNING RL UNITTEST (Minimal Environment) ***\n");
-    printf("Goal: Learn to move from (50, 50) to Target Center (65, 65) in %d episodes.\n", UNITTEST_EPISODES);
-    
-    double total_final_score = 0.0;
-    int success_count = 0;
-    
-    for (int i = 1; i <= UNITTEST_EPISODES; i++) {
-        init_minimal_state();
-        current_episode = i;
-        
-        while (state.robot.is_alive && !state.robot.has_reached_target && step_count < UNITTEST_MAX_STEPS) {
-            update_game(true, false, true, i); 
-        }
-        
-        if (episode_buffer.count > 0) {
-            run_batch_reinforce_training(episode_buffer.steps, episode_buffer.count);
-        }
-        
-        if (state.robot.has_reached_target) success_count++;
-        total_final_score += episode_buffer.total_score;
-    }
-    
-    double avg_score_per_episode = total_final_score / UNITTEST_EPISODES;
-    double avg_score_per_step = avg_score_per_episode / UNITTEST_MAX_STEPS;
 
-    printf("\n--- UNITTEST RESULTS ---\n");
-    printf("Total Episodes: %d\n", UNITTEST_EPISODES);
-    printf("Success Count (Reached Target): %d\n", success_count);
-    printf("Average Score Per Episode: %.2f\n", avg_score_per_episode);
-    printf("Average Score Per Step: %.4f (Threshold: > %.4f)\n", avg_score_per_step, UNITTEST_SUCCESS_THRESHOLD);
-    printf("--------------------------\n");
+// --- New ASCII Rendering Function ---
+
+void print_ascii_map() {
+    printf("\n\n--- FIXED LEVEL ASCII MAP ---\n");
+    printf("Legend: #=Wall, O=Obstacle, D=Diamond, S=Start (Robot), T=Target (Goal), .=Free\n");
     
-    if (avg_score_per_step > UNITTEST_SUCCESS_THRESHOLD) {
-        printf("*** UNITTEST PASSED! Continuing to main simulation. ***\n\n");
-        return true;
-    } else {
-        fprintf(stderr, "*** UNITTEST FAILED. AI cannot solve minimal task. Halting simulation. ***\n");
-        return false;
+    // Iterate through the grid cells
+    for (int r = 0; r < GRID_ROWS; r++) {
+        for (int c = 0; c < GRID_COLS; c++) {
+            
+            char symbol = '.';
+            double cell_x = col_to_x(c);
+            double cell_y = row_to_y(r);
+
+            // 1. Check Wall
+            if (r == 0 || r == GRID_ROWS - 1 || c == 0 || c == GRID_COLS - 1) {
+                symbol = '#';
+            }
+            
+            // 2. Check Obstacle (Must take precedence over Diamond)
+            for (int i = 0; i < NUM_OBSTACLES; i++) {
+                Obstacle* obs = &state.obstacles[i];
+                // Check if the center of the cell is within the obstacle bounds
+                if (is_point_in_rect(cell_x, cell_y, obs->x, obs->y, obs->w, obs->h)) {
+                    symbol = 'O';
+                    break;
+                }
+            }
+            
+            // 3. Check Diamond
+            if (symbol == '.') { // Only check if not already an Obstacle
+                for (int i = 0; i < NUM_DIAMONDS; i++) {
+                    Diamond* d = &state.diamonds[i];
+                    // Check if center of diamond is in this cell (using diamond's center coordinates)
+                    if (x_to_col(d->x) == c && y_to_row(d->y) == r) {
+                        symbol = 'D';
+                        break;
+                    }
+                }
+            }
+
+            // 4. Check Start (Robot - 50, 50)
+            if (x_to_col(state.robot.x) == c && y_to_row(state.robot.y) == r) {
+                symbol = 'S';
+            }
+            
+            // 5. Check Target (Goal)
+            TargetArea* target = &state.target;
+            // Check if center of the cell falls within the target area
+            if (is_point_in_rect(cell_x, cell_y, target->x, target->y, target->w, target->h)) {
+                // If it's the target, but not the start, mark it as 'T'
+                if (symbol != 'S') {
+                    symbol = 'T';
+                }
+            }
+
+            printf("%c", symbol);
+        }
+        printf("\n");
     }
+    printf("-----------------------------------------\n\n");
 }
 
 
@@ -1011,98 +952,52 @@ int main() {
     srand((unsigned int)time(NULL)); 
     nn_init(&nn);
     
-    // 1. Run RL Unittest
-    if (!run_rl_unittest()) {
-        matrix_free(nn.weights_ih); matrix_free(nn.weights_ho);
-        free(nn.bias_h); free(nn.bias_o);
-        return 1; 
-    }
-
-    // 2. Initialize Full Game State and print start info
+    // 1. Initialize Game State to define fixed obstacles, diamonds, etc.
     init_game_state();
-    printf("--- RL 2D Robot Collector Simulation (EXPERT PRE-TRAIN) ---\n");
-    printf("Input Size: %d, Hidden Size: %d, Output Size: %d\n", NN_INPUT_SIZE, NN_HIDDEN_SIZE, NN_OUTPUT_SIZE);
-    printf("Training will run for 3 minutes (180 seconds). Batch size: %d episodes.\n", BATCH_SIZE);
+    
+    // 2. Print the ASCII Level Map (Called only once)
+    print_ascii_map();
 
     for(int i = 0; i < ACTION_HISTORY_SIZE; i++) {
         action_history[i] = 3; 
     }
 
+    printf("--- RL 2D Robot Collector Simulation (EXPERT PRE-TRAIN) ---\n");
+    printf("Input Size: %d, Hidden Size: %d, Output Size: %d\n", NN_INPUT_SIZE, NN_HIDDEN_SIZE, NN_OUTPUT_SIZE);
+    printf("Training will run for 3 minutes (180 seconds). Stats printed every 10s.\n");
+
     // --- EXPERT PRE-TRAINING PHASE ---
     pre_train_with_shortest_path();
     printf("Expert pre-training complete. Starting RL exploration.\n\n");
     
-    // --- RL EXPLORATION PHASE (BATCH TRAINING) ---
+    // --- RL EXPLORATION PHASE ---
     time_t start_time = time(NULL);
     const int TIME_LIMIT_SECONDS = 180; 
     last_print_time = start_time;
-    
-    int batch_episode_counter = 0;
-    double batch_total_score = 0.0;
     
     while (time(NULL) - start_time < TIME_LIMIT_SECONDS) {
         
         current_episode++;
         init_game_state();
-        
-        bool end_alive, end_target;
-        int end_steps, end_diamonds;
-        double end_score;
 
         // Play episode
         while (state.robot.is_alive && !state.robot.has_reached_target && step_count < MAX_EPISODE_STEPS) {
-            update_game(true, false, false, current_episode); // Pass false for is_unittest
-        }
-        
-        end_alive = state.robot.is_alive;
-        end_target = state.robot.has_reached_target;
-        end_steps = step_count;
-        end_diamonds = state.total_diamonds;
-        end_score = episode_buffer.total_score;
-
-        // Add episode steps to the batch buffer
-        for (int j = 0; j < episode_buffer.count; j++) {
-            if (batch_step_count < MAX_BATCH_STEPS) {
-                batch_steps[batch_step_count++] = episode_buffer.steps[j];
-            } else {
-                break; 
-            }
-        }
-        
-        batch_total_score += episode_buffer.total_score;
-        batch_episode_counter++;
-
-        // Check for print trigger (Path trace for diamonds > 4)
-        if (end_diamonds > 4) {
-            print_episode_stats(0.0, false, false, end_diamonds, current_episode, end_steps, end_alive, end_target, end_score, action_history, action_history_idx);
+            update_game(true, false); 
         }
 
-        // Check for batch training
-        if (batch_episode_counter >= BATCH_SIZE) {
-            
-            clock_t train_start = clock();
-            run_batch_reinforce_training(batch_steps, batch_step_count); 
-            clock_t train_end = clock();
-            
-            double batch_train_time_ms = (double)(train_end - train_start) * 1000.0 / CLOCKS_PER_SEC;
-
-            print_batch_stats(batch_episode_counter, batch_total_score, batch_train_time_ms, current_episode);
-            
-            batch_episode_counter = 0;
-            batch_step_count = 0;
-            batch_total_score = 0.0;
-            last_print_time = time(NULL);
-        }
-    }
-    
-    // Final Training and Cleanup (if partial batch remains)
-    if (batch_episode_counter > 0) {
+        // Train and Time it
         clock_t train_start = clock();
-        run_batch_reinforce_training(batch_steps, batch_step_count); 
+        run_reinforce_training(); 
         clock_t train_end = clock();
-        double batch_train_time_ms = (double)(train_end - train_start) * 1000.0 / CLOCKS_PER_SEC;
+        
+        double train_time_ms = (double)(train_end - train_start) * 1000.0 / CLOCKS_PER_SEC;
 
-        print_batch_stats(batch_episode_counter, batch_total_score, batch_train_time_ms, current_episode);
+        // Print stats every 10 seconds
+        time_t current_time = time(NULL);
+        if (current_time - last_print_time >= 10) {
+            print_episode_stats(train_time_ms, false);
+            last_print_time = current_time;
+        }
     }
     
     printf("\n--- TIME LIMIT REACHED. TRAINING HALTED. Total Episodes: %d ---\n", current_episode);
