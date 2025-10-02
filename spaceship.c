@@ -50,7 +50,7 @@
 #define ACTION_HISTORY_SIZE 10 
 
 // Q-Learning Constants (MODIFIED FOR SOLVABILITY)
-#define Q_LEARNING_EPISODES 50000 // Increased significantly
+#define Q_LEARNING_EPISODES 500000 // Increased significantly
 #define Q_LEARNING_ALPHA 0.2 // Increased learning rate
 #define Q_X_BINS GRID_COLS // 40
 #define Q_Y_BINS GRID_ROWS // 30
@@ -592,7 +592,7 @@ int main() {
 
     for(int i = 0; i < ACTION_HISTORY_SIZE; i++) { action_history[i] = -1; }
 
-    // --- PHASE 1: Q-LEARNING SOLVABLE TEST RUN (50,000 Episodes) ---
+    // --- PHASE 1: Q-LEARNING SOLVABLE TEST RUN (50,0000 Episodes) ---
     
     memset(Q_table, 0, sizeof(Q_table)); 
     current_rl_mode = MODE_QL_TEST;
