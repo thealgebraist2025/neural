@@ -24,7 +24,7 @@
 #else
     #include <sys/socket.h>
     #include <netinet/in.h>
-    #include <netdb.h> // <-- Essential for addrinfo, getaddrinfo, and gai_strerror
+    #include <netdb.h> // <-- Essential for addrinfo, getaddrinfo, and gai_strerror (FIX)
     #include <unistd.h> // for close()
 #endif
 
@@ -144,7 +144,8 @@ char *generate_http_request(const char *json_payload) {
  */
 int tcp_connect(const char *host, int port) {
     int sockfd = -1;
-    struct addrinfo hints, *servinfo, *p;
+    // addrinfo is defined in <netdb.h>
+    struct addrinfo hints, *servinfo, *p; 
     char port_str[6];
     snprintf(port_str, sizeof(port_str), "%d", port);
 
@@ -164,7 +165,7 @@ int tcp_connect(const char *host, int port) {
     int status = getaddrinfo(host, port_str, &hints, &servinfo);
     
     if (status != 0) {
-        // FIX: Use the 'status' code from the single call to getaddrinfo
+        // FIX: Use the 'status' code from the single call to getaddrinfo for gai_strerror
         fprintf(stderr, "tcp_connect error: getaddrinfo failed for %s. %s\n", host, gai_strerror(status));
         return -1;
     }
