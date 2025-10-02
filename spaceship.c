@@ -624,7 +624,7 @@ bool is_point_legal(double x, double y) {
     for (int i = 0; i < NUM_OBSTACLES; i++) {
         Obstacle* obs = &state.obstacles[i];
         double closest_x = fmax(obs->x, fmin(x, obs->x + obs->w));
-        double closest_y = fmax(obs->y, fmin(y, obs->y + obs->h));
+        double closest_y = fmax(obs->y, fmin(robot->y, obs->y + obs->h));
         
         double dx = x - closest_x;
         double dy = y - closest_y;
@@ -645,7 +645,7 @@ int find_path_segment_bfs(double start_x, double start_y, double end_x, double e
     int end_c = x_to_col(end_x);
     
     if (!is_point_legal(start_x, start_y) || !is_point_legal(end_x, end_y)) {
-        fprintf(stderr, "Error: Start or End point is illegal for pathfinding.\n");
+        fprintf(stderr, "Error: Start (%.1f, %.1f) or End (%.1f, %.1f) point is illegal for pathfinding.\n", start_x, start_y, end_x, end_y);
         return 0;
     }
 
@@ -716,18 +716,19 @@ int find_path_segment_bfs(double start_x, double start_y, double end_x, double e
 // Generates the full expert path and fills the episode buffer
 void generate_expert_path_training_data() {
     // 1. Define Waypoints: Start, Random Point, Diamonds (ordered by index), Target
-    double waypoints_x[NUM_DIAMONDS + 2]; // Start, Diamonds, Target
+    double waypoints_x[NUM_DIAMONDS + 2]; // Start, Random, Diamonds, Target
     double waypoints_y[NUM_DIAMONDS + 2];
     int num_waypoints = NUM_DIAMONDS + 2;
 
     // 0. Start Position
-    waypoints_x[0] = 50.0;
-    waypoints_y[0] = 50.0;
+    waypoints_x[0] = state.robot.x;
+    waypoints_y[0] = state.robot.y;
 
-    // Find a random but legal intermediate point (e.g., in the middle right)
+    // Find a random but legal intermediate point
     double rnd_x, rnd_y;
     do {
-        rnd_x = 650.0; 
+        // Search in a reasonable area (e.g., middle right)
+        rnd_x = 600.0 + (double)rand() / RAND_MAX * 150.0; 
         rnd_y = 50.0 + (double)rand() / RAND_MAX * 500.0;
     } while (!is_point_legal(rnd_x, rnd_y));
 
@@ -735,7 +736,7 @@ void generate_expert_path_training_data() {
     waypoints_x[1] = rnd_x;
     waypoints_y[1] = rnd_y;
 
-    // 2. Diamonds (by index)
+    // 2. Diamonds (by index) - NOW USING CORRECTLY INITIALIZED GLOBAL STATE
     for (int i = 0; i < NUM_DIAMONDS; i++) {
         waypoints_x[i + 2] = state.diamonds[i].x;
         waypoints_y[i + 2] = state.diamonds[i].y;
@@ -780,12 +781,17 @@ void generate_expert_path_training_data() {
     printf("--- GENERATED EXPERT PATH (%d Grid Steps) ---\n", full_path_len);
 
     // 3. Convert Path to Training Steps
-    Robot* robot = &state.robot;
-    init_game_state(); // Reset game state for generating episode data
     
-    // Set initial robot position to Start
-    robot->x = waypoints_x[0];
-    robot->y = waypoints_y[0];
+    init_game_state(); // Reset game state (robot pos, collected diamonds) for generating episode data
+    Robot* robot = &state.robot;
+    
+    // Set initial robot position to Start (from the main state reset above)
+    // robot->x = waypoints_x[0]; // Not needed, init_game_state already sets (50, 50)
+    // robot->y = waypoints_y[0];
+
+    // Clear episode buffer again (init_game_state does this, but being explicit)
+    episode_buffer.count = 0;
+    episode_buffer.total_score = 0;
     
     for (int i = 0; i < full_path_len && episode_buffer.count < MAX_EPISODE_STEPS; i++) {
         PathNode current_node = full_path[i];
@@ -887,6 +893,9 @@ int main() {
     srand((unsigned int)time(NULL)); 
     nn_init(&nn);
     
+    // 1. Initialize Game State BEFORE path generation 
+    init_game_state();
+
     for(int i = 0; i < ACTION_HISTORY_SIZE; i++) {
         action_history[i] = 3; 
     }
