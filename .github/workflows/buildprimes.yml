@@ -21,4 +21,4 @@ jobs:
       uses: actions/upload-artifact@v4 # Use the latest version
       with:
         name: primesnetwork-diagram
-        path: network_deep.svg
+        path: network.svg
