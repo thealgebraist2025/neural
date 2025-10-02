@@ -14,10 +14,13 @@
 #define NN_INPUT_SIZE MAX_WORD_LEN  // 10
 #define NN_OUTPUT_SIZE MAX_WORD_LEN // 10
 
-#define NUM_TRAIN_WORDS 32          // Number of base words in one batch (Increased from 16 to 32)
-#define MISSPELLED_PER_WORD 64      // Number of misspellings per base word (Increased from 16 to 64)
+#define NUM_TRAIN_WORDS 32          // Number of base words in one batch
+#define MISSPELLED_PER_WORD 64      // Number of misspellings per base word
 #define BATCH_SIZE (NUM_TRAIN_WORDS * MISSPELLED_PER_WORD) // 2048
-#define MAX_VAL_NEEDED 1            // Placeholder (not used for this problem)
+
+#define NUM_TEST_WORDS VOCAB_SIZE   // Test on all 512 words
+#define MISSPELLED_PER_TEST_WORD 16 // 16 misspellings per test word
+#define TOTAL_TESTS (NUM_TEST_WORDS * MISSPELLED_PER_TEST_WORD) // 8192
 
 #define MAX_TRAINING_SECONDS 240.0  
 #define TEST_INTERVAL_SECONDS 10.0  // Check accuracy every 10 seconds
@@ -223,7 +226,7 @@ void generate_misspelled_word(const char* original_word, char* misspelled_word_o
 }
 
 
-// --- Matrix & NN Core Utility Functions ---
+// --- Matrix & NN Core Utility Functions (Unchanged) ---
 Matrix matrix_create(int rows, int cols, int input_size) {
     Matrix m; m.rows = rows; m.cols = cols;
     m.data = (double**)calloc(rows, sizeof(double*));
@@ -540,45 +543,49 @@ double train_sequential_batch(NeuralNetwork* nn, int* word_indices, double* bp_t
     return total_mse / BATCH_SIZE;
 }
 
-// Testing function
-double test_network(NeuralNetwork* nn, double* test_time, bool verbose) {
+// Testing function: Runs 512 words * 16 misspellings = 8192 tests
+double test_network(NeuralNetwork* nn, double* test_time, bool verbose, int* fixed_count) {
     clock_t start_test = clock();
     int correct_words = 0;
-    // Test on 32 words, same size as the training words sample
-    int total_tests = 32; 
     double input_arr[NN_INPUT_SIZE]; 
     double output_arr[NN_OUTPUT_SIZE];
     
     char misspelled_word[MAX_WORD_LEN + 1];
     char decoded_output[MAX_WORD_LEN + 1];
 
-    // Pick 32 random words from the vocabulary for testing
-    for (int i = 0; i < total_tests; i++) {
-        int word_idx = rand() % VOCAB_SIZE;
-        const char* correct_word = ENGLISH_WORDS[word_idx];
+    // Iterate through all hardcoded words
+    for (int i = 0; i < NUM_TEST_WORDS; i++) {
+        const char* correct_word = ENGLISH_WORDS[i];
         
-        // Generate a test misspelling
-        generate_misspelled_word(correct_word, misspelled_word);
-        
-        // Encode and run forward pass
-        encode_word(misspelled_word, input_arr); 
-        nn_forward(nn, input_arr, output_arr);
-        
-        // Decode the output
-        decode_word(output_arr, decoded_output);
-        
-        // Check for correctness (word-level match)
-        if (strcmp(correct_word, decoded_output) == 0) { 
-            correct_words++; 
-        } else if (verbose) {
-            printf("  [Test Fail] Input: '%s' -> Output: '%s' (Target: '%s')\n", 
-                   misspelled_word, decoded_output, correct_word);
+        // Generate 16 misspellings for each word
+        for (int j = 0; j < MISSPELLED_PER_TEST_WORD; j++) {
+            
+            // Generate a test misspelling
+            generate_misspelled_word(correct_word, misspelled_word);
+            
+            // Encode and run forward pass
+            encode_word(misspelled_word, input_arr); 
+            nn_forward(nn, input_arr, output_arr);
+            
+            // Decode the output
+            decode_word(output_arr, decoded_output);
+            
+            // Check for correctness (word-level match)
+            if (strcmp(correct_word, decoded_output) == 0) { 
+                correct_words++; 
+            } else if (verbose) {
+                // Only log failures in final verbose test
+                printf("  [Test Fail] Input: '%s' -> Output: '%s' (Target: '%s')\n", 
+                       misspelled_word, decoded_output, correct_word);
+            }
         }
     }
     
     clock_t end_test = clock();
+    *fixed_count = correct_words;
     *test_time = ((double)(end_test - start_test)) / CLOCKS_PER_SEC;
-    return ((double)correct_words / total_tests) * 100.0;
+    
+    return ((double)correct_words / TOTAL_TESTS) * 100.0;
 }
 
 
@@ -776,15 +783,17 @@ int main() {
 
     printf("Architecture: Input(%d) -> H1(32) -> H2(32) -> H3(32) -> H4(32) -> Output(%d)\n", NN_INPUT_SIZE, NN_OUTPUT_SIZE);
     printf("Training Batch Size: %d words * %d misspellings = %d examples/batch.\n", NUM_TRAIN_WORDS, MISSPELLED_PER_WORD, BATCH_SIZE);
+    printf("Test Set Size: %d words * %d misspellings = %d examples/test.\n", NUM_TEST_WORDS, MISSPELLED_PER_TEST_WORD, TOTAL_TESTS);
     printf("Maximum Training Time: %.0f seconds. Testing occurs every %.0f seconds.\n", MAX_TRAINING_SECONDS, TEST_INTERVAL_SECONDS); 
-    printf("--------------------------------------------------------------------------------------------------\n");
-    printf("Time (sec) | Batches Run | Avg MSE (Last Batch) | Word Correctness (Test) | Test Time (sec)\n");
-    printf("--------------------------------------------------------------------------------------------------\n");
+    printf("----------------------------------------------------------------------------------------------------------------------------------\n");
+    printf("Time (sec) | Batches Run | Avg MSE (Last Batch) | Spelling Errors Fixed (Absolute/%%) | Test Time (sec)\n");
+    printf("----------------------------------------------------------------------------------------------------------------------------------\n");
     fflush(stdout);
 
     time_t start_time = time(NULL);
     time_t last_test_time = start_time - TEST_INTERVAL_SECONDS; // Force immediate first test
     double current_success_rate = 0.0;
+    int fixed_count = 0;
     double last_batch_mse = 0.0;
     int next_milestone_percent = 10;
     int total_batches_run = 0;
@@ -810,21 +819,21 @@ int main() {
         time_t current_time = time(NULL);
         if (difftime(current_time, last_test_time) >= TEST_INTERVAL_SECONDS || total_batches_run == 1) {
             double test_time = 0.0;
-            current_success_rate = test_network(&nn, &test_time, false); 
+            current_success_rate = test_network(&nn, &test_time, false, &fixed_count); 
             last_test_time = current_time;
             
             // Log stats after test (Only print happens here)
-            printf("%-10.0f | %-11d | %-20.8f | %-25.2f | %-15.4f\n", 
+            printf("%-10.0f | %-11d | %-20.8f | %-16d/%-6d (%.2f%%) | %-15.4f\n", 
                    difftime(current_time, start_time),
                    total_batches_run, 
                    last_batch_mse, 
-                   current_success_rate, 
+                   fixed_count, TOTAL_TESTS, current_success_rate, 
                    test_time);
             fflush(stdout);
             
             // Log milestones
             while (current_success_rate >= next_milestone_percent) {
-                printf("--- MILESTONE REACHED --- Correctness: %.2f%%\n", current_success_rate);
+                printf("--- MILESTONE REACHED --- Correctness: %.2f%% (%d/%d)\n", current_success_rate, fixed_count, TOTAL_TESTS);
                 fflush(stdout);
                 
                 if (next_milestone_percent == 90) { next_milestone_percent = 95; } 
@@ -848,12 +857,13 @@ int main() {
     
     // Final test and log
     double final_test_time = 0.0;
-    current_success_rate = test_network(&nn, &final_test_time, true); 
+    int final_fixed_count = 0;
+    current_success_rate = test_network(&nn, &final_test_time, true, &final_fixed_count); 
 
-    printf("--------------------------------------------------------------------------------------------------\n");
+    printf("----------------------------------------------------------------------------------------------------------------------------------\n");
     printf("\n#####################################################\n");
     printf("## TRAINING TERMINATED ##\n");
-    printf("Final correctness (Tested on 32 new misspellings): %.2f%%\n", current_success_rate);
+    printf("Final correctness (%d total tests): %d/%d (%.2f%%)\n", TOTAL_TESTS, final_fixed_count, TOTAL_TESTS, current_success_rate);
     printf("Total Batches Run: %d\n", total_batches_run);
     printf("Total Training Time: %.0f seconds.\n", difftime(time(NULL), start_time));
     printf("#####################################################\n");
