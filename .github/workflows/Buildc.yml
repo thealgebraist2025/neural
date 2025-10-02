@@ -1,4 +1,4 @@
-name: C99 Build and Run
+name: C99 spaceship Build and Run
 
 on:
   push:
