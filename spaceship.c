@@ -45,14 +45,15 @@
 #define ACTION_HISTORY_SIZE 10 
 const char* action_names[NN_OUTPUT_SIZE] = {"UP", "DOWN", "LEFT", "RIGHT"};
 
-// --- Unittest Constants (ADDED & ADJUSTED) ---
+// --- Unittest Constants (FIXED & ADJUSTED) ---
 #define UNITTEST_EPISODES 50
 #define UNITTEST_SUCCESS_THRESHOLD 0.5 
 #define UNITTEST_MAX_STEPS 20 
 #define UNITTEST_PROGRESS_REWARD 1.0 
 #define UNITTEST_STEP_PENALTY -0.1 
-#define UNITTEST_CRASH_PENALTY -5.0   // FIX: Reduced crash penalty for stable learning signal
-#define UNITTEST_GOAL_REWARD 50.0     // FIX: Clear success reward for the minimal task
+#define UNITTEST_CRASH_PENALTY -5.0   
+#define UNITTEST_GOAL_REWARD 50.0     
+#define UNITTEST_TRACING 1 // 1 for detailed step-by-step tracing of the first episode
 
 // --- Data Structures ---
 typedef struct { double x, y; double w, h; } Obstacle;
@@ -112,6 +113,7 @@ double distance_2d(double x1, double y1, double x2, double y2) {
 }
 
 // --- Matrix Functions (Retained for completeness) ---
+
 Matrix matrix_create(int rows, int cols) {
     Matrix m; m.rows = rows; m.cols = cols;
     m.data = (double**)malloc(rows * sizeof(double*));
@@ -246,21 +248,25 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
     }
 
     // 2. Calculate Output Gradient (dLoss/dLogits)
+    // NOTE: This calculation is designed for Gradient ASCENT (i.e. maximizing the reward).
+    // The input 'discounted_return' is intentionally -Gt (the negative of the normalized return).
     Matrix output_gradients = matrix_create(NN_OUTPUT_SIZE, 1);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) {
         double target = (i == action_index) ? 1.0 : 0.0;
         double grad_base = check_double(probs[i] - target, "output_grad_base", "nn_reinforce_train");
-        output_gradients.data[i][0] = grad_base * discounted_return;
+        // OutputGrad = (Prob - Target) * (-Gt) = (Target - Prob) * Gt (Policy Gradient direction)
+        output_gradients.data[i][0] = grad_base * discounted_return; 
         check_nan_and_stop(output_gradients.data[i][0], "output_grad", "nn_reinforce_train");
     }
 
     // 3. Update Weights HO and Bias O
-    Matrix delta_weights_ho = matrix_multiply_scalar(matrix_dot(output_gradients, matrix_transpose(hidden_output)), -nn->lr);
+    // FIX: Changed multiplier from -nn->lr to +nn->lr to perform Gradient ASCENT (Maximize return)
+    Matrix delta_weights_ho = matrix_multiply_scalar(matrix_dot(output_gradients, matrix_transpose(hidden_output)), nn->lr);
     Matrix new_weights_ho = matrix_add_subtract(nn->weights_ho, delta_weights_ho, true);
     matrix_free(nn->weights_ho); nn->weights_ho = new_weights_ho;
 
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) {
-        nn->bias_o[i] = check_double(nn->bias_o[i], "bias_o", "nn_train_upd") - check_double(output_gradients.data[i][0], "grad_o", "nn_train_upd") * nn->lr;
+        nn->bias_o[i] = check_double(nn->bias_o[i], "bias_o", "nn_train_upd") + check_double(output_gradients.data[i][0], "grad_o", "nn_train_upd") * nn->lr;
     }
 
     // 4. Calculate Hidden Errors and Update Weights IH and Bias H (Backprop to Hidden Layer)
@@ -270,12 +276,13 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
     Matrix hidden_gradients = matrix_map(hidden_output, sigmoid_derivative);
     Matrix hidden_gradients_mul = matrix_multiply_elem(hidden_gradients, hidden_errors);
     
-    Matrix delta_weights_ih = matrix_multiply_scalar(matrix_dot(hidden_gradients_mul, matrix_transpose(inputs)), -nn->lr);
+    // FIX: Changed multiplier from -nn->lr to +nn->lr to perform Gradient ASCENT (Maximize return)
+    Matrix delta_weights_ih = matrix_multiply_scalar(matrix_dot(hidden_gradients_mul, matrix_transpose(inputs)), nn->lr);
     Matrix new_weights_ih = matrix_add_subtract(nn->weights_ih, delta_weights_ih, true);
     matrix_free(nn->weights_ih); nn->weights_ih = new_weights_ih;
     
     for (int i = 0; i < NN_HIDDEN_SIZE; i++) {
-        nn->bias_h[i] = check_double(nn->bias_h[i], "bias_h", "nn_train_upd") - check_double(hidden_gradients_mul.data[i][0], "grad_h", "nn_train_upd") * nn->lr;
+        nn->bias_h[i] = check_double(nn->bias_h[i], "bias_h", "nn_train_upd") + check_double(hidden_gradients_mul.data[i][0], "grad_h", "nn_train_upd") * nn->lr;
     }
     
     // 5. Cleanup
@@ -305,15 +312,7 @@ void apply_action(Robot* robot, int action_index) {
     action_history[action_history_idx] = action_index;
     action_history_idx = (action_history_idx + 1) % ACTION_HISTORY_SIZE;
     
-    // Check if the new position is legal (walls and obstacles)
-    // NOTE: This check is redundant with check_collision but kept for local reference of a crash
-    if (robot->x - robot->size < BORDER_WIDTH || robot->x + robot->size > CANVAS_WIDTH - BORDER_WIDTH ||
-        robot->y - robot->size < BORDER_WIDTH || robot->y + robot->size > CANVAS_HEIGHT - BORDER_WIDTH) {
-        // If movement leads to a crash, mark as not alive and revert position temporarily
-        robot->is_alive = false;
-        robot->x = old_x; 
-        robot->y = old_y;
-    }
+    // NOTE: Collision check is primarily handled in check_collision
 }
 
 // Helper function for collision checking
@@ -378,7 +377,7 @@ int check_collision(Robot* robot) {
         }
     }
     
-    // --- 3. Diamond Collection ---
+    // --- 3. Diamond Collection (Skipped in minimal test) ---
     for (int i = 0; i < NUM_DIAMONDS; i++) {
         Diamond* d = &state.diamonds[i];
         if (d->collected) continue;
@@ -428,6 +427,22 @@ void init_minimal_state() {
     // Clear all obstacles and diamonds
     for(int i = 0; i < NUM_OBSTACLES; i++) state.obstacles[i].w = 0.0;
     for(int i = 0; i < NUM_DIAMONDS; i++) state.diamonds[i].collected = true;
+
+    // --- SANITY CHECK ---
+    if (!is_point_legal(state.robot.x, state.robot.y)) {
+        fprintf(stderr, "UNITTEST ERROR: Initial robot position (%.1f, %.1f) is illegal.\n", state.robot.x, state.robot.y);
+        state.robot.is_alive = false;
+    }
+    if (is_point_in_rect(state.robot.x, state.robot.y, state.target.x, state.target.y, state.target.w, state.target.h)) {
+        fprintf(stderr, "UNITTEST ERROR: Robot starts inside target area.\n");
+        state.robot.has_reached_target = true;
+    }
+
+    if (UNITTEST_TRACING) {
+        printf("UNITTEST INFO: Start (%.1f, %.1f), Target Area (%.1f, %.1f) to (%.1f, %.1f)\n", 
+               state.robot.x, state.robot.y, state.target.x, state.target.y, 
+               state.target.x + state.target.w, state.target.y + state.target.h);
+    }
 }
 
 void init_game_state() {
@@ -528,7 +543,7 @@ void get_state_features(double* input, double* min_dist_to_goal_ptr) {
         }
     }
     
-    if (nearest_diamond) {
+    if (nearest_diamond && !state.robot.has_reached_target) {
         goal_x = nearest_diamond->x; 
         goal_y = nearest_diamond->y;
     } else {
@@ -626,6 +641,7 @@ double calculate_reward(double old_min_dist_to_goal, int diamonds_collected_this
     }
     
     // Apply progress reward/penalty
+    // Distance change > 0 means progress (shorter distance) -> positive reward
     reward += progress_scale * distance_change;
     
     // Terminal Rewards (Applied last, overwriting step/progress rewards for the final step)
@@ -637,14 +653,12 @@ double calculate_reward(double old_min_dist_to_goal, int diamonds_collected_this
         }
     } 
     
-    // FIX: Removed the buggy line: 'if (robot->has_reached_target || !robot->is_alive) reward = 0.0;'
-    
     return check_double(reward, "final_reward", "calc_reward");
 }
 
 
 // Function signature updated to include is_unittest
-void update_game(bool is_training_run, bool expert_run, bool is_unittest) {
+void update_game(bool is_training_run, bool expert_run, bool is_unittest, int episode_number) {
     Robot* robot = &state.robot;
     int max_steps = is_unittest ? UNITTEST_MAX_STEPS : MAX_EPISODE_STEPS;
     
@@ -652,6 +666,9 @@ void update_game(bool is_training_run, bool expert_run, bool is_unittest) {
 
     double input[NN_INPUT_SIZE];
     double old_min_dist_to_goal;
+    double old_x = robot->x;
+    double old_y = robot->y;
+
     get_state_features(input, &old_min_dist_to_goal);
 
     double logit_output[NN_OUTPUT_SIZE];
@@ -669,6 +686,12 @@ void update_game(bool is_training_run, bool expert_run, bool is_unittest) {
     
     // Calculate reward, passing is_unittest
     double final_reward = calculate_reward(old_dist_copy, diamonds_collected, expert_run, is_unittest);
+    
+    if (is_unittest && UNITTEST_TRACING && episode_number == 1) {
+        printf("Step %d: (%.1f, %.1f) -> Action %s (P=%.2f) -> Reward %.2f -> New Pos (%.1f, %.1f) [Alive: %d, Goal: %d]\n",
+               step_count + 1, old_x, old_y, action_names[action_index], probabilities[action_index], 
+               final_reward, robot->x, robot->y, robot->is_alive, robot->has_reached_target);
+    }
     
     if (is_training_run && episode_buffer.count < max_steps) {
         EpisodeStep step;
@@ -710,8 +733,10 @@ void run_reinforce_training() {
 
     // 3. Train the Network using Backpropagation (REINFORCE)
     for (int i = 0; i < episode_buffer.count; i++) {
+        // Gt is the normalized advantage (return)
         double Gt = (returns[i] - mean_return) / std_dev; 
         
+        // nn_reinforce_train expects -Gt because of the (prob-target) term in output gradient calc
         nn_reinforce_train(&nn, 
                            episode_buffer.steps[i].input, 
                            episode_buffer.steps[i].action_index, 
@@ -719,22 +744,29 @@ void run_reinforce_training() {
     }
 }
 
-void print_episode_stats(double train_time_ms, bool is_expert) {
+void print_episode_stats(double train_time_ms, bool is_expert, bool is_unittest) {
     Robot* robot = &state.robot;
     
     printf("====================================================\n");
-    printf("%sEPISODE %d SUMMARY (Steps: %d/%d)\n", is_expert ? "EXPERT " : "", current_episode, step_count, MAX_EPISODE_STEPS);
+    if (is_unittest) {
+         printf("UNITTEST EPISODE %d SUMMARY (Steps: %d/%d)\n", current_episode, step_count, UNITTEST_MAX_STEPS);
+    } else {
+        printf("%sEPISODE %d SUMMARY (Steps: %d/%d)\n", is_expert ? "EXPERT " : "", current_episode, step_count, MAX_EPISODE_STEPS);
+    }
+    
     printf("----------------------------------------------------\n");
     
     const char* status = "TIMEOUT (Max Steps)";
     if (!robot->is_alive) {
         status = "CRASHED (Wall/Obstacle)";
     } else if (robot->has_reached_target) {
-        status = (state.total_diamonds == NUM_DIAMONDS) ? "SUCCESS (ALL COLLECTED)" : "SUCCESS (PARTIAL)";
+        status = (is_unittest || state.total_diamonds == NUM_DIAMONDS) ? "SUCCESS" : "SUCCESS (PARTIAL)";
     }
     
     printf("Termination Status: %s\n", status);
-    printf("Total Diamonds Collected: %d/%d\n", state.total_diamonds, NUM_DIAMONDS);
+    if (!is_unittest) {
+        printf("Total Diamonds Collected: %d/%d\n", state.total_diamonds, NUM_DIAMONDS);
+    }
     printf("Final Policy Reward (Score): %.2f\n", episode_buffer.total_score);
     
     printf("Reinforcement Learning Training Time: %.3f ms\n", train_time_ms);
@@ -939,7 +971,7 @@ void pre_train_with_shortest_path() {
     
     current_episode = 0; 
     
-    print_episode_stats(train_time_ms, true);
+    print_episode_stats(train_time_ms, true, false);
 }
 
 
@@ -1008,10 +1040,16 @@ bool run_rl_unittest() {
     for (int i = 1; i <= UNITTEST_EPISODES; i++) {
         init_minimal_state();
         current_episode = i;
+        
+        if (UNITTEST_TRACING && i == 1) printf("\n--- EPISODE 1 TRACING ---\n");
 
         // Play episode, using UNITTEST_MAX_STEPS
         while (state.robot.is_alive && !state.robot.has_reached_target && step_count < UNITTEST_MAX_STEPS) {
-            update_game(true, false, true); // Pass true for is_unittest
+            update_game(true, false, true, i); // Pass true for is_unittest
+        }
+        
+        if (UNITTEST_TRACING && i == 1) {
+             printf("--- EPISODE 1 END (Score: %.2f) ---\n", episode_buffer.total_score);
         }
 
         // Train 
@@ -1022,7 +1060,7 @@ bool run_rl_unittest() {
     }
     
     double avg_score_per_episode = total_final_score / UNITTEST_EPISODES;
-    double avg_score_per_step = (total_final_score / UNITTEST_EPISODES) / UNITTEST_MAX_STEPS;
+    double avg_score_per_step = avg_score_per_episode / UNITTEST_MAX_STEPS;
 
     printf("\n--- UNITTEST RESULTS ---\n");
     printf("Total Episodes: %d\n", UNITTEST_EPISODES);
@@ -1084,7 +1122,7 @@ int main() {
 
         // Play episode
         while (state.robot.is_alive && !state.robot.has_reached_target && step_count < MAX_EPISODE_STEPS) {
-            update_game(true, false, false); // Pass false for is_unittest
+            update_game(true, false, false, current_episode); // Pass false for is_unittest
         }
 
         // Train and Time it
@@ -1097,7 +1135,7 @@ int main() {
         // Print stats every 10 seconds
         time_t current_time = time(NULL);
         if (current_time - last_print_time >= 10) {
-            print_episode_stats(train_time_ms, false);
+            print_episode_stats(train_time_ms, false, false);
             last_print_time = current_time;
         }
     }
