@@ -182,13 +182,15 @@ Matrix matrix_multiply_scalar(Matrix A, double scalar) {
     return result;
 }
 
+// FIX: Corrected mismatched braces in the loops
 Matrix matrix_multiply_elem(Matrix A, Matrix B) {
     if (A.rows != B.rows || A.cols != B.cols) { fprintf(stderr, "Multiply (element-wise) dimension mismatch.\n"); exit(EXIT_FAILURE); }
     Matrix result = matrix_create(A.rows, A.cols);
     for (int i = 0; i < A.rows; i++) {
-        for (int j = 0; j < A.cols; j++) { result.data[i][j] = check_double(A.data[i][j], "A[i][j]", "matrix_multiply_elem") * check_double(B.data[i][j], "B[i][j]", "matrix_multiply_elem"); }
+        for (int j = 0; j < A.cols; j++) { 
+            result.data[i][j] = check_double(A.data[i][j], "A[i][j]", "matrix_multiply_elem") * check_double(B.data[i][j], "B[i][j]", "matrix_multiply_elem"); 
         }
-    }
+    } // One closing brace for the outer loop
     return result;
 }
 
