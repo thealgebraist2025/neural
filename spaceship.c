@@ -31,7 +31,7 @@
 #define NN_INPUT_SIZE 9 
 #define NN_HIDDEN_SIZE 16 
 #define NN_OUTPUT_SIZE 4 
-#define NN_LEARNING_RATE 0.1 // Changed from 0.0025 to 0.1 (user request)
+#define NN_LEARNING_RATE 0.05 // Changed from 0.0025 to 0.1 (user request)
 #define GAMMA 0.99 // Changed from 0.95 to 0.99 (user request for long-term rewards)
 
 // Reward Goals and Values
@@ -967,7 +967,9 @@ int main() {
     printf("Training will run for 3 minutes (180 seconds). Stats printed every 10s.\n");
 
     // --- EXPERT PRE-TRAINING PHASE ---
+for (int n=0;n<100;n++)
     pre_train_with_shortest_path();
+
     printf("Expert pre-training complete. Starting RL exploration.\n\n");
     
     // --- RL EXPLORATION PHASE ---
