@@ -26,6 +26,7 @@
 #define SVG_WIDTH 1200
 #define SVG_HEIGHT 1600
 #define INITIAL_SVG_CAPACITY 2500   // Capacity to hold all elements + overhead
+#define SVG_FILENAME "network.svg"  // New filename constant
 
 // --- Data Structures ---
 typedef struct { int rows; int cols; double** data; } Matrix;
@@ -418,24 +419,47 @@ void generate_network_svg(NeuralNetwork* nn) {
 
 
 void print_network_as_svg(NeuralNetwork* nn) {
-    printf("\n\n#####################################################\n");
-    printf("## NEURAL NETWORK SVG REPRESENTATION (Complete Graph) ##\n");
-    printf("#####################################################\n\n");
+    
+    // Open the file for writing
+    FILE *fp = fopen(SVG_FILENAME, "w");
+    if (fp == NULL) {
+        fprintf(stderr, "\nERROR: Could not open file %s for writing. Printing to stdout instead.\n", SVG_FILENAME);
+        // If file open fails, fall back to stdout for debugging/display
+        printf("\n\n#####################################################\n");
+        printf("## NEURAL NETWORK SVG REPRESENTATION (Complete Graph) ##\n");
+        printf("#####################################################\n\n");
+        printf("\n");
+    } else {
+        printf("\n\n#####################################################\n");
+        printf("## SAVING NEURAL NETWORK SVG TO FILE: %s ##\n", SVG_FILENAME);
+        printf("#####################################################\n\n");
+    }
 
+    // Generate all SVG parts into the dynamic array
     generate_network_svg(nn);
+    
+    // Determine the destination (file or stdout)
+    FILE *destination = (fp != NULL) ? fp : stdout;
 
-    printf("\n");
-
+    // Print all validated strings
     for (size_t i = 0; i < svg_count; i++) {
         if (validate_svg_string(&svg_strings[i])) {
-            printf("%s", svg_strings[i].str);
+            fprintf(destination, "%s", svg_strings[i].str);
         } else {
             fprintf(stderr, "SVG string at index %zu failed validation. Skipping.\n", i);
         }
     }
+    
+    // Print the end tag if outputting to stdout
+    if (fp == NULL) {
+        printf("\n");
+    } else {
+        // Close the file if successful
+        fclose(fp);
+        printf("Successfully wrote %zu SVG parts to %s.\n", svg_count, SVG_FILENAME);
+    }
 
-    printf("\n");
-
+    // Clean up memory
     free_svg_strings();
 }
 
@@ -504,7 +528,7 @@ int main() {
             }
 
             // Display current test result if not a milestone
-            if (current_success_rate < next_milestone_percent) {
+            if (current_success_rate < next_milestone_percent && current_success_rate >= 10.0) { // Only log test results after 10% for cleaner output
                  printf("[Test Result] Batch %d | Correctness: %.2f%%\n", batch_count, current_success_rate);
                  fflush(stdout);
             }
