@@ -6,25 +6,25 @@
 #include <string.h>
 
 // --- Prime Detection Constants ---
-// The 200th prime is 1223. We need 11 bits to represent up to 2047.
-#define BIT_DEPTH 11                // Input size: Binary representation of the number
-#define MAX_PRIME_TO_TEST 1223      // The 200th prime is 1223
-#define TEST_RANGE (MAX_PRIME_TO_TEST + 1) // Test numbers from 1 to 1223
+// The 1000th prime is 7919. We need 13 bits to represent up to 8191.
+#define BIT_DEPTH 13                // NEW Input size: Binary representation of the number
+#define MAX_PRIME_TO_TEST 7919      // NEW Target: The 1000th prime is 7919
+#define TEST_RANGE (MAX_PRIME_TO_TEST + 1) // Test numbers from 1 to 7919
 #define TRAINING_GOAL_PERCENT 95.0  // Target accuracy on the test set
 #define MAX_EPOCHS 500000           // Max total batches (safety limit)
 #define BATCH_SIZE_HALF 64          // 64 Primes + 64 Non-Primes = 128 total per batch
 
 // --- NN Architecture Constants ---
-#define NN_INPUT_SIZE BIT_DEPTH     // 11 bits input
+#define NN_INPUT_SIZE BIT_DEPTH     // 13 bits input
 #define NN_OUTPUT_SIZE 1            // Single output for classification (Prime/Not Prime)
-#define NN_HIDDEN_SIZE 64           // Chosen hidden layer size
-#define NN_LEARNING_RATE 0.005
+#define NN_HIDDEN_SIZE 128          // INCREASED Hidden layer size to 128 for more complexity
+#define NN_LEARNING_RATE 0.008      // INCREASED Learning rate to help escape local minima
 
 // --- SVG Constants ---
 #define SVG_WIDTH 1200
 #define SVG_HEIGHT 1600
 #define INITIAL_SVG_CAPACITY 2500
-#define SVG_FILENAME "primesnetwork.svg"
+#define SVG_FILENAME "network.svg"
 
 // --- Data Structures ---
 typedef struct { int rows; int cols; double** data; } Matrix;
@@ -58,7 +58,7 @@ size_t svg_capacity = 0;
 
 // --- Problem-Specific Utility Functions ---
 
-// Pre-calculates primes up to MAX_PRIME_TO_TEST
+// Pre-calculates primes up to MAX_PRIME_TO_TEST (7919)
 bool prime_cache[TEST_RANGE];
 void precompute_primes() {
     memset(prime_cache, true, sizeof(prime_cache));
@@ -77,7 +77,7 @@ bool is_prime(int n) {
     return prime_cache[n];
 }
 
-// Converts an integer into its 11-bit binary representation (input array)
+// Converts an integer into its 13-bit binary representation (input array)
 void int_to_binary_array(int n, double* arr) {
     for (int i = 0; i < BIT_DEPTH; i++) {
         // LSB is at index 0, MSB at index BIT_DEPTH-1
@@ -94,20 +94,20 @@ void generate_prime_nonprime_batch(double input[BIT_DEPTH], double* target) {
         // Generate a prime number (Target: 1.0)
         *target = 1.0;
         do {
-            n = 2 + rand() % (MAX_PRIME_TO_TEST - 1); // Range [2, 1223]
+            n = 2 + rand() % (MAX_PRIME_TO_TEST - 1); // Range [2, 7919]
         } while (!is_prime(n));
     } else {
         // Generate a non-prime number (Target: 0.0)
         *target = 0.0;
         do {
-            n = 4 + rand() % (MAX_PRIME_TO_TEST - 3); // Range [4, 1223]
+            n = 4 + rand() % (MAX_PRIME_TO_TEST - 3); // Range [4, 7919]
         } while (is_prime(n));
     }
     
     int_to_binary_array(n, input);
 }
 
-// --- Matrix & NN Core Utility Functions (Retained from previous version) ---
+// --- Matrix & NN Core Utility Functions (Retained) ---
 Matrix matrix_create(int rows, int cols, int input_size) {
     Matrix m; m.rows = rows; m.cols = cols;
     m.data = (double**)calloc(rows, sizeof(double*));
@@ -196,9 +196,9 @@ double sigmoid_derivative(double y) { return y * (1.0 - y); }
 
 void nn_init(NeuralNetwork* nn) {
     nn->lr = NN_LEARNING_RATE;
-    // NN_INPUT_SIZE (11) -> NN_HIDDEN_SIZE (64)
+    // NN_INPUT_SIZE (13) -> NN_HIDDEN_SIZE (128)
     nn->weights_ih = matrix_create(NN_HIDDEN_SIZE, NN_INPUT_SIZE, NN_INPUT_SIZE);
-    // NN_HIDDEN_SIZE (64) -> NN_OUTPUT_SIZE (1)
+    // NN_HIDDEN_SIZE (128) -> NN_OUTPUT_SIZE (1)
     nn->weights_ho = matrix_create(NN_OUTPUT_SIZE, NN_HIDDEN_SIZE, NN_HIDDEN_SIZE);
     nn->bias_h = (double*)calloc(NN_HIDDEN_SIZE, sizeof(double));
     nn->bias_o = (double*)calloc(NN_OUTPUT_SIZE, sizeof(double));
@@ -219,7 +219,6 @@ void nn_free(NeuralNetwork* nn) {
     matrix_free(nn->output_outputs);
 }
 
-// nn_forward is designed for a single input/output array
 void nn_forward(NeuralNetwork* nn, const double* input_array, double* output_array) {
     Matrix inputs_m = array_to_matrix(input_array, NN_INPUT_SIZE);
     matrix_copy_in(nn->inputs, inputs_m); matrix_free(inputs_m);
@@ -245,7 +244,6 @@ void nn_forward(NeuralNetwork* nn, const double* input_array, double* output_arr
     matrix_free(output_out_m);
 }
 
-// nn_backward is designed for a single target array
 double nn_backward(NeuralNetwork* nn, const double* target_array) {
     double mse_loss = 0.0;
     Matrix targets_m = array_to_matrix(target_array, NN_OUTPUT_SIZE);
@@ -320,7 +318,7 @@ double train_batch(NeuralNetwork* nn) {
     return total_mse / total_examples;
 }
 
-// Testing function: Measures accuracy on all numbers up to the 200th prime (1223)
+// Testing function: Measures accuracy on all numbers up to the 1000th prime (7919)
 double test_network(NeuralNetwork* nn) {
     int correct_predictions = 0;
     int total_tests = 0;
@@ -349,7 +347,7 @@ double test_network(NeuralNetwork* nn) {
 }
 
 
-// --- SVG Utility Functions (Retained from previous version) ---
+// --- SVG Utility Functions (Retained) ---
 
 bool validate_svg_string(const SvgString* s) {
     return s != NULL && s->is_valid && s->str != NULL && s->length == strlen(s->str);
@@ -416,7 +414,7 @@ void generate_network_svg(NeuralNetwork* nn) {
 
     const double Y_TOTAL_SPACE = (double)(Y_END - Y_START);
 
-    // Calculate spacing for 11 Input, 64 Hidden, 1 Output
+    // Calculate spacing for 13 Input, 128 Hidden, 1 Output
     const double Y_SPACING_IN = Y_TOTAL_SPACE / NN_INPUT_SIZE;
     const double Y_SPACING_HIDDEN = Y_TOTAL_SPACE / NN_HIDDEN_SIZE;
     const double Y_SPACING_OUT = Y_TOTAL_SPACE / NN_OUTPUT_SIZE;
@@ -426,7 +424,7 @@ void generate_network_svg(NeuralNetwork* nn) {
     double y_hidden[NN_HIDDEN_SIZE];
     double y_out[NN_OUTPUT_SIZE];
 
-    // Input Layer (11 Neurons)
+    // Input Layer (13 Neurons)
     snprintf(buffer, sizeof(buffer), SVG_LAYER_LABEL_TEMPLATE, X_IN, Y_START - 20, "Input (Bits)", NN_INPUT_SIZE);
     append_svg_string(buffer);
     for (int i = 0; i < NN_INPUT_SIZE; i++) {
@@ -436,7 +434,7 @@ void generate_network_svg(NeuralNetwork* nn) {
         append_svg_string(buffer);
     }
 
-    // Hidden Layer (64 Neurons)
+    // Hidden Layer (128 Neurons)
     snprintf(buffer, sizeof(buffer), SVG_LAYER_LABEL_TEMPLATE, X_HIDDEN, Y_START - 20, "Hidden", NN_HIDDEN_SIZE);
     append_svg_string(buffer);
     for (int h = 0; h < NN_HIDDEN_SIZE; h++) {
@@ -453,7 +451,7 @@ void generate_network_svg(NeuralNetwork* nn) {
     append_svg_string(buffer);
 
 
-    // --- B. Draw ALL Connections (Input -> Hidden) --- (11 * 64 = 704 connections)
+    // --- B. Draw ALL Connections (Input -> Hidden) --- (13 * 128 = 1664 connections)
     for (int h = 0; h < NN_HIDDEN_SIZE; h++) {
         for (int i = 0; i < NN_INPUT_SIZE; i++) {
             double weight = nn->weights_ih.data[h][i];
@@ -470,7 +468,7 @@ void generate_network_svg(NeuralNetwork* nn) {
         }
     }
 
-    // --- C. Draw ALL Connections (Hidden -> Output) --- (64 * 1 = 64 connections)
+    // --- C. Draw ALL Connections (Hidden -> Output) --- (128 * 1 = 128 connections)
     // The output layer only has one neuron (index 0)
     int o = 0; 
     for (int h = 0; h < NN_HIDDEN_SIZE; h++) {
@@ -529,10 +527,11 @@ int main() {
     nn_init(&nn);
 
     printf("Neural Network Prime Detector Initialized.\n");
-    printf("Test Range: 1 to %d (Contains the first 200 primes).\n", MAX_PRIME_TO_TEST);
-    printf("Goal: Achieve %.2f%% accuracy on the test range.\n", TRAINING_GOAL_PERCENT);
-    printf("Architecture: Input=%d (Bits), Hidden=%d, Output=%d (Prime/Not)\n",
+    printf("Test Range: 1 to %d (Contains the first 1000 primes).\n", MAX_PRIME_TO_TEST);
+    printf("Architecture: Input=%d (Bits), Hidden=%d, Output=%d\n",
            NN_INPUT_SIZE, NN_HIDDEN_SIZE, NN_OUTPUT_SIZE);
+    printf("Learning Rate: %.4f (Increased to help convergence)\n", NN_LEARNING_RATE);
+    printf("Goal: Achieve %.2f%% accuracy on the test range.\n", TRAINING_GOAL_PERCENT);
     fflush(stdout);
 
     time_t start_time = time(NULL);
