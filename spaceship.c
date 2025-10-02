@@ -10,7 +10,8 @@
 #define MAX_16BIT 65535.0           // Max value for 16-bit positive integer
 #define BATCH_SIZE 100              // Number of training examples per batch
 #define TEST_BATCH_SIZE 20          // Number of test examples per test run
-#define TEST_INTERVAL_SECONDS 10    // Frequency of testing
+#define TEST_INTERVAL_SECONDS 10    // Frequency of testing (in seconds)
+#define LOG_INTERVAL_SECONDS 2      // Frequency of performance logging (in seconds)
 
 // --- NN & Training Constants ---
 #define NN_INPUT_SIZE ARRAY_SIZE    // 16
@@ -22,18 +23,18 @@
 // --- Data Structures ---
 typedef struct { int rows; int cols; double** data; } Matrix;
 
-typedef struct { 
-    Matrix weights_ih; 
-    Matrix weights_ho; 
-    double* bias_h; 
-    double* bias_o; 
-    double lr; 
-    
+typedef struct {
+    Matrix weights_ih;
+    Matrix weights_ho;
+    double* bias_h;
+    double* bias_o;
+    double lr;
+
     // Intermediate results stored for backpropagation
     Matrix inputs;
-    Matrix hidden_inputs; 
+    Matrix hidden_inputs;
     Matrix hidden_outputs;
-    Matrix output_inputs; 
+    Matrix output_inputs;
     Matrix output_outputs;
 } NeuralNetwork;
 
@@ -43,7 +44,7 @@ typedef struct {
 Matrix matrix_create(int rows, int cols, int input_size) {
     Matrix m; m.rows = rows; m.cols = cols;
     m.data = (double**)calloc(rows, sizeof(double*));
-    double scale = sqrt(2.0 / (input_size + rows)); 
+    double scale = (input_size > 0 && rows > 0) ? sqrt(2.0 / (input_size + rows)) : 1.0;
 
     for (int i = 0; i < rows; i++) {
         m.data[i] = (double*)calloc(cols, sizeof(double));
@@ -105,7 +106,7 @@ Matrix matrix_add_subtract(Matrix A, Matrix B, bool is_add) {
     Matrix result = matrix_create(A.rows, A.cols, 0);
     for (int i = 0; i < A.rows; i++) {
         for (int j = 0; j < A.cols; j++) {
-            if (is_add) { result.data[i][j] = A.data[i][j] + B.data[i][j]; } 
+            if (is_add) { result.data[i][j] = A.data[i][j] + B.data[i][j]; }
             else { result.data[i][j] = A.data[i][j] - B.data[i][j]; }
         }
     }
@@ -187,20 +188,20 @@ void generate_target_array(const double* input, double* target) {
 // Initializes the neural network structure
 void nn_init(NeuralNetwork* nn) {
     nn->lr = NN_LEARNING_RATE;
-    
+
     // Weights initialization (using ARRAY_SIZE for input_size scaling)
     nn->weights_ih = matrix_create(NN_HIDDEN_SIZE, NN_INPUT_SIZE, NN_INPUT_SIZE);
     nn->weights_ho = matrix_create(NN_OUTPUT_SIZE, NN_HIDDEN_SIZE, NN_HIDDEN_SIZE);
-    
+
     // Bias initialization
     nn->bias_h = (double*)calloc(NN_HIDDEN_SIZE, sizeof(double));
     nn->bias_o = (double*)calloc(NN_OUTPUT_SIZE, sizeof(double));
 
     // Initialize intermediate matrices for backpropagation (will be reused/overwritten)
     nn->inputs = matrix_create(NN_INPUT_SIZE, 1, 0);
-    nn->hidden_inputs = matrix_create(NN_HIDDEN_SIZE, 1, 0); 
+    nn->hidden_inputs = matrix_create(NN_HIDDEN_SIZE, 1, 0);
     nn->hidden_outputs = matrix_create(NN_HIDDEN_SIZE, 1, 0);
-    nn->output_inputs = matrix_create(NN_OUTPUT_SIZE, 1, 0); 
+    nn->output_inputs = matrix_create(NN_OUTPUT_SIZE, 1, 0);
     nn->output_outputs = matrix_create(NN_OUTPUT_SIZE, 1, 0);
 }
 
@@ -220,7 +221,7 @@ void nn_free(NeuralNetwork* nn) {
 
 // Performs the forward pass and saves intermediate values
 void nn_forward(NeuralNetwork* nn, const double* input_array, double* output_array) {
-    
+
     // 1. INPUT -> HIDDEN
     Matrix inputs_m = array_to_matrix(input_array, NN_INPUT_SIZE);
     matrix_copy_in(nn->inputs, inputs_m); // Save inputs
@@ -231,14 +232,14 @@ void nn_forward(NeuralNetwork* nn, const double* input_array, double* output_arr
     for (int i = 0; i < NN_HIDDEN_SIZE; i++) hidden_in_m.data[i][0] += nn->bias_h[i];
     matrix_copy_in(nn->hidden_inputs, hidden_in_m); // Save H_in
     matrix_free(hidden_in_m);
-    
+
     // Hidden Outputs: Tanh(H_in)
     Matrix hidden_out_m = matrix_map(nn->hidden_inputs, tanh_activation);
     matrix_copy_in(nn->hidden_outputs, hidden_out_m); // Save H_out
     matrix_free(hidden_out_m);
-    
+
     // 2. HIDDEN -> OUTPUT
-    
+
     // Output Inputs: W_ho * H_out + B_o
     Matrix output_in_m = matrix_dot(nn->weights_ho, nn->hidden_outputs);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) output_in_m.data[i][0] += nn->bias_o[i];
@@ -248,7 +249,7 @@ void nn_forward(NeuralNetwork* nn, const double* input_array, double* output_arr
     // Output Outputs: Sigmoid(O_in)
     Matrix output_out_m = matrix_map(nn->output_inputs, sigmoid_activation);
     matrix_copy_in(nn->output_outputs, output_out_m); // Save O_out
-    
+
     // Copy output to array
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) {
         output_array[i] = output_out_m.data[i][0];
@@ -259,33 +260,33 @@ void nn_forward(NeuralNetwork* nn, const double* input_array, double* output_arr
 // Performs the backpropagation step for a single example using MSE
 double nn_backward(NeuralNetwork* nn, const double* target_array) {
     double mse_loss = 0.0;
-    
+
     // 1. Output Layer Error (dLoss/dOut)
     Matrix targets_m = array_to_matrix(target_array, NN_OUTPUT_SIZE);
     Matrix output_errors_m = matrix_add_subtract(nn->output_outputs, targets_m, false); // O_out - Target
-    
+
     // Calculate MSE loss
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) {
         mse_loss += output_errors_m.data[i][0] * output_errors_m.data[i][0];
     }
     mse_loss /= NN_OUTPUT_SIZE; // MSE: (1/N) * sum((y_pred - y_true)^2)
-    
+
     // 2. Output Gradients (dLoss/dO_in)
     // Gradient: (O_out - Target) * Sigmoid_Derivative(O_out)
     Matrix output_d_m = matrix_map(nn->output_outputs, sigmoid_derivative);
     Matrix output_gradients_m = matrix_multiply_elem(output_errors_m, output_d_m);
     matrix_free(output_d_m);
     matrix_free(output_errors_m); // No longer needed
-    
+
     // 3. Update Hidden->Output Weights (W_ho) and Bias (B_o)
-    
+
     // Calculate H_out Transpose
     Matrix hidden_out_t_m = matrix_transpose(nn->hidden_outputs);
-    
+
     // Delta W_ho: LR * Output_Grad * H_out_T
     Matrix delta_who_m = matrix_dot(output_gradients_m, hidden_out_t_m);
     Matrix scaled_delta_who_m = matrix_multiply_scalar(delta_who_m, nn->lr);
-    
+
     // Update W_ho: W_ho = W_ho - Delta W_ho
     Matrix new_who_m = matrix_add_subtract(nn->weights_ho, scaled_delta_who_m, false);
     matrix_copy_in(nn->weights_ho, new_who_m);
@@ -293,7 +294,7 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     matrix_free(scaled_delta_who_m);
     matrix_free(new_who_m);
     matrix_free(hidden_out_t_m);
-    
+
     // Update B_o: B_o = B_o - LR * Output_Grad
     Matrix scaled_output_grad_m = matrix_multiply_scalar(output_gradients_m, nn->lr);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) {
@@ -316,14 +317,14 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     matrix_free(hidden_d_m);
 
     // 6. Update Input->Hidden Weights (W_ih) and Bias (B_h)
-    
+
     // Calculate Inputs Transpose
     Matrix inputs_t_m = matrix_transpose(nn->inputs);
-    
+
     // Delta W_ih: LR * Hidden_Grad * Input_T
     Matrix delta_wih_m = matrix_dot(hidden_gradients_m, inputs_t_m);
     Matrix scaled_delta_wih_m = matrix_multiply_scalar(delta_wih_m, nn->lr);
-    
+
     // Update W_ih: W_ih = W_ih - Delta W_ih
     Matrix new_wih_m = matrix_add_subtract(nn->weights_ih, scaled_delta_wih_m, false);
     matrix_copy_in(nn->weights_ih, new_wih_m);
@@ -340,7 +341,7 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     matrix_free(scaled_hidden_grad_m);
     matrix_free(hidden_gradients_m);
     matrix_free(targets_m);
-    
+
     return mse_loss;
 }
 
@@ -350,36 +351,36 @@ double train_batch(NeuralNetwork* nn) {
     double input_arr[ARRAY_SIZE];
     double target_arr[ARRAY_SIZE];
     double output_arr[ARRAY_SIZE];
-    
+
     for (int i = 0; i < BATCH_SIZE; i++) {
         // 1. Generate Data
         generate_random_array(input_arr);
         generate_target_array(input_arr, target_arr);
-        
+
         // 2. Forward Pass
         nn_forward(nn, input_arr, output_arr);
-        
+
         // 3. Backpropagation and Loss Calculation
         total_mse += nn_backward(nn, target_arr);
     }
-    
+
     return total_mse / BATCH_SIZE;
 }
 
 // Tests the network's sorting success rate
 double test_network(NeuralNetwork* nn) {
-    int total_pairs = TEST_BATCH_SIZE * (ARRAY_SIZE - 1); // 20 * 15 = 300
+    int total_pairs = TEST_BATCH_SIZE * (ARRAY_SIZE - 1);
     int correctly_sorted_pairs = 0;
     double input_arr[ARRAY_SIZE];
     double output_arr[ARRAY_SIZE];
-    
+
     for (int i = 0; i < TEST_BATCH_SIZE; i++) {
         // 1. Generate Test Input
         generate_random_array(input_arr);
-        
+
         // 2. Forward Pass (Prediction)
         nn_forward(nn, input_arr, output_arr);
-        
+
         // 3. Check for Monotonicity (output[i] <= output[i+1])
         for (int j = 0; j < ARRAY_SIZE - 1; j++) {
             if (output_arr[j] <= output_arr[j+1]) {
@@ -387,7 +388,7 @@ double test_network(NeuralNetwork* nn) {
             }
         }
     }
-    
+
     // Return success rate as a percentage
     return ((double)correctly_sorted_pairs / total_pairs) * 100.0;
 }
@@ -397,57 +398,75 @@ double test_network(NeuralNetwork* nn) {
 
 int main() {
     // Initialize random number generator
-    srand((unsigned int)time(NULL)); 
-    
+    srand((unsigned int)time(NULL));
+
     NeuralNetwork nn;
     nn_init(&nn);
-    
+
     printf("Neural Network Sort Trainer Initialized.\n");
-    printf("Architecture: Input=%d, Hidden=%d, Output=%d\n", 
+    printf("Architecture: Input=%d, Hidden=%d, Output=%d\n",
            NN_INPUT_SIZE, NN_HIDDEN_SIZE, NN_OUTPUT_SIZE);
-    printf("Training Batch Size: %d. Test Batch Size: %d.\n", 
+    printf("Training Batch Size: %d. Test Batch Size: %d.\n",
            BATCH_SIZE, TEST_BATCH_SIZE);
-    printf("Testing runs every %d seconds.\n\n", TEST_INTERVAL_SECONDS);
+    printf("Testing runs every %d seconds. Performance logging every %d seconds.\n\n",
+           TEST_INTERVAL_SECONDS, LOG_INTERVAL_SECONDS);
 
     time_t start_time = time(NULL);
     time_t last_test_time = start_time;
+    time_t last_log_time = start_time; // NEW: Timer for logging
     int batch_count = 0;
-    
+    int batches_since_last_log = 0; // NEW: Counter for performance log
+
     // Main Training Loop
     while (batch_count < EPOCHS) {
-        
+
         // --- 1. Train Batch ---
         double avg_mse = train_batch(&nn);
         batch_count++;
-        
-        // --- 2. Timed Test ---
+        batches_since_last_log++; // Increment counter
+
+        // --- 2. Timed Performance Log (Every LOG_INTERVAL_SECONDS) ---
         time_t current_time = time(NULL);
+        if (current_time - last_log_time >= LOG_INTERVAL_SECONDS) {
+            double elapsed = difftime(current_time, last_log_time);
+            double batches_per_sec = (double)batches_since_last_log / elapsed;
+            int batches_per_interval = (int)round(batches_per_sec * LOG_INTERVAL_SECONDS);
+
+            printf("[Perf Log] Elapsed: %.0fs | Batches: %d | Batches/2s (Estimated): %d\n",
+                   elapsed, batches_since_last_log, batches_per_interval);
+
+            // Reset log counters/timers
+            last_log_time = current_time;
+            batches_since_last_log = 0;
+        }
+
+        // --- 3. Timed Test (Every TEST_INTERVAL_SECONDS) ---
         if (current_time - last_test_time >= TEST_INTERVAL_SECONDS) {
-            
+
             double success_rate = test_network(&nn);
-            
-            printf("[Batch %d] MSE: %.8f | Success Rate (Monotonic Pairs): %.2f%%\n", 
+
+            printf("[Batch %d] MSE: %.8f | Success Rate (Monotonic Pairs): %.2f%%\n",
                    batch_count, avg_mse, success_rate);
-            
+
             last_test_time = current_time;
         }
-        
-        // Display intermediate progress without frequent test prints
-        if (batch_count % 500 == 0 && current_time - last_test_time < TEST_INTERVAL_SECONDS) {
+
+        // Display intermediate progress without frequent test/perf prints
+        if (batch_count % 500 == 0 && current_time - last_test_time < TEST_INTERVAL_SECONDS && current_time - last_log_time < LOG_INTERVAL_SECONDS) {
             printf("[Batch %d] MSE: %.8f\n", batch_count, avg_mse);
         }
     }
-    
+
     printf("\nTraining complete after %d batches.\n", EPOCHS);
-    
+
     // Final Test
     double final_success_rate = test_network(&nn);
     printf("--- FINAL EVALUATION ---\n");
-    printf("Success Rate (Monotonic Pairs on %d test arrays): %.2f%%\n", 
+    printf("Success Rate (Monotonic Pairs on %d test arrays): %.2f%%\n",
            TEST_BATCH_SIZE, final_success_rate);
 
     // --- Cleanup ---
     nn_free(&nn);
-    
+
     return 0;
 }
