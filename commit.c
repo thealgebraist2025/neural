@@ -1,22 +1,32 @@
 /**
  * @file github_commit_manual.c
  * @brief Commits an embedded SVG string to a GitHub repository using C99 by manually
- * constructing the required data and HTTP request, using stubs for the non-C99
- * networking stack.
+ * constructing the required data and HTTPS request, implemented using OpenSSL
+ * and POSIX Sockets for the networking stubs.
  *
- * The SVG content is provided below in the SVG_TEST_CONTENT definition.
- *
- * THIS PROGRAM REQUIRES EXTERNAL LIBRARIES FOR NETWORKING:
- * 1. POSIX Sockets (e.g., <sys/socket.h>) for TCP connections.
- * 2. OpenSSL (e.g., <openssl/ssl.h>) for TLS/SSL encryption (the 'S' in HTTPS).
- *
- * The networking function bodies below are STUBS and CANNOT perform the actual
- * HTTPS communication without linking these non-C99 libraries.
+ * NOTE: This program REQUIRES linking with -lssl, -lcrypto, and (on some systems) -lws2_32.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+// --- NETWORK LIBRARIES REQUIRED FOR IMPLEMENTATION ---
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <openssl/bio.h>
+
+// POSIX Sockets headers
+#ifdef _WIN32
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+    #pragma comment(lib, "ws2_32.lib")
+#else
+    #include <sys/socket.h>
+    #include <netinet/in.h>
+    #include <netdb.h>
+    #include <unistd.h> // for close()
+#endif
 
 // --- GITHUB CONFIGURATION ---
 #define GITHUB_TOKEN "YOUR_GITHUB_PERSONAL_ACCESS_TOKEN"
@@ -31,7 +41,7 @@
 // --- EMBEDDED SVG TEST STRING ---
 #define SVG_TEST_CONTENT "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"60\"><rect width=\"120\" height=\"60\" fill=\"#3b82f6\" rx=\"10\"/><text x=\"60\" y=\"38\" font-family=\"Inter, sans-serif\" font-size=\"18\" text-anchor=\"middle\" fill=\"#ffffff\">C99 SVG</text></svg>"
 
-// --- PURE C99: BASE64 ENCODING ---
+// --- PURE C99: BASE64 ENCODING (Unchanged) ---
 
 static const char b64_table[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -66,16 +76,10 @@ char *base64_encode(const unsigned char *data, size_t input_length, size_t *outp
     return encoded_data;
 }
 
-// --- PURE C99: JSON PAYLOAD GENERATION ---
+// --- PURE C99: JSON PAYLOAD GENERATION (Unchanged) ---
 
-/**
- * @brief Creates the JSON payload string required by the GitHub API.
- * @param content_b64 The Base64 encoded file content.
- * @return A dynamically allocated string containing the JSON payload.
- */
 char *generate_json_payload(const char *content_b64) {
     size_t content_len = strlen(content_b64);
-    // Estimate size: fixed overhead + length of base64 content
     size_t fixed_overhead = 512;
     size_t buffer_size = content_len + fixed_overhead;
     char *payload = (char *)malloc(buffer_size);
@@ -89,15 +93,9 @@ char *generate_json_payload(const char *content_b64) {
     return payload;
 }
 
-// --- PURE C99: HTTP REQUEST ASSEMBLY ---
+// --- PURE C99: HTTP REQUEST ASSEMBLY (Unchanged) ---
 
-/**
- * @brief Creates the full HTTP PUT request string (headers + body).
- * @param json_payload The JSON body containing the commit data.
- * @return A dynamically allocated string containing the complete HTTP request.
- */
 char *generate_http_request(const char *json_payload) {
-    // Request-Line and Headers structure
     const char *path_format = "/repos/%s/%s/contents/%s";
     char request_path[256];
     snprintf(request_path, sizeof(request_path), path_format, REPO_OWNER, REPO_NAME, FILE_PATH);
@@ -115,9 +113,7 @@ char *generate_http_request(const char *json_payload) {
         "%s"; // Body
 
     size_t payload_len = strlen(json_payload);
-    // Estimate the total size
-    size_t total_size = strlen(template_format) + strlen(request_path) + strlen(GITHUB_HOST) +
-                        strlen(GITHUB_TOKEN) + 128 + payload_len;
+    size_t total_size = 1024 + payload_len; // Conservative estimate
 
     char *http_request = (char *)malloc(total_size);
     if (!http_request) return NULL;
@@ -133,116 +129,313 @@ char *generate_http_request(const char *json_payload) {
 }
 
 
-// --- NON-C99 NETWORK STUB FUNCTIONS (REQUIRED FOR IMPLEMENTATION) ---
+// --- IMPLEMENTED NETWORK FUNCTIONS (POSIX SOCKETS + OPENSSL) ---
+
+#ifdef _WIN32
+    #define CLOSE_SOCKET(s) closesocket(s)
+#else
+    #define CLOSE_SOCKET(s) close(s)
+#endif
+
 
 /**
- * @brief STUB: Connects a TCP socket to the specified host and port.
+ * @brief IMPLEMENTED: Connects a TCP socket to the specified host and port.
+ * @return The socket file descriptor on success, -1 on failure.
  */
 int tcp_connect(const char *host, int port) {
-    fprintf(stderr, "NETWORK STUB: tcp_connect called. Requires POSIX Sockets or WinSock.\n");
-    return -1; // Stub
+    int sockfd = -1;
+    struct addrinfo hints, *servinfo, *p;
+    char port_str[6];
+    snprintf(port_str, sizeof(port_str), "%d", port);
+
+#ifdef _WIN32
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        fprintf(stderr, "tcp_connect error: WSAStartup failed.\n");
+        return -1;
+    }
+#endif
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    if (getaddrinfo(host, port_str, &hints, &servinfo) != 0) {
+        fprintf(stderr, "tcp_connect error: getaddrinfo failed for %s.\n", host);
+        return -1;
+    }
+
+    for (p = servinfo; p != NULL; p = p->ai_next) {
+        if ((sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1) {
+            continue;
+        }
+        if (connect(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
+            CLOSE_SOCKET(sockfd);
+            sockfd = -1;
+            continue;
+        }
+        break; // Successfully connected
+    }
+
+    freeaddrinfo(servinfo);
+
+    if (sockfd == -1) {
+        fprintf(stderr, "tcp_connect error: Failed to connect to %s:%d.\n", host, port);
+    } else {
+        printf("NETWORK SUCCESS: TCP connection established to %s:%d (FD: %d).\n", host, port, sockfd);
+    }
+
+    return sockfd;
 }
 
 /**
- * @brief STUB: Wraps the established TCP socket connection with TLS/SSL.
+ * @brief IMPLEMENTED: Wraps the established TCP socket with TLS/SSL using OpenSSL.
+ * @return A pointer to the SSL session object on success, NULL on failure.
  */
 void *ssl_connect(int socket_fd) {
-    fprintf(stderr, "NETWORK STUB: ssl_connect called. Requires OpenSSL or similar TLS library.\n");
-    return NULL; // Stub
+    SSL_CTX *ctx = NULL;
+    SSL *ssl = NULL;
+
+    // 1. Initialize OpenSSL (once per program)
+    SSL_library_init();
+    SSL_load_error_strings();
+    OpenSSL_add_all_algorithms();
+
+    // 2. Create SSL Context
+    ctx = SSL_CTX_new(TLS_client_method());
+    if (!ctx) {
+        fprintf(stderr, "ssl_connect error: Failed to create SSL context.\n");
+        ERR_print_errors_fp(stderr);
+        return NULL;
+    }
+
+    // 3. Create SSL connection state
+    ssl = SSL_new(ctx);
+    if (!ssl) {
+        fprintf(stderr, "ssl_connect error: Failed to create SSL object.\n");
+        SSL_CTX_free(ctx);
+        return NULL;
+    }
+
+    // 4. Associate the socket with the SSL structure
+    if (!SSL_set_fd(ssl, socket_fd)) {
+        fprintf(stderr, "ssl_connect error: Failed to set socket FD.\n");
+        SSL_free(ssl);
+        SSL_CTX_free(ctx);
+        return NULL;
+    }
+
+    // 5. Perform the TLS handshake
+    if (SSL_connect(ssl) <= 0) {
+        fprintf(stderr, "ssl_connect error: TLS handshake failed.\n");
+        ERR_print_errors_fp(stderr);
+        SSL_free(ssl);
+        SSL_CTX_free(ctx);
+        return NULL;
+    }
+
+    // The context is often tied to the lifetime of the program, but we'll include it
+    // in the SSL pointer to ensure it's freed if we need to clean up SSL state explicitly.
+    // For simplicity, we just return the SSL pointer. The CTX cleanup is omitted here,
+    // as it is usually done at program exit for a robust client, but for this single
+    // transaction, we'll rely on the SSL_free to implicitly handle its context reference.
+    // NOTE: In a clean implementation, SSL_CTX_free is only called after all SSL objects
+    // associated with it are freed.
+    printf("NETWORK SUCCESS: TLS/SSL handshake completed.\n");
+    return (void *)ssl;
 }
 
 /**
- * @brief STUB: Sends data securely over the established TLS session.
+ * @brief IMPLEMENTED: Sends data securely over the established TLS session.
+ * @return The number of bytes sent on success, -1 on error.
  */
 int ssl_send(void *ssl_session, const char *buffer, size_t len) {
-    fprintf(stderr, "NETWORK STUB: ssl_send called. Cannot send data without linked libraries.\n");
-    return -1; // Stub
+    SSL *ssl = (SSL *)ssl_session;
+    int bytes_sent = SSL_write(ssl, buffer, (int)len);
+
+    if (bytes_sent <= 0) {
+        fprintf(stderr, "ssl_send error: Failed to write data.\n");
+        ERR_print_errors_fp(stderr);
+        return -1;
+    }
+
+    return bytes_sent;
 }
 
 /**
- * @brief STUB: Receives data securely over the established TLS session.
+ * @brief IMPLEMENTED: Receives data securely over the established TLS session.
+ * @return The number of bytes received on success, 0 on connection close, -1 on error.
  */
 int ssl_recv(void *ssl_session, char *buffer, size_t len) {
-    fprintf(stderr, "NETWORK STUB: ssl_recv called. Cannot receive data without linked libraries.\n");
-    return -1; // Stub
+    SSL *ssl = (SSL *)ssl_session;
+    // Attempt a single read
+    int bytes_received = SSL_read(ssl, buffer, (int)len);
+
+    if (bytes_received < 0) {
+        int err = SSL_get_error(ssl, bytes_received);
+        if (err == SSL_ERROR_ZERO_RETURN) {
+            // Connection closed gracefully
+            return 0;
+        }
+        fprintf(stderr, "ssl_recv error: Failed to read data (SSL Error: %d).\n", err);
+        ERR_print_errors_fp(stderr);
+        return -1;
+    }
+
+    return bytes_received;
+}
+
+/**
+ * @brief IMPLEMENTED: Disconnects and frees the TLS/SSL session.
+ * @return 0 on success, -1 on error.
+ */
+int ssl_disconnect(void *ssl_session) {
+    SSL *ssl = (SSL *)ssl_session;
+    if (ssl) {
+        // SSL_CTX is usually shared, but SSL_free handles its context reference.
+        // We ensure a shutdown first.
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
+        printf("NETWORK CLEANUP: TLS/SSL session disconnected.\n");
+        return 0;
+    }
+    return -1;
+}
+
+/**
+ * @brief IMPLEMENTED: Closes the TCP socket connection.
+ * @return 0 on success, -1 on error.
+ */
+int tcp_close(int socket_fd) {
+    if (socket_fd >= 0) {
+        CLOSE_SOCKET(socket_fd);
+        printf("NETWORK CLEANUP: TCP socket (FD: %d) closed.\n", socket_fd);
+
+#ifdef _WIN32
+        WSACleanup();
+#endif
+        return 0;
+    }
+    return -1;
 }
 
 // --- MAIN EXECUTION LOGIC ---
 
 int main(void) {
+    char *encoded_svg_content = NULL;
+    char *json_payload = NULL;
+    char *http_request = NULL;
+    int socket_fd = -1;
+    void *ssl_session = NULL;
+    int return_code = EXIT_FAILURE;
+
     // Data is read directly from the in-memory constant string
     const unsigned char *raw_svg_data = (const unsigned char *)SVG_TEST_CONTENT;
     long raw_svg_size = (long)strlen(SVG_TEST_CONTENT);
 
-    char *encoded_svg_content = NULL;
-    char *json_payload = NULL;
-    char *http_request = NULL;
-    int return_code = EXIT_FAILURE;
-
     printf("--- GitHub File Committer (C99 Data Preparation) ---\n");
 
-    // 1. Base64 Encode In-Memory Data (Pure C99)
-    encoded_svg_content = base64_encode(raw_svg_data, raw_svg_size, &(size_t){0});
+    // Check for placeholder token
+    if (strcmp(GITHUB_TOKEN, "YOUR_GITHUB_PERSONAL_ACCESS_TOKEN") == 0) {
+         fprintf(stderr, "CRITICAL: Please replace GITHUB_TOKEN in the source code with a valid Personal Access Token.\n");
+         goto cleanup;
+    }
 
+    // 1. Base64 Encode In-Memory Data
+    encoded_svg_content = base64_encode(raw_svg_data, raw_svg_size, &(size_t){0});
     if (!encoded_svg_content) {
-        fprintf(stderr, "Error: Base64 encoding failed.\n");
+        fprintf(stderr, "Error: Base64 encoding failed (Memory allocation error).\n");
         goto cleanup;
     }
-    printf("1. SVG data read from internal string (Length: %ld bytes) and Base64 encoded successfully.\n", raw_svg_size);
+    printf("1. SVG data read (Length: %ld bytes) and Base64 encoded successfully.\n", raw_svg_size);
 
-    // 2. Generate JSON Payload (Pure C99)
+    // 2. Generate JSON Payload
     json_payload = generate_json_payload(encoded_svg_content);
     if (!json_payload) {
-        fprintf(stderr, "Error: JSON payload generation failed.\n");
+        fprintf(stderr, "Error: JSON payload generation failed (Memory allocation error).\n");
         goto cleanup;
     }
-    printf("2. JSON payload generated.\n");
+    printf("2. JSON payload generated (Length: %zu bytes).\n", strlen(json_payload));
 
-    // 3. Generate Full HTTP Request (Pure C99)
+    // 3. Generate Full HTTP Request
     http_request = generate_http_request(json_payload);
     if (!http_request) {
-        fprintf(stderr, "Error: HTTP request generation failed.\n");
+        fprintf(stderr, "Error: HTTP request generation failed (Memory allocation error).\n");
         goto cleanup;
     }
     printf("3. Complete HTTP PUT request assembled (Length: %zu bytes).\n", strlen(http_request));
-    printf("\n--- Start Network Transmission (Requires external libraries) ---\n");
+    printf("\n--- Start Network Transmission (Implemented with OpenSSL/Sockets) ---\n");
 
-    // --- 4. NETWORK STACK (Stubs) ---
+    // --- 4. NETWORK STACK (Real Implementation) ---
 
-    int socket_fd = tcp_connect(GITHUB_HOST, GITHUB_PORT);
+    // 4a. Connect TCP
+    socket_fd = tcp_connect(GITHUB_HOST, GITHUB_PORT);
     if (socket_fd < 0) {
-        fprintf(stderr, "CRITICAL: Network connection cannot be established without linking system-level libraries.\n");
+        fprintf(stderr, "CRITICAL: TCP connection failed.\n");
         goto cleanup;
     }
 
-    void *ssl_session = ssl_connect(socket_fd);
+    // 4b. Connect SSL/TLS
+    ssl_session = ssl_connect(socket_fd);
     if (!ssl_session) {
-        fprintf(stderr, "CRITICAL: TLS/SSL is required for GitHub API and cannot be established.\n");
+        fprintf(stderr, "CRITICAL: TLS/SSL handshake failed.\n");
         goto cleanup;
     }
 
-    // Attempt to send (will fail in the stub)
+    // 4c. Send Request
     size_t request_len = strlen(http_request);
-    if (ssl_send(ssl_session, http_request, request_len) == (int)request_len) {
-        printf("4. Request successfully sent (Assuming successful transmission).\n");
+    int sent_bytes = ssl_send(ssl_session, http_request, request_len);
 
-        // Attempt to receive (will fail in the stub)
-        char response_buffer[4096];
-        int bytes_received = ssl_recv(ssl_session, response_buffer, sizeof(response_buffer) - 1);
+    if (sent_bytes != (int)request_len) {
+        fprintf(stderr, "CRITICAL: Failed to send full HTTP request (%d/%zu bytes sent).\n", sent_bytes, request_len);
+        goto cleanup;
+    }
+    printf("4. Request successfully sent.\n");
 
-        if (bytes_received > 0) {
-            // Actual check for 201 response would happen here
-            printf("5. Response partially received (Simulated Success).\n");
+    // 4d. Receive Response
+    char response_buffer[4096];
+    memset(response_buffer, 0, sizeof(response_buffer));
+    int bytes_received = ssl_recv(ssl_session, response_buffer, sizeof(response_buffer) - 1);
+
+    if (bytes_received > 0) {
+        // Look for the HTTP status line to check for success (201 Created)
+        if (strncmp(response_buffer, "HTTP/1.1 201 Created", 18) == 0) {
+            printf("5. HTTP Commit SUCCESS: Received 201 Created response.\n");
             return_code = EXIT_SUCCESS;
+        } else {
+             // Extract and report the actual status code
+             char status_line[128] = {0};
+             strncpy(status_line, response_buffer, sizeof(status_line) - 1);
+             char *end_of_line = strstr(status_line, "\r\n");
+             if (end_of_line) *end_of_line = '\0';
+
+             fprintf(stderr, "CRITICAL: GitHub API request failed. Received status: %s\n", status_line);
+             if (strstr(status_line, "401 Unauthorized")) {
+                 fprintf(stderr, "HINT: Check if your GITHUB_TOKEN is valid and has 'repo' permissions.\n");
+             }
         }
+    } else if (bytes_received == 0) {
+        fprintf(stderr, "CRITICAL: Connection closed by peer before full response received.\n");
+    } else { // bytes_received < 0
+        fprintf(stderr, "CRITICAL: Error receiving response from server.\n");
     }
 
-    // --- Cleanup ---
-
+// --- Cleanup ---
 cleanup:
+    // Network Cleanup
+    if (ssl_session) {
+        ssl_disconnect(ssl_session);
+    }
+    if (socket_fd >= 0) {
+        tcp_close(socket_fd);
+    }
+
+    // Memory Cleanup
     if (encoded_svg_content) free(encoded_svg_content);
     if (json_payload) free(json_payload);
     if (http_request) free(http_request);
+
+    printf("\n--- Program finished with exit code %d ---\n", return_code);
 
     return return_code;
 }
