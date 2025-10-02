@@ -6,29 +6,36 @@
 #include <string.h>
 
 // --- Prime Detection Constants ---
-// The 10,000th prime is 104,729. We need 17 bits to represent up to 131,071.
+// The 10,000th prime is 104,729. We need 17 bits.
 #define BIT_DEPTH 17                // Input size: Binary representation of the number
-#define MAX_PRIME_TO_TEST 104729    // Target: The 10,000th prime is 104729
-#define TEST_RANGE (MAX_PRIME_TO_TEST + 1) // Test numbers from 1 to 104729
-#define TRAINING_GOAL_PERCENT 95.0  // Target accuracy (still for reference)
-#define MAX_EPOCHS 500000           // Max total batches (safety limit)
-#define MAX_TRAINING_SECONDS 120.0  // 2 minutes limit
-#define BATCH_SIZE_HALF 64          // 64 Primes + 64 Non-Primes = 128 total per batch
-#define GROUP_SIZE_BATCHES 100      // Test and report stats after every 100 batches
+#define NUM_EXAMPLES 10000          // We need the first 10,000 of each type
+#define MAX_PRIME_TO_TEST 104729    // The 10,000th prime
+#define TEST_RANGE (MAX_PRIME_TO_TEST + 1)
+#define MAX_COMPOSITE_TO_TEST 104729 // The 10,000th composite is 104,729 (as composites start at 4)
+#define MAX_VAL_NEEDED 104729       // Max value we need to classify/store.
 
-// --- NN Architecture Constants ---
+#define MAX_TRAINING_SECONDS 120.0  // 2 minutes limit
+#define BATCH_SIZE_HALF 256         // NEW: 256 Primes + 256 Non-Primes = 512 total per batch
+#define BATCH_SIZE (BATCH_SIZE_HALF * 2) 
+#define NUM_BATCHES (NUM_EXAMPLES / BATCH_SIZE_HALF) // 10000 / 256 = 39 batches total
+
+// --- NN Architecture Constants (Retained the larger size) ---
 #define NN_INPUT_SIZE BIT_DEPTH     // 17 bits input
 #define NN_OUTPUT_SIZE 1            // Single output for classification (Prime/Not Prime)
 #define NN_HIDDEN_SIZE 512          // INCREASED: Hidden layer size to 512
-#define NN_LEARNING_RATE 0.005      // ADJUSTED: Learning rate lowered slightly for stability
+#define NN_LEARNING_RATE 0.005      // Adjusted learning rate
 
-// --- SVG Constants ---
+// --- SVG Constants (Retained) ---
 #define SVG_WIDTH 1200
 #define SVG_HEIGHT 1600
 #define INITIAL_SVG_CAPACITY 2500
 #define SVG_FILENAME "network.svg"
 
-// --- Data Structures ---
+// --- Pre-computed Data Arrays ---
+int primes_array[NUM_EXAMPLES];
+int composites_array[NUM_EXAMPLES];
+
+// --- Data Structures (Retained) ---
 typedef struct { int rows; int cols; double** data; } Matrix;
 
 typedef struct {
@@ -37,7 +44,6 @@ typedef struct {
     double* bias_h;
     double* bias_o;
     double lr;
-
     // Intermediate results stored for backpropagation
     Matrix inputs;
     Matrix hidden_inputs;
@@ -46,74 +52,119 @@ typedef struct {
     Matrix output_outputs;
 } NeuralNetwork;
 
-// --- SVG String Management Struct ---
+// --- SVG String Management Struct (Retained) ---
 typedef struct {
     char* str;
     size_t length;
     bool is_valid;
 } SvgString;
 
-// Global array and counter for dynamic SVG string collection
 SvgString* svg_strings = NULL;
 size_t svg_count = 0;
 size_t svg_capacity = 0;
 
-// --- Problem-Specific Utility Functions ---
+// --- Utility Functions ---
 
-// Pre-calculates primes up to MAX_PRIME_TO_TEST (104729)
+// Pre-calculates primes up to MAX_VAL_NEEDED using Sieve
 bool* prime_cache = NULL;
-void precompute_primes() {
-    prime_cache = (bool*)malloc(TEST_RANGE * sizeof(bool));
+void precompute_primes_sieve() {
+    prime_cache = (bool*)malloc((MAX_VAL_NEEDED + 1) * sizeof(bool));
     if (!prime_cache) {
         fprintf(stderr, "FATAL ERROR: Could not allocate memory for prime cache.\n");
         exit(EXIT_FAILURE);
     }
-    memset(prime_cache, true, TEST_RANGE * sizeof(bool));
+    memset(prime_cache, true, (MAX_VAL_NEEDED + 1) * sizeof(bool));
     
-    if (TEST_RANGE > 0) prime_cache[0] = false;
-    if (TEST_RANGE > 1) prime_cache[1] = false;
+    prime_cache[0] = false;
+    prime_cache[1] = false;
 
-    for (int p = 2; p * p <= MAX_PRIME_TO_TEST; p++) {
+    for (int p = 2; p * p <= MAX_VAL_NEEDED; p++) {
         if (prime_cache[p]) {
-            for (int i = p * p; i <= MAX_PRIME_TO_TEST; i += p)
+            for (int i = p * p; i <= MAX_VAL_NEEDED; i += p)
                 prime_cache[i] = false;
         }
     }
 }
 
+// Fills the primes_array and composites_array
+double generate_precomputed_data() {
+    clock_t start = clock();
+    
+    int prime_count = 0;
+    int composite_count = 0;
+
+    // Use the Sieve cache (MAX_VAL_NEEDED = 104729)
+    for (int n = 2; n <= MAX_VAL_NEEDED; n++) {
+        if (prime_cache[n]) {
+            if (prime_count < NUM_EXAMPLES) {
+                primes_array[prime_count++] = n;
+            }
+        } else if (n > 3) { // Composites start at 4
+            if (composite_count < NUM_EXAMPLES) {
+                composites_array[composite_count++] = n;
+            }
+        }
+        
+        // Break early if both arrays are full
+        if (prime_count >= NUM_EXAMPLES && composite_count >= NUM_EXAMPLES) {
+            break;
+        }
+    }
+
+    if (prime_count < NUM_EXAMPLES || composite_count < NUM_EXAMPLES) {
+        fprintf(stderr, "\nWARNING: Only found %d primes and %d composites up to %d. Training data may be incomplete.\n", 
+                prime_count, composite_count, MAX_VAL_NEEDED);
+    }
+
+    clock_t end = clock();
+    return ((double)(end - start)) / CLOCKS_PER_SEC;
+}
+
 // Checks if a number is prime using the pre-computed cache
 bool is_prime(int n) {
-    if (n < 2 || n > MAX_PRIME_TO_TEST || !prime_cache) return false;
+    if (n < 2 || n > MAX_VAL_NEEDED || !prime_cache) return false;
     return prime_cache[n];
 }
 
 // Converts an integer into its BIT_DEPTH-bit binary representation (input array)
 void int_to_binary_array(int n, double* arr) {
     for (int i = 0; i < BIT_DEPTH; i++) {
-        // LSB is at index 0, MSB at index BIT_DEPTH-1
         arr[i] = (double)((n >> i) & 1);
     }
 }
 
-// Generates one training example from the first 10000 primes/non-primes
-void generate_prime_nonprime_example(double input[BIT_DEPTH], double* target) {
-    int n;
+// NEW: Validation Check Function
+void validate_precomputed_data() {
+    int check_size = BATCH_SIZE_HALF * 2; // Check 512 total (256 of each)
+    int prime_errors = 0;
+    int composite_errors = 0;
     
-    // Choose whether to generate a prime (Target: 1.0) or non-prime (Target: 0.0)
-    if (rand() % 2 == 0) {
-        *target = 1.0;
-        do {
-            n = 2 + rand() % (MAX_PRIME_TO_TEST - 1); 
-        } while (!is_prime(n));
-    } else {
-        *target = 0.0;
-        do {
-            n = 4 + rand() % (MAX_PRIME_TO_TEST - 3); 
-        } while (is_prime(n));
+    printf("\n--- Data Validation (First 512 entries) ---\n");
+    
+    // Validate Primes
+    for (int i = 0; i < BATCH_SIZE_HALF; i++) {
+        if (!is_prime(primes_array[i])) {
+            printf("ERROR: Primes array[%d] value %d is NOT prime.\n", i, primes_array[i]);
+            prime_errors++;
+        }
     }
     
-    int_to_binary_array(n, input);
+    // Validate Composites
+    for (int i = 0; i < BATCH_SIZE_HALF; i++) {
+        if (is_prime(composites_array[i])) {
+            printf("ERROR: Composites array[%d] value %d IS prime.\n", i, composites_array[i]);
+            composite_errors++;
+        }
+    }
+    
+    printf("Validation Complete. Primes Errors: %d, Composite Errors: %d.\n", prime_errors, composite_errors);
+    if (prime_errors > 0 || composite_errors > 0) {
+        printf("FATAL: Validation failed. Stopping execution.\n");
+        exit(EXIT_FAILURE);
+    }
+    printf("-------------------------------------------\n");
 }
+
 
 // --- Matrix & NN Core Utility Functions (Retained) ---
 Matrix matrix_create(int rows, int cols, int input_size) {
@@ -200,7 +251,7 @@ double tanh_derivative(double y) { return 1.0 - (y * y); }
 double sigmoid_activation(double x) { return 1.0 / (1.0 + exp(-x)); }
 double sigmoid_derivative(double y) { return y * (1.0 - y); }
 
-// --- Neural Network Functions ---
+// --- Neural Network Functions (Retained) ---
 
 void nn_init(NeuralNetwork* nn) {
     nn->lr = NN_LEARNING_RATE;
@@ -307,31 +358,41 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     return mse_loss;
 }
 
-// Training Session (Batch)
-double train_batch(NeuralNetwork* nn, double* bp_time) {
+// NEW: Sequential Batch Training Function
+double train_sequential_batch(NeuralNetwork* nn, int batch_index, double* bp_time) {
     clock_t start_bp = clock();
     double total_mse = 0.0;
     double input_arr[BIT_DEPTH];
-    double target_arr[NN_OUTPUT_SIZE];
+    double target_arr_prime[] = {1.0};
+    double target_arr_composite[] = {0.0};
     double output_arr[NN_OUTPUT_SIZE];
     
-    int total_examples = BATCH_SIZE_HALF * 2;
+    int start_index = batch_index * BATCH_SIZE_HALF;
+    int end_index = start_index + BATCH_SIZE_HALF;
     
-    for (int i = 0; i < total_examples; i++) {
-        // Generate mixed prime/non-prime example
-        generate_prime_nonprime_example(input_arr, target_arr);
+    // --- 1. Train on Primes ---
+    for (int i = start_index; i < end_index; i++) {
+        int_to_binary_array(primes_array[i], input_arr);
         
         nn_forward(nn, input_arr, output_arr);
-        total_mse += nn_backward(nn, target_arr);
+        total_mse += nn_backward(nn, target_arr_prime);
+    }
+
+    // --- 2. Train on Composites ---
+    for (int i = start_index; i < end_index; i++) {
+        int_to_binary_array(composites_array[i], input_arr);
+        
+        nn_forward(nn, input_arr, output_arr);
+        total_mse += nn_backward(nn, target_arr_composite);
     }
     
     clock_t end_bp = clock();
     *bp_time = ((double)(end_bp - start_bp)) / CLOCKS_PER_SEC;
 
-    return total_mse / total_examples;
+    return total_mse / BATCH_SIZE;
 }
 
-// Testing function: Measures accuracy on all numbers up to the MAX_PRIME_TO_TEST
+// Testing function: Measures accuracy on all numbers up to the MAX_VAL_NEEDED
 double test_network(NeuralNetwork* nn, double* test_time) {
     clock_t start_test = clock();
     
@@ -340,7 +401,7 @@ double test_network(NeuralNetwork* nn, double* test_time) {
     double input_arr[BIT_DEPTH];
     double output_arr[NN_OUTPUT_SIZE];
 
-    for (int n = 1; n <= MAX_PRIME_TO_TEST; n++) {
+    for (int n = 1; n <= MAX_VAL_NEEDED; n++) {
         int_to_binary_array(n, input_arr);
         nn_forward(nn, input_arr, output_arr);
         
@@ -410,7 +471,8 @@ void free_svg_strings() {
     svg_capacity = 0;
 }
 
-// --- SVG Templates ---
+// --- SVG Templates and Generation (Retained, adjusted for 512 Hidden) ---
+
 const char* SVG_HEADER_TEMPLATE = "<svg width=\"%d\" height=\"%d\" viewBox=\"0 0 %d %d\" xmlns=\"http://www.w3.org/2000/svg\">\n<rect width=\"100%%\" height=\"100%%\" fill=\"#FAFAFA\"/>\n<style>\n.neuron{stroke:#000;stroke-width:1;}\n.text{font:10px sans-serif; fill:#333;}\n.neg{stroke:red;}.pos{stroke:blue;}\n</style>\n";
 const char* SVG_FOOTER = "\n</svg>";
 const char* SVG_LAYER_LABEL_TEMPLATE = "<text x=\"%d\" y=\"%d\" class=\"text\" font-size=\"20\" font-weight=\"bold\" text-anchor=\"middle\">%s (%d)</text>\n";
@@ -418,28 +480,20 @@ const char* SVG_NEURON_TEMPLATE_IN = "<circle cx=\"%d\" cy=\"%.2f\" r=\"12\" cla
 const char* SVG_NEURON_TEMPLATE_OTHER = "<circle cx=\"%d\" cy=\"%.2f\" r=\"12\" class=\"neuron\" fill=\"#FFF\"/>\n<text x=\"%d\" y=\"%.2f\" class=\"text\" font-size=\"10\" text-anchor=\"middle\" dominant-baseline=\"central\">%s</text>\n";
 const char* SVG_CONNECTION_TEMPLATE = "<line x1=\"%d\" y1=\"%.2f\" x2=\"%d\" y2=\"%.2f\" class=\"%s\" stroke-width=\"%.2f\" opacity=\"%.2f\"/>\n";
 
-// Function to generate and collect ALL SVG parts
 void generate_network_svg(NeuralNetwork* nn) {
     char buffer[512];
 
-    // 1. SVG Header
     snprintf(buffer, sizeof(buffer), SVG_HEADER_TEMPLATE, SVG_WIDTH, SVG_HEIGHT, SVG_WIDTH, SVG_HEIGHT);
     append_svg_string(buffer);
 
-    // 2. Constants for positioning
     const int X_IN = 100, X_HIDDEN = 600, X_OUT = 1100;
     const int Y_START = 50;
     const int Y_END = SVG_HEIGHT - Y_START;
 
     const double Y_TOTAL_SPACE = (double)(Y_END - Y_START);
-
-    // Calculate spacing for 17 Input, 512 Hidden, 1 Output
     const double Y_SPACING_IN = Y_TOTAL_SPACE / NN_INPUT_SIZE;
-    // NOTE: Spacing for 512 neurons will be extremely tight, leading to heavy visual overlap in the SVG.
     const double Y_SPACING_HIDDEN = Y_TOTAL_SPACE / NN_HIDDEN_SIZE; 
-    const double Y_SPACING_OUT = Y_TOTAL_SPACE / NN_OUTPUT_SIZE;
-
-    // --- A. Draw Layers and Calculate Neuron Coordinates ---
+    
     double y_in[NN_INPUT_SIZE];
     double y_hidden[NN_HIDDEN_SIZE];
     double y_out[NN_OUTPUT_SIZE];
@@ -449,40 +503,38 @@ void generate_network_svg(NeuralNetwork* nn) {
     append_svg_string(buffer);
     for (int i = 0; i < NN_INPUT_SIZE; i++) {
         y_in[i] = Y_START + i * Y_SPACING_IN + Y_SPACING_IN/2;
-        // Neuron label is Bit Index
         snprintf(buffer, sizeof(buffer), SVG_NEURON_TEMPLATE_IN, X_IN, y_in[i], X_IN, y_in[i], i);
         append_svg_string(buffer);
     }
 
     // Hidden Layer (512 Neurons) - Sample a few visually
-    snprintf(buffer, sizeof(buffer), SVG_LAYER_LABEL_TEMPLATE, X_HIDDEN, Y_START - 20, "Hidden (Visual Sampled)", NN_HIDDEN_SIZE);
+    snprintf(buffer, sizeof(buffer), SVG_LAYER_LABEL_TEMPLATE, X_HIDDEN, Y_START - 20, "Hidden (Sampled)", NN_HIDDEN_SIZE);
     append_svg_string(buffer);
     for (int h = 0; h < NN_HIDDEN_SIZE; h++) {
         y_hidden[h] = Y_START + h * Y_SPACING_HIDDEN + Y_SPACING_HIDDEN/2;
         
-        // Only draw a subset of neurons to prevent a massive file/overload
         if (h < 20 || h > NN_HIDDEN_SIZE - 20 || h % 50 == 0) {
              snprintf(buffer, sizeof(buffer), SVG_NEURON_TEMPLATE_OTHER, X_HIDDEN, y_hidden[h], X_HIDDEN, y_hidden[h], "");
              append_svg_string(buffer);
         }
     }
 
-    // Output Layer (1 Neuron) - Centered vertically
+    // Output Layer (1 Neuron)
     snprintf(buffer, sizeof(buffer), SVG_LAYER_LABEL_TEMPLATE, X_OUT, Y_START - 20, "Output", NN_OUTPUT_SIZE);
     append_svg_string(buffer);
-    y_out[0] = Y_START + Y_TOTAL_SPACE / 2.0; // Center the single output neuron
+    y_out[0] = Y_START + Y_TOTAL_SPACE / 2.0; 
     snprintf(buffer, sizeof(buffer), SVG_NEURON_TEMPLATE_OTHER, X_OUT, y_out[0], X_OUT, y_out[0], "PRIME?");
     append_svg_string(buffer);
 
 
-    // --- B. Draw Connections (Input -> Hidden) --- (Only sample 1 in 10 connections for visualization)
+    // Connections (Input -> Hidden) - Sampled
     for (int h = 0; h < NN_HIDDEN_SIZE; h += 10) { 
         for (int i = 0; i < NN_INPUT_SIZE; i++) {
             double weight = nn->weights_ih.data[h][i];
             const char* class = (weight >= 0) ? "pos" : "neg";
             double abs_weight = fabs(weight);
             double width = fmin(2.5, abs_weight * 5.0);
-            double opacity = fmin(0.1, abs_weight * 0.5); // Lower opacity for density
+            double opacity = fmin(0.1, abs_weight * 0.5); 
 
             snprintf(buffer, sizeof(buffer), SVG_CONNECTION_TEMPLATE, 
                      X_IN + 10, y_in[i],
@@ -492,7 +544,7 @@ void generate_network_svg(NeuralNetwork* nn) {
         }
     }
 
-    // --- C. Draw ALL Connections (Hidden -> Output) --- 
+    // Connections (Hidden -> Output) - All
     int o = 0; 
     for (int h = 0; h < NN_HIDDEN_SIZE; h++) {
         double weight = nn->weights_ho.data[o][h];
@@ -508,7 +560,6 @@ void generate_network_svg(NeuralNetwork* nn) {
         append_svg_string(buffer);
     }
 
-    // 3. SVG Footer
     append_svg_string(SVG_FOOTER);
 }
 
@@ -524,18 +575,14 @@ void save_network_as_svg(NeuralNetwork* nn) {
 
     generate_network_svg(nn);
     
-    // Print all validated strings to file
     for (size_t i = 0; i < svg_count; i++) {
         if (validate_svg_string(&svg_strings[i])) {
             fprintf(fp, "%s", svg_strings[i].str);
-        } else {
-            fprintf(stderr, "SVG string at index %zu failed validation. Skipping.\n", i);
         }
     }
     
     fclose(fp);
 
-    // Clean up memory
     free_svg_strings();
 }
 
@@ -544,83 +591,99 @@ void save_network_as_svg(NeuralNetwork* nn) {
 
 int main() {
     srand((unsigned int)time(NULL));
-    precompute_primes(); // Cache primes for fast checking
+    
+    // --- STEP 1: Pre-compute Sieve and Arrays ---
+    printf("Setting up Sieve and Pre-computing 10,000 Primes/Composites...\n");
+    precompute_primes_sieve();
+    double precomp_time = generate_precomputed_data();
+    
+    printf("Pre-computation Complete. Time taken: %.4f seconds.\n", precomp_time);
+    printf("First 10 Primes: ");
+    for(int i = 0; i < 10; i++) printf("%d ", primes_array[i]);
+    printf("\nFirst 10 Composites: ");
+    for(int i = 0; i < 10; i++) printf("%d ", composites_array[i]);
+    printf("\n");
+    
+    // --- STEP 2: Validate Data ---
+    validate_precomputed_data();
 
+    // --- STEP 3: Initialize NN and Begin Sequential Training ---
     NeuralNetwork nn;
     nn_init(&nn);
 
     printf("Neural Network Prime Detector Initialized.\n");
-    printf("Training Numbers: Primes and Non-Primes up to %d (the 10,000th prime).\n", MAX_PRIME_TO_TEST);
-    printf("Architecture: Input=%d, Hidden=%d, Output=%d (INCREASED CAPACITY)\n", NN_INPUT_SIZE, NN_HIDDEN_SIZE, NN_OUTPUT_SIZE);
-    printf("Learning Rate: %.4f (ADJUSTED)\n", NN_LEARNING_RATE);
+    printf("Architecture: Input=%d, Hidden=%d, Output=%d\n", NN_INPUT_SIZE, NN_HIDDEN_SIZE, NN_OUTPUT_SIZE);
     printf("Max Training Time: %.0f seconds.\n", MAX_TRAINING_SECONDS);
-    printf("--------------------------------------------------------------------------------\n");
-    printf("Batch Group | Avg MSE (Group) | Correctness (Total Range) | Backprop Time (sec)\n");
-    printf("--------------------------------------------------------------------------------\n");
+    printf("Total Batches: %d (256 Primes + 256 Composites per batch)\n", NUM_BATCHES);
+    printf("------------------------------------------------------------------------------------------------\n");
+    printf("Batch No. | Primes Range | Composites Range | Avg MSE (Batch) | Correctness (Total) | Backprop Time (sec)\n");
+    printf("------------------------------------------------------------------------------------------------\n");
     fflush(stdout);
 
     time_t start_time = time(NULL);
-    int batch_count = 0;
     double current_success_rate = 0.0;
     int next_milestone_percent = 10;
-    
-    double total_mse_group = 0.0;
-    double total_bp_time_group = 0.0;
+    int total_batches_run = 0;
 
-    // The primary loop termination condition is the time limit
-    while (difftime(time(NULL), start_time) < MAX_TRAINING_SECONDS) {
+    // Outer loop for epochs/passes over the data
+    for (int epoch = 0; ; epoch++) {
+        bool time_limit_reached = false;
 
-        double bp_time = 0.0;
-        double avg_mse = train_batch(&nn, &bp_time);
-        
-        total_mse_group += avg_mse;
-        total_bp_time_group += bp_time;
-        batch_count++;
-
-        // --- Testing & Milestone Check (After every GROUP_SIZE_BATCHES) ---
-        if (batch_count % GROUP_SIZE_BATCHES == 0) {
-            double test_time = 0.0;
-            current_success_rate = test_network(&nn, &test_time);
+        // Inner loop iterates through all sequential batches
+        for (int i = 0; i < NUM_BATCHES; i++) {
+            if (difftime(time(NULL), start_time) >= MAX_TRAINING_SECONDS) {
+                time_limit_reached = true;
+                break;
+            }
             
-            double avg_mse_group = total_mse_group / GROUP_SIZE_BATCHES;
-            double avg_bp_time_per_batch = total_bp_time_group / GROUP_SIZE_BATCHES;
+            double bp_time = 0.0;
+            double avg_mse = train_sequential_batch(&nn, i, &bp_time);
+            total_batches_run++;
+            
+            double test_time = 0.0;
+            // Test on the whole range after every batch
+            current_success_rate = test_network(&nn, &test_time); 
+            
+            int prime_start = i * BATCH_SIZE_HALF;
+            int prime_end = prime_start + BATCH_SIZE_HALF;
 
-            // Log general training stats for the group
-            printf("%-11d | %-15.8f | %-25.2f | %-19.4f\n", 
-                   batch_count, avg_mse_group, current_success_rate, avg_bp_time_per_batch);
+            // Log stats after every batch
+            printf("%-9d | %4d-%-4d | %4d-%-4d | %-15.8f | %-25.2f | %-19.4f\n", 
+                   total_batches_run, 
+                   prime_start + 1, prime_end, 
+                   prime_start + 1, prime_end, // Composites index matches primes index
+                   avg_mse, current_success_rate, bp_time);
             fflush(stdout);
             
             // Log milestones
-            while (current_success_rate >= next_milestone_percent && next_milestone_percent < TRAINING_GOAL_PERCENT) {
+            while (current_success_rate >= next_milestone_percent) {
                 printf("--- MILESTONE REACHED --- Batch: %d | Time: %.0f sec | Correctness: %.2f%%\n",
-                       batch_count, difftime(time(NULL), start_time), current_success_rate);
+                       total_batches_run, difftime(time(NULL), start_time), current_success_rate);
                 fflush(stdout);
                 
-                if (next_milestone_percent == 90) {
-                    next_milestone_percent = (int)TRAINING_GOAL_PERCENT; 
-                } else {
-                    next_milestone_percent += 10;
-                }
-            }
-
-            // Check for goal completion (if it happens before the time limit)
-            if (current_success_rate >= TRAINING_GOAL_PERCENT) {
-                 printf("--- GOAL ACHIEVED --- Correctness %.2f%% reached.\n", current_success_rate);
-                 break; 
+                if (next_milestone_percent == 90) { next_milestone_percent = 95; } 
+                else if (next_milestone_percent >= 95) { break; } 
+                else { next_milestone_percent += 10; }
             }
             
-            // Reset group totals
-            total_mse_group = 0.0;
-            total_bp_time_group = 0.0;
+            if (current_success_rate >= 95.0) {
+                 printf("--- GOAL ACHIEVED --- Correctness %.2f%% reached.\n", current_success_rate);
+                 time_limit_reached = true; // Also break the outer loop
+                 break; 
+            }
         }
+        
+        if (time_limit_reached) break;
+
+        printf("--- EPOCH %d COMPLETE. Starting next epoch. ---\n", epoch + 1);
     }
     
-    printf("--------------------------------------------------------------------------------\n");
+    printf("------------------------------------------------------------------------------------------------\n");
     printf("\n#####################################################\n");
     printf("## TRAINING TERMINATED ##\n");
-    printf("Reason: %s\n", (current_success_rate >= TRAINING_GOAL_PERCENT) ? "Goal achieved." : "Time limit reached (%.0f seconds)." );
+    printf("Reason: %s\n", (current_success_rate >= 95.0) ? "Goal achieved." : "Time limit reached (%.0f seconds)." );
     printf("Final correctness: %.2f%%\n", current_success_rate);
-    printf("Total Batches Run: %d\n", batch_count);
+    printf("Total Batches Run: %d\n", total_batches_run);
     printf("Total Training Time: %.0f seconds.\n", difftime(time(NULL), start_time));
     printf("#####################################################\n");
     fflush(stdout);
