@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Autonomous Collector Lander</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        #gameContainer {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        canvas {
+            border: 2px solid #fff;
+            background-color: #05051a;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: #fff;
+            font-family: sans-serif;
+            font-size: 14px;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 5px;
+            min-width: 150px;
+        }
+        .safe { color: lime; }
+        .danger { color: red; }
+        .score-display { font-weight: bold; color: yellow; }
+
+        /* Trace Log Area */
+        #log-area {
+            width: 800px;
+            height: 100px;
+            margin-top: 10px;
+            background-color: #111;
+            color: #eee;
+            font-family: monospace;
+            padding: 5px;
+            border: 1px solid #444;
+            overflow-y: scroll;
+            box-sizing: border-box;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas" width="800" height="600"></canvas>
+        <div id="log-area">Trace Log:</div>
+    </div>
+    
+    <div id="info">
+        AI Mode: <span id="ai-mode">Collect</span><br>
+        AI Status: <span id="ai-status">Initializing...</span><br>
+        Vertical Speed: <span id="vy-display">0.00</span><br>
+        Score: <span id="score-display" class="score-display">0</span>
+    </div>
+
+    <script>
+        // --- Immediate Global Setup ---
+        const logArea = document.getElementById('log-area');
+
+        // Global DOM References 
+        let canvas, ctx, aiStatusSpan, aiModeSpan, vyDisplaySpan, scoreDisplaySpan;
+
+        let animationFrameId = null; 
+        let explosionTimer = 0; 
+        let notificationPermission = 'default';
+
+        // --- Logging and Type Checking Utility ---
+        
+        /** Logs a message to the console and the onscreen log area. */
+        function trace(message, isError = false) {
+            if (typeof message !== 'string') message = String(message);
+            if (typeof isError !== 'boolean') isError = false; 
+
+            const time = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.textContent = `${time} [${isError ? 'ERROR' : 'INFO'}] ${message}`;
+            logEntry.style.color = isError ? 'red' : 'inherit';
+            
+            if (logArea) {
+                logArea.prepend(logEntry);
+                while (logArea.children.length > 50) {
+                    logArea.removeChild(logArea.lastChild);
+                }
+            } else {
+                 if (isError) console.error(`[${time} ERROR] ${message}`);
+                 else console.log(`[${time} INFO] ${message}`);
+            }
+
+            if (isError) {
+                if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId);
+                    animationFrameId = null;
+                    trace("Game loop stopped due to critical error.", true);
+                }
+            }
+        }
+
+        /** Checks if the given variable matches the expected type and is not null/undefined. */
+        function checkType(variable, expectedType, variableName, context = 'game') {
+            if (variable === null || variable === undefined || typeof variable !== expectedType) {
+                const value = variable === null ? 'null' : variable === undefined ? 'undefined' : variable;
+                const type = typeof variable;
+                const errorMessage = `[${context}] CRITICAL TYPE ERROR: ${variableName} expected ${expectedType} but got ${type} (Value: ${value})`;
+                trace(errorMessage, true);
+                throw new Error(`Type error in ${variableName}`);
+            }
+        }
+        
+        // --- Notification Functions ---
+
+        function requestNotificationPermission() {
+            try {
+                if (!("Notification" in window)) {
+                    trace("Browser does not support desktop notifications.", false);
+                    return;
+                }
+                if (Notification.permission === 'granted') {
+                    notificationPermission = 'granted';
+                    return;
+                }
+
+                Notification.requestPermission().then(permission => {
+                    notificationPermission = permission;
+                    trace(`Notification permission status: ${permission}`, false);
+                }).catch(e => {
+                    trace(`Failed to request notification permission: ${e.message}`, true);
+                });
+            } catch (e) {
+                trace(`Exception in requestNotificationPermission: ${e.message}`, true);
+            }
+        }
+
+        function sendNotification(title, body) {
+            try {
+                if (notificationPermission === 'granted') {
+                    new Notification(title, {
+                        body: body,
+                        icon: 'https://www.google.com/s2/favicons?domain=' + window.location.hostname 
+                    });
+                }
+            } catch (e) {
+                trace(`Error sending notification: ${e.message}`, true);
+            }
+        }
+
+
+        // --- Game Constants and State Containers ---
+        const CONSTANTS = {};
+        const AI_MODE = { COLLECT: 'COLLECT', LANDING: 'LANDING' };
+
+        let gameState = {
+            score: 0,
+            currentAIMode: AI_MODE.COLLECT,
+            ship: {},
+            obstacles: [],
+            diamonds: [],
+            particles: []
+        };
+
+        // --- Initialization and Sanity Checks ---
+
+        function initDOMReferences() {
+            try {
+                canvas = document.getElementById('gameCanvas');
+                aiStatusSpan = document.getElementById('ai-status');
+                aiModeSpan = document.getElementById('ai-mode');
+                vyDisplaySpan = document.getElementById('vy-display');
+                scoreDisplaySpan = document.getElementById('score-display');
+                
+                if (!canvas || !aiStatusSpan || !aiModeSpan || !vyDisplaySpan || !scoreDisplaySpan) {
+                    let missing = [];
+                    if (!canvas) missing.push('canvas');
+                    if (!aiStatusSpan) missing.push('ai-status');
+                    if (!aiModeSpan) missing.push('ai-mode');
+                    if (!vyDisplaySpan) missing.push('vy-display');
+                    if (!scoreDisplaySpan) missing.push('score-display');
+                    throw new Error(`Missing critical DOM elements: ${missing.join(', ')}`);
+                }
+                
+                ctx = canvas.getContext('2d');
+                if (!ctx) {
+                     throw new Error("Failed to acquire 2D canvas context.");
+                }
+
+                trace("All DOM references and context initialized.", false);
+            } catch (e) {
+                trace(`FATAL ERROR during DOM initialization: ${e.message}`, true);
+                throw e; 
+            }
+        }
+
+        function initConstants() {
+            CONSTANTS.GRAVITY = 0.05;
+            CONSTANTS.THRUST_POWER = 0.15;
+            CONSTANTS.ROTATION_SPEED = 0.05;
+            CONSTANTS.GROUND_HEIGHT = 50;
+            CONSTANTS.MAX_SAFE_VELOCITY = 1.0;
+            CONSTANTS.BRAKE_ALTITUDE = 300;
+            CONSTANTS.LANDING_ALTITUDE = 100;
+            CONSTANTS.CRITICAL_VELOCITY = 3.0;
+            CONSTANTS.SCORE_LANDING = 100;
+            CONSTANTS.SCORE_DIAMOND = 5;
+
+            trace("Constants initialized.", false);
+        }
+
+        function initGameState() {
+            gameState.ship = {
+                x: canvas.width / 2,
+                y: 50,
+                velocity: { x: 0, y: 0 },
+                angle: Math.PI / 2, // Ship starts pointing down
+                size: 15,
+                isThrusting: false,
+                isAlive: true,
+                hasLanded: false,
+                notified: false,
+                memory: {
+                    lastAction: 'Init',
+                    aiStatus: 'Cruising...' 
+                }
+            };
+
+            gameState.obstacles = [
+                { x: 100, y: 300, w: 150, h: 20 }, { x: 550, y: 200, w: 100, h: 20 },
+                { x: 300, y: 450, w: 200, h: 20 }, { x: 50, y: 150, w: 50, h: 50 },
+                { x: 650, y: 400, w: 150, h: 20 }
+            ];
+
+            gameState.diamonds = [];
+            for (let i = 0; i < 10; i++) {
+                gameState.diamonds.push({
+                    x: Math.random() * (canvas.width - 40) + 20,
+                    y: Math.random() * (canvas.height - CONSTANTS.GROUND_HEIGHT - 50) + 20,
+                    size: 5,
+                    collected: false
+                });
+            }
+            trace("Game State (Ship, Level) initialized.", false);
+        }
+
+        function checkConstant(name, expectedType) {
+            const value = CONSTANTS[name];
+            checkType(value, expectedType, `CONSTANTS.${name}`, 'SanityCheck');
+        }
+
+        function runSanityChecks() {
+            try {
+                trace("--- Running Sanity Checks ---", false);
+                checkConstant('GRAVITY', 'number');
+                checkType(gameState.ship.x, 'number', 'gameState.ship.x', 'SanityCheck');
+                
+                if (gameState.obstacles.length !== 5 || gameState.diamonds.length !== 10) {
+                    throw new Error(`Level data integrity check failed.`);
+                }
+                
+                trace("--- Sanity Checks Passed ---", false);
+                return true;
+
+            } catch (e) {
+                trace(`FATAL ERROR during Sanity Checks: ${e.message}`, true);
+                return false;
+            }
+        }
+
+        // --- Core Logic Functions (Drawing, Physics, AI, Collisions) ---
+        
+        function createThrustParticle() {
+            try {
+                const ship = gameState.ship;
+                const particles = gameState.particles;
+                
+                // Thrust particles appear to be ejected backwards (opposite ship's angle)
+                const exhaustAngle = ship.angle + Math.PI; 
+                const sizeOffset = ship.size * 1.5;
+                const particleSpeed = 1.5;
+
+                particles.push({
+                    x: ship.x + Math.cos(exhaustAngle) * sizeOffset,
+                    y: ship.y + Math.sin(exhaustAngle) * sizeOffset,
+                    vx: ship.velocity.x + Math.cos(exhaustAngle) * particleSpeed,
+                    vy: ship.velocity.y + Math.sin(exhaustAngle) * particleSpeed,
+                    alpha: 1.0,
+                    size: Math.random() * 3 + 1,
+                    lifetime: 100
+                });
+            } catch (e) {
+                trace(`Exception in createThrustParticle: ${e.message}`, true);
+            }
+        }
+
+        function updateParticles() {
+            try {
+                const particles = gameState.particles;
+                for (let i = particles.length - 1; i >= 0; i--) {
+                    const p = particles[i];
+                    p.x += p.vx;
+                    p.y += p.vy;
+                    p.alpha -= 0.015;
+                    if (p.alpha <= 0 || p.lifetime-- <= 0) {
+                        particles.splice(i, 1);
+                    }
+                }
+            } catch (e) {
+                trace(`Exception in updateParticles: ${e.message}`, true);
+            }
+        }
+
+        function drawParticles() {
+            try {
+                const particles = gameState.particles;
+                ctx.fillStyle = 'red';
+                particles.forEach(p => {
+                    ctx.globalAlpha = p.alpha;
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                    ctx.fill();
+                });
+                ctx.globalAlpha = 1.0;
+            } catch (e) {
+                trace(`Exception in drawParticles: ${e.message}`, true);
+            }
+        }
+        
+        function drawGround() {
+            try {
+                ctx.fillStyle = 'darkgreen';
+                ctx.fillRect(0, canvas.height - CONSTANTS.GROUND_HEIGHT, canvas.width, CONSTANTS.GROUND_HEIGHT);
+                ctx.strokeStyle = 'lime';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(0, canvas.height - CONSTANTS.GROUND_HEIGHT);
+                ctx.lineTo(canvas.width, canvas.height - CONSTANTS.GROUND_HEIGHT);
+                ctx.stroke();
+            } catch (e) {
+                trace(`Exception in drawGround: ${e.message}`, true);
+            }
+        }
+
+        function drawObstacles() {
+            try {
+                ctx.fillStyle = 'gray';
+                ctx.strokeStyle = '#444';
+                gameState.obstacles.forEach(obs => {
+                    ctx.fillRect(obs.x, obs.y, obs.w, obs.h);
+                    ctx.strokeRect(obs.x, obs.y, obs.w, obs.h);
+                });
+            } catch (e) {
+                trace(`Exception in drawObstacles: ${e.message}`, true);
+            }
+        }
+
+        function drawDiamonds() {
+            try {
+                gameState.diamonds.forEach(d => {
+                    if (!d.collected) {
+                        ctx.fillStyle = 'cyan';
+                        ctx.save();
+                        ctx.translate(d.x, d.y);
+                        ctx.rotate(Math.PI / 4);
+                        ctx.fillRect(-d.size, -d.size, d.size * 2, d.size * 2);
+                        ctx.restore();
+                    }
+                });
+            } catch (e) {
+                trace(`Exception in drawDiamonds: ${e.message}`, true);
+            }
+        }
+
+        function drawSpaceship() {
+            try {
+                const ship = gameState.ship;
+                ctx.save();
+                ctx.translate(ship.x, ship.y);
+                // Rotate by (angle - PI/2) because ship is drawn pointing up (0, -size)
+                ctx.rotate(ship.angle - Math.PI / 2); 
+
+                ctx.beginPath();
+                ctx.moveTo(0, -ship.size);
+                ctx.lineTo(-ship.size, ship.size);
+                ctx.lineTo(ship.size, ship.size);
+                ctx.closePath();
+
+                ctx.fillStyle = ship.isAlive ? 'silver' : 'darkred';
+                ctx.fill();
+                ctx.strokeStyle = 'white';
+                ctx.stroke();
+
+                if (ship.isThrusting && ship.isAlive) {
+                    ctx.beginPath();
+                    ctx.moveTo(-ship.size / 2, ship.size);
+                    ctx.lineTo(0, ship.size + 10 + Math.random() * 5);
+                    ctx.lineTo(ship.size / 2, ship.size);
+                    ctx.fillStyle = 'orange';
+                    ctx.fill();
+                }
+
+                ctx.restore();
+            } catch (e) {
+                trace(`Exception in drawSpaceship: ${e.message}`, true);
+            }
+        }
+        
+        function checkCollision() {
+            try {
+                const ship = gameState.ship;
+                const shipRadius = ship.size; 
+                let collisionDetected = false;
+
+                for (const obs of gameState.obstacles) {
+                    const closestX = Math.max(obs.x, Math.min(ship.x, obs.x + obs.w));
+                    const closestY = Math.max(obs.y, Math.min(ship.y, obs.y + obs.h));
+                    const dx = ship.x - closestX;
+                    const dy = ship.y - closestY;
+
+                    if ((dx * dx + dy * dy) < (shipRadius * shipRadius)) {
+                        ship.isAlive = false;
+                        explosionTimer = 30;
+                        trace("Obstacle collision detected!", true);
+                        collisionDetected = true;
+                        break;
+                    }
+                }
+                if (collisionDetected) return true;
+
+                for (let i = gameState.diamonds.length - 1; i >= 0; i--) {
+                    const d = gameState.diamonds[i];
+                    if (d.collected) continue;
+
+                    const dx = ship.x - d.x;
+                    const dy = ship.y - d.y;
+                    const distance = Math.sqrt(dx * dx + dy * dy);
+
+                    if (distance < shipRadius + d.size) {
+                        d.collected = true;
+                        gameState.score += CONSTANTS.SCORE_DIAMOND;
+                        trace(`Diamond collected! Current Score: ${gameState.score}`, false);
+                    }
+                }
+                return false;
+            } catch (e) {
+                trace(`Exception in checkCollision: ${e.message}`, true);
+                return false;
+            }
+        }
+
+        function runAI() {
+            try {
+                const ship = gameState.ship;
+                const memory = ship.memory;
+
+                if (!ship.isAlive || ship.hasLanded) {
+                    ship.isThrusting = false;
+                    memory.aiStatus = "IDLE (Game Over)";
+                    return;
+                }
+
+                const altitude = canvas.height - CONSTANTS.GROUND_HEIGHT - ship.y;
+                let status = 'Cruising...'; 
+                ship.isThrusting = false;
+                
+                const collectedCount = gameState.diamonds.filter(d => d.collected).length;
+                if (collectedCount === gameState.diamonds.length && gameState.currentAIMode === AI_MODE.COLLECT) {
+                    gameState.currentAIMode = AI_MODE.LANDING;
+                    trace("All diamonds collected. Switching to LANDING mode.", false);
+                }
+
+                if (gameState.currentAIMode === AI_MODE.COLLECT) {
+                    let nearestDiamond = null;
+                    let minDistanceSq = Infinity;
+
+                    gameState.diamonds.forEach(d => {
+                        if (!d.collected) {
+                            const dx = ship.x - d.x;
+                            const dy = ship.y - d.y;
+                            const distSq = dx * dx + dy * dy;
+                            if (distSq < minDistanceSq) {
+                                minDistanceSq = distSq;
+                                nearestDiamond = d;
+                            }
+                        }
+                    });
+
+                    if (nearestDiamond) {
+                        status = `Seeking diamond. Velocity: ${ship.velocity.y.toFixed(1)}`;
+                        
+                        const dx = nearestDiamond.x - ship.x;
+                        const dy = nearestDiamond.y - ship.y;
+                        const targetHeading = Math.atan2(dy, dx); 
+                        
+                        let angleDiff = targetHeading - ship.angle;
+                        if (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+                        if (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+
+                        if (Math.abs(angleDiff) > 0.1) {
+                            ship.angle += Math.sign(angleDiff) * CONSTANTS.ROTATION_SPEED;
+                        }
+
+                        if (Math.abs(angleDiff) < Math.PI / 3) {
+                            ship.isThrusting = true;
+                        }
+                    }
+                    
+                    if (ship.velocity.y > 0.8 && altitude < canvas.height / 2) {
+                         ship.isThrusting = true;
+                         status += " (Vertical Brake)";
+                         const angleDiff = ship.angle - Math.PI / 2;
+                         if (Math.abs(angleDiff) > 0.05) {
+                            ship.angle += (angleDiff > 0 ? -1 : 1) * CONSTANTS.ROTATION_SPEED;
+                         }
+                    }
+
+                } else if (gameState.currentAIMode === AI_MODE.LANDING) {
+                    const TARGET_X = canvas.width / 2;
+                    
+                    const angleDiff = ship.angle - Math.PI / 2;
+                    if (Math.abs(angleDiff) > 0.02) {
+                        ship.angle += (angleDiff > 0 ? -1 : 1) * CONSTANTS.ROTATION_SPEED * 0.5;
+                        status = 'Adjusting angle for landing...';
+                    } else {
+                         const dx = TARGET_X - ship.x;
+                         if (Math.abs(dx) > 10) {
+                            ship.angle += (dx > 0 ? 1 : -1) * CONSTANTS.ROTATION_SPEED * 0.05;
+                            status = 'Drifting to center...';
+                         } else {
+                            status = 'Centered.';
+                         }
+                    }
+
+                    if (altitude < CONSTANTS.BRAKE_ALTITUDE && ship.velocity.y > CONSTANTS.MAX_SAFE_VELOCITY) {
+                        ship.isThrusting = true;
+                        status = altitude < CONSTANTS.LANDING_ALTITUDE ? 'Final Descent...' : 'Braking aggressively!';
+                    } else if (altitude < CONSTANTS.LANDING_ALTITUDE && ship.velocity.y > 0.5) {
+                        ship.isThrusting = true;
+                        status = 'Fine-tuning landing...';
+                    }
+                }
+                
+                // Apply thrust
+                if (ship.isThrusting) {
+                    ship.velocity.x += Math.cos(ship.angle) * CONSTANTS.THRUST_POWER;
+                    // *** CRITICAL FIX: Invert the sign to apply force in the direction of the angle ***
+                    ship.velocity.y += Math.sin(ship.angle) * CONSTANTS.THRUST_POWER; 
+                    createThrustParticle();
+                }
+
+                ship.memory.aiStatus = status;
+
+            } catch (e) {
+                trace(`Exception in runAI: ${e.message}`, true);
+            }
+        }
+
+        function updatePhysics() {
+            try {
+                const ship = gameState.ship;
+
+                ship.velocity.y += CONSTANTS.GRAVITY;
+
+                ship.x += ship.velocity.x;
+                ship.y += ship.velocity.y;
+
+                if (ship.x < 0) ship.x = canvas.width;
+                if (ship.x > canvas.width) ship.x = 0;
+
+            } catch (e) {
+                trace(`Exception in updatePhysics: ${e.message}`, true);
+            }
+        }
+        
+        function updateGame() {
+            try {
+                const ship = gameState.ship;
+                
+                if (!ship.isAlive || ship.hasLanded) {
+                    if (explosionTimer === 0 && !ship.notified) {
+                        let finalScore = ship.hasLanded ? gameState.score + CONSTANTS.SCORE_LANDING : gameState.score;
+                        let message = ship.hasLanded ? 'SUCCESSFUL LANDING!' : 'CRASHED!';
+                        sendNotification(message, `Final Score: ${finalScore}`);
+                        ship.notified = true;
+                    }
+                    if (explosionTimer > 0) explosionTimer--;
+                    return; 
+                }
+
+                runAI();
+                updatePhysics();
+                updateParticles();
+
+                const crashed = checkCollision();
+                if (crashed) {
+                    sendNotification("Ship Destroyed!", `Hit an obstacle. Score: ${gameState.score}`);
+                    ship.notified = true;
+                    return;
+                }
+
+                const collisionY = canvas.height - CONSTANTS.GROUND_HEIGHT;
+                if (ship.y + ship.size > collisionY) {
+                    ship.y = collisionY - ship.size;
+
+                    if (Math.abs(ship.velocity.y) > CONSTANTS.CRITICAL_VELOCITY) {
+                        ship.isAlive = false;
+                        trace(`CRASH: Ground impact speed ${ship.velocity.y.toFixed(2)}`, true);
+                        explosionTimer = 30;
+                    } else {
+                        ship.hasLanded = true;
+                        gameState.score += CONSTANTS.SCORE_LANDING;
+                        trace(`SUCCESS: Final Score: ${gameState.score}`, false);
+                        explosionTimer = 60;
+                    }
+                    
+                    ship.velocity.x = 0;
+                    ship.velocity.y = 0;
+                    ship.isThrusting = false;
+                }
+
+            } catch (e) {
+                trace(`Exception in updateGame: ${e.message}`, true);
+            }
+        }
+
+        // --- UI Update ---
+
+        function updateUI() {
+            const ship = gameState.ship;
+            const status = ship.memory.aiStatus || 'Awaiting command...';
+            
+            aiModeSpan.textContent = gameState.currentAIMode;
+            aiStatusSpan.textContent = status;
+
+            vyDisplaySpan.textContent = ship.velocity.y.toFixed(2);
+            vyDisplaySpan.className = ship.velocity.y > CONSTANTS.MAX_SAFE_VELOCITY ? 'danger' : 'safe';
+            scoreDisplaySpan.textContent = gameState.score;
+        }
+
+
+        // --- Game Loop and Execution ---
+
+        function gameLoop() {
+            try {
+                if (!ctx) {
+                    trace("FATAL: Canvas 2D context is missing. Cannot draw graphics.", true);
+                    return; 
+                }
+                
+                // Drawing Phase
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                drawGround();
+                drawObstacles();
+                drawDiamonds();
+                drawParticles();
+                drawSpaceship();
+
+                // Logic/Update Phase
+                updateGame();
+                updateUI(); 
+
+                // Handle Game Over Screen Display
+                if (!gameState.ship.isAlive || gameState.ship.hasLanded) {
+                    if (explosionTimer === 0) {
+                        let finalScore = gameState.ship.hasLanded ? gameState.score + CONSTANTS.SCORE_LANDING : gameState.score;
+                        let message = gameState.ship.hasLanded ? 'SUCCESSFUL LANDING!' : 'CRASHED!';
+                        let color = gameState.ship.hasLanded ? 'lime' : 'red';
+                        
+                        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                        ctx.fillRect(0, 0, canvas.width, canvas.height);
+                        
+                        ctx.fillStyle = color;
+                        ctx.font = '48px sans-serif';
+                        ctx.textAlign = 'center';
+                        ctx.fillText(message, canvas.width / 2, canvas.height / 2);
+
+                        ctx.font = '30px sans-serif';
+                        ctx.fillText(`Final Score: ${finalScore}`, canvas.width / 2, canvas.height / 2 + 50);
+                    }
+                }
+                
+                animationFrameId = requestAnimationFrame(gameLoop);
+
+            } catch (e) {
+                trace(`Critical exception in gameLoop: ${e.message}`, true);
+            }
+        }
+
+        // --- Master Startup Procedure ---
+        function startGameProcedure() {
+            try {
+                trace("--- Starting Master Initialization Procedure ---", false);
+                
+                if (!logArea) {
+                     console.error("FATAL: Log area element could not be acquired. Tracing is disabled.");
+                     return;
+                }
+
+                initDOMReferences();
+                initConstants();
+                initGameState();
+
+                if (!runSanityChecks()) {
+                    trace("FATAL: Game failed initial checks. Startup halted.", true);
+                    return;
+                }
+                
+                requestNotificationPermission();
+
+                updateUI(); 
+                trace("Initialization complete. Starting game loop.", false);
+                gameLoop();
+
+            } catch (e) {
+                trace(`CRITICAL FAILURE in startup procedure: ${e.message}`, true);
+            }
+        }
+
+        window.onload = startGameProcedure;
+
+    </script>
+</body>
+</html>
