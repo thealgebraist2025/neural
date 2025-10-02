@@ -100,6 +100,12 @@ int action_history_idx = 0;
 int step_count = 0;
 time_t last_print_time = 0; 
 
+// ------------------------------------------
+// --- FUNCTION PROTOTYPES (FIX ADDED HERE) ---
+// ------------------------------------------
+bool run_rl_unittest(); // FIX: Added explicit prototype to prevent implicit declaration warning/error
+// ------------------------------------------
+
 // --- C99 Utility Functions ---
 void check_nan_and_stop(double value, const char* var_name, const char* context) {
     if (isnan(value) || isinf(value)) { 
@@ -459,7 +465,7 @@ void init_game_state() {
         state.obstacles[i].x = obs_configs[i][0];
         state.obstacles[i].y = obs_configs[i][1];
         state.obstacles[i].w = obs_configs[i][2];
-        state.obstacles[i].h = obs_configs[i][3]; // FIXED SYNTAX ERROR: Used .h instead of [3]
+        state.obstacles[i].h = obs_configs[i][3]; // CORRECTED: from [3] to .h
     }
 
     double diamond_pos[NUM_DIAMONDS][2] = {
@@ -956,6 +962,48 @@ void pre_train_with_shortest_path() {
     print_episode_stats(train_time_ms, true, false, state.total_diamonds, current_episode, state.path_length, state.robot.is_alive, state.robot.has_reached_target, episode_buffer.total_score, action_history, action_history_idx);
 }
 
+bool run_rl_unittest() {
+    printf("\n\n*** RUNNING RL UNITTEST (Minimal Environment) ***\n");
+    printf("Goal: Learn to move from (50, 50) to Target Center (65, 65) in %d episodes.\n", UNITTEST_EPISODES);
+    
+    double total_final_score = 0.0;
+    int success_count = 0;
+    
+    for (int i = 1; i <= UNITTEST_EPISODES; i++) {
+        init_minimal_state();
+        current_episode = i;
+        
+        while (state.robot.is_alive && !state.robot.has_reached_target && step_count < UNITTEST_MAX_STEPS) {
+            update_game(true, false, true, i); 
+        }
+        
+        if (episode_buffer.count > 0) {
+            run_batch_reinforce_training(episode_buffer.steps, episode_buffer.count);
+        }
+        
+        if (state.robot.has_reached_target) success_count++;
+        total_final_score += episode_buffer.total_score;
+    }
+    
+    double avg_score_per_episode = total_final_score / UNITTEST_EPISODES;
+    double avg_score_per_step = avg_score_per_episode / UNITTEST_MAX_STEPS;
+
+    printf("\n--- UNITTEST RESULTS ---\n");
+    printf("Total Episodes: %d\n", UNITTEST_EPISODES);
+    printf("Success Count (Reached Target): %d\n", success_count);
+    printf("Average Score Per Episode: %.2f\n", avg_score_per_episode);
+    printf("Average Score Per Step: %.4f (Threshold: > %.4f)\n", avg_score_per_step, UNITTEST_SUCCESS_THRESHOLD);
+    printf("--------------------------\n");
+    
+    if (avg_score_per_step > UNITTEST_SUCCESS_THRESHOLD) {
+        printf("*** UNITTEST PASSED! Continuing to main simulation. ***\n\n");
+        return true;
+    } else {
+        fprintf(stderr, "*** UNITTEST FAILED. AI cannot solve minimal task. Halting simulation. ***\n");
+        return false;
+    }
+}
+
 
 // --- Main Simulation Loop ---
 
@@ -1066,46 +1114,4 @@ int main() {
     free(nn.bias_o);
     printf("Simulation finished and memory cleaned up.\n");
     return 0;
-}
-
-bool run_rl_unittest() {
-    printf("\n\n*** RUNNING RL UNITTEST (Minimal Environment) ***\n");
-    printf("Goal: Learn to move from (50, 50) to Target Center (65, 65) in %d episodes.\n", UNITTEST_EPISODES);
-    
-    double total_final_score = 0.0;
-    int success_count = 0;
-    
-    for (int i = 1; i <= UNITTEST_EPISODES; i++) {
-        init_minimal_state();
-        current_episode = i;
-        
-        while (state.robot.is_alive && !state.robot.has_reached_target && step_count < UNITTEST_MAX_STEPS) {
-            update_game(true, false, true, i); 
-        }
-        
-        if (episode_buffer.count > 0) {
-            run_batch_reinforce_training(episode_buffer.steps, episode_buffer.count);
-        }
-        
-        if (state.robot.has_reached_target) success_count++;
-        total_final_score += episode_buffer.total_score;
-    }
-    
-    double avg_score_per_episode = total_final_score / UNITTEST_EPISODES;
-    double avg_score_per_step = avg_score_per_episode / UNITTEST_MAX_STEPS;
-
-    printf("\n--- UNITTEST RESULTS ---\n");
-    printf("Total Episodes: %d\n", UNITTEST_EPISODES);
-    printf("Success Count (Reached Target): %d\n", success_count);
-    printf("Average Score Per Episode: %.2f\n", avg_score_per_episode);
-    printf("Average Score Per Step: %.4f (Threshold: > %.4f)\n", avg_score_per_step, UNITTEST_SUCCESS_THRESHOLD);
-    printf("--------------------------\n");
-    
-    if (avg_score_per_step > UNITTEST_SUCCESS_THRESHOLD) {
-        printf("*** UNITTEST PASSED! Continuing to main simulation. ***\n\n");
-        return true;
-    } else {
-        fprintf(stderr, "*** UNITTEST FAILED. AI cannot solve minimal task. Halting simulation. ***\n");
-        return false;
-    }
 }
