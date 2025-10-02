@@ -12,7 +12,7 @@
 #define TEST_RANGE (MAX_PRIME_TO_TEST + 1)
 #define MAX_VAL_NEEDED 104729       // Max value we need to classify/store.
 
-#define MAX_TRAINING_SECONDS 120.0  // 2 minutes limit
+#define MAX_TRAINING_SECONDS 240.0  // 2 minutes limit
 #define BATCH_SIZE_HALF 512         // NEW: 512 Primes + 512 Non-Primes = 1024 total per batch
 #define BATCH_SIZE (BATCH_SIZE_HALF * 2) 
 #define NUM_BATCHES (NUM_EXAMPLES / BATCH_SIZE_HALF) // 10000 / 512 = 19 batches total (with remainder)
