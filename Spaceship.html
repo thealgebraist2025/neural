@@ -80,6 +80,20 @@
 
         // --- Logging and Type Checking Utility ---
         
+        // FIX: New function to check for NaN and halt execution
+        function checkFloatAndStop(value, variableName, context = 'Global') {
+            if (typeof value === 'number' && isNaN(value)) {
+                const errorMessage = `CRITICAL NAN ERROR: ${variableName} in ${context} is NaN. Stopping execution.`;
+                trace(errorMessage, true);
+                if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId);
+                    animationFrameId = null;
+                }
+                throw new Error(errorMessage);
+            }
+            return value;
+        }
+        
         function trace(message, isError = false) {
             if (typeof message !== 'string') message = String(message);
             if (typeof isError !== 'boolean') isError = false; 
@@ -110,7 +124,6 @@
             }
         }
         
-        // CRITICAL CHECK FUNCTION ADDED BACK
         function checkType(variable, expectedType, variableName, context = 'game') {
             if (variable === null || variable === undefined || typeof variable !== expectedType) {
                 const value = variable === null ? 'null' : variable === undefined ? 'undefined' : variable;
@@ -167,7 +180,7 @@
             INPUT_SIZE: 10,
             HIDDEN_SIZE: 16,
             OUTPUT_SIZE: 3,
-            LEARNING_RATE: 0.1,
+            LEARNING_RATE: 0.01, 
             MAX_PLAYTHROUGHS: 50
         };
 
@@ -184,28 +197,40 @@
         let neuralNet;
         let dataCollector;
 
-        // --- Neural Network Implementation (Assumed Correct) ---
+        // --- Neural Network Implementation ---
 
         class NeuralNetwork {
             constructor(inputSize, hiddenSize, outputSize, learningRate) {
-                this.lr = learningRate;
-                this.weights_ih = this.randomMatrix(inputSize, hiddenSize);
-                this.weights_ho = this.randomMatrix(hiddenSize, outputSize);
+                this.lr = checkFloatAndStop(learningRate, 'NN.lr', 'NN.constructor');
+                this.weights_ih = this.randomMatrix(hiddenSize, inputSize); 
+                this.weights_ho = this.randomMatrix(outputSize, hiddenSize);
                 this.bias_h = this.randomVector(hiddenSize);
                 this.bias_o = this.randomVector(outputSize);
             }
             randomMatrix(rows, cols) {
                 return Array(rows).fill(0).map(() => 
-                    Array(cols).fill(0).map(() => (Math.random() * 2 - 1) * 0.1)
+                    Array(cols).fill(0).map(() => checkFloatAndStop((Math.random() * 2 - 1) * 0.01, 'NN Weight', 'NN.randomMatrix'))
                 );
             }
             randomVector(size) {
-                return Array(size).fill(0).map(() => (Math.random() * 2 - 1) * 0.1);
+                return Array(size).fill(0).map(() => checkFloatAndStop((Math.random() * 2 - 1) * 0.01, 'NN Bias', 'NN.randomVector'));
             }
-            sigmoid(x) { return 1 / (1 + Math.exp(-x)); }
-            sigmoidDerivative(y) { return y * (1 - y); }
+            sigmoid(x) { 
+                checkFloatAndStop(x, 'Sigmoid Input', 'NN.sigmoid');
+                const result = 1 / (1 + Math.exp(-x)); 
+                return checkFloatAndStop(result, 'Sigmoid Output', 'NN.sigmoid');
+            }
+            sigmoidDerivative(y) { 
+                checkFloatAndStop(y, 'SigmoidDeriv Input', 'NN.sigmoidDerivative');
+                const result = y * (1 - y);
+                return checkFloatAndStop(result, 'SigmoidDeriv Output', 'NN.sigmoidDerivative');
+            }
             dot(matrixA, matrixB) {
-                if (matrixA[0].length !== matrixB.length) throw new Error("Dot product dimensions mismatch");
+                if (matrixA.length === 0 || matrixB.length === 0) return [[]];
+                if (matrixA[0].length !== matrixB.length) {
+                    trace(`Dot product dimension mismatch: ${matrixA.length}x${matrixA[0].length} DOT ${matrixB.length}x${matrixB[0].length}`, true);
+                    throw new Error("Dot product dimensions mismatch");
+                }
                 const resultRows = matrixA.length;
                 const resultCols = matrixB[0].length;
                 const result = Array(resultRows).fill(0).map(() => Array(resultCols).fill(0));
@@ -213,9 +238,9 @@
                     for (let j = 0; j < resultCols; j++) {
                         let sum = 0;
                         for (let k = 0; k < matrixA[0].length; k++) {
-                            sum += matrixA[i][k] * matrixB[k][j];
+                            sum += checkFloatAndStop(matrixA[i][k], 'Dot A[i][k]', 'NN.dot') * checkFloatAndStop(matrixB[k][j], 'Dot B[k][j]', 'NN.dot');
                         }
-                        result[i][j] = sum;
+                        result[i][j] = checkFloatAndStop(sum, `Dot Result[${i}][${j}]`, 'NN.dot');
                     }
                 }
                 return result;
@@ -238,7 +263,8 @@
                 const result = Array(rows).fill(0).map(() => Array(cols).fill(0));
                 for (let i = 0; i < rows; i++) {
                     for (let j = 0; j < cols; j++) {
-                        result[i][j] = matrixA[i][j] + matrixB[i][j];
+                        result[i][j] = checkFloatAndStop(matrixA[i][j], 'Add A element', 'NN.add') + 
+                                       checkFloatAndStop(matrixB[i][j], 'Add B element', 'NN.add');
                     }
                 }
                 return result;
@@ -249,54 +275,52 @@
                  const result = Array(rows).fill(0).map(() => Array(cols).fill(0));
                  for (let i = 0; i < rows; i++) {
                      for (let j = 0; j < cols; j++) {
-                         result[i][j] = matrixA[i][j] - matrixB[i][j];
+                         result[i][j] = checkFloatAndStop(matrixA[i][j], 'Subtract A element', 'NN.subtract') - 
+                                        checkFloatAndStop(matrixB[i][j], 'Subtract B element', 'NN.subtract');
                      }
                  }
                  return result;
             }
             multiply(matrixA, matrixB) {
+                const rows = matrixA.length;
+                const cols = matrixA[0].length;
+                const result = Array(rows).fill(0).map(() => Array(cols).fill(0));
                 if (typeof matrixB === 'number') {
-                    const rows = matrixA.length;
-                    const cols = matrixA[0].length;
-                    const result = Array(rows).fill(0).map(() => Array(cols).fill(0));
                     for (let i = 0; i < rows; i++) {
                         for (let j = 0; j < cols; j++) {
-                            result[i][j] = matrixA[i][j] * matrixB;
+                            result[i][j] = checkFloatAndStop(matrixA[i][j], 'Multiply A element', 'NN.multiply') * checkFloatAndStop(matrixB, 'Multiply scalar', 'NN.multiply');
                         }
                     }
                     return result;
                 } else {
-                    const rows = matrixA.length;
-                    const cols = matrixA[0].length;
-                    const result = Array(rows).fill(0).map(() => Array(cols).fill(0));
                     for (let i = 0; i < rows; i++) {
                         for (let j = 0; j < cols; j++) {
-                            result[i][j] = matrixA[i][j] * matrixB[i][j];
+                            result[i][j] = checkFloatAndStop(matrixA[i][j], 'Multiply A element', 'NN.multiply') * checkFloatAndStop(matrixB[i][j], 'Multiply B element', 'NN.multiply');
                         }
                     }
                     return result;
                 }
             }
             map(matrix, func) {
-                return matrix.map(row => row.map(val => func(val)));
+                return matrix.map(row => row.map(val => func(checkFloatAndStop(val, 'Map Input Value', 'NN.map'))));
             }
             feedforward(input_array) {
                 const inputs = this.vectorToColMatrix(input_array);
                 let hidden = this.dot(this.weights_ih, inputs);
-                hidden = hidden.map((row, i) => [row[0] + this.bias_h[i]]);
+                hidden = hidden.map((row, i) => [checkFloatAndStop(row[0], 'Hidden Row Val', 'NN.feedforward') + checkFloatAndStop(this.bias_h[i], 'Hidden Bias', 'NN.feedforward')]);
                 const hidden_output = this.map(hidden, this.sigmoid);
                 let output = this.dot(this.weights_ho, hidden_output);
-                output = output.map((row, i) => [row[0] + this.bias_o[i]]);
+                output = output.map((row, i) => [checkFloatAndStop(row[0], 'Output Row Val', 'NN.feedforward') + checkFloatAndStop(this.bias_o[i], 'Output Bias', 'NN.feedforward')]);
                 const final_output = this.map(output, this.sigmoid);
-                return final_output.map(row => row[0]);
+                return final_output.map(row => checkFloatAndStop(row[0], 'Final Output Val', 'NN.feedforward'));
             }
             train(input_array, target_array) {
                 const inputs = this.vectorToColMatrix(input_array);
                 let hidden = this.dot(this.weights_ih, inputs);
-                hidden = hidden.map((row, i) => [row[0] + this.bias_h[i]]);
+                hidden = hidden.map((row, i) => [checkFloatAndStop(row[0], 'Hidden Row Val', 'NN.train') + checkFloatAndStop(this.bias_h[i], 'Hidden Bias', 'NN.train')]);
                 const hidden_output = this.map(hidden, this.sigmoid);
                 let output = this.dot(this.weights_ho, hidden_output);
-                output = output.map((row, i) => [row[0] + this.bias_o[i]]);
+                output = output.map((row, i) => [checkFloatAndStop(row[0], 'Output Row Val', 'NN.train') + checkFloatAndStop(this.bias_o[i], 'Output Bias', 'NN.train')]);
                 const final_output = this.map(output, this.sigmoid);
                 const targets = this.vectorToColMatrix(target_array);
                 let output_errors = this.subtract(targets, final_output);
@@ -306,7 +330,12 @@
                 const hidden_output_T = this.transpose(hidden_output);
                 let delta_weights_ho = this.dot(gradients, hidden_output_T);
                 this.weights_ho = this.add(this.weights_ho, delta_weights_ho);
-                this.bias_o = this.add(this.bias_o, gradients.map(row => row));
+                
+                // Correctly update output biases
+                for (let i = 0; i < this.bias_o.length; i++) {
+                    this.bias_o[i] += checkFloatAndStop(gradients[i][0], 'Output Gradient Val', 'NN.train');
+                }
+                
                 const weights_ho_T = this.transpose(this.weights_ho);
                 let hidden_errors = this.dot(weights_ho_T, output_errors);
                 let hidden_gradients = this.map(hidden_output, this.sigmoidDerivative);
@@ -315,9 +344,17 @@
                 const inputs_T = this.transpose(inputs);
                 let delta_weights_ih = this.dot(hidden_gradients, inputs_T);
                 this.weights_ih = this.add(this.weights_ih, delta_weights_ih);
-                this.bias_h = this.add(this.bias_h, hidden_gradients.map(row => row));
-                let errorSum = output_errors.reduce((sum, row) => sum + row[0] * row[0], 0);
-                return errorSum;
+                
+                // Correctly update hidden biases
+                for (let i = 0; i < this.bias_h.length; i++) {
+                    this.bias_h[i] += checkFloatAndStop(hidden_gradients[i][0], 'Hidden Gradient Val', 'NN.train');
+                }
+                
+                let errorSum = output_errors.reduce((sum, row) => {
+                    const error = checkFloatAndStop(row[0], 'Output Error Val', 'NN.train.reduce');
+                    return sum + error * error;
+                }, 0);
+                return checkFloatAndStop(errorSum, 'Final Error Sum', 'NN.train');
             }
         }
         
@@ -430,7 +467,6 @@
             trace(`SUCCESS: Neural Network initialized: I:${NN_CONSTANTS.INPUT_SIZE} H:${NN_CONSTANTS.HIDDEN_SIZE} O:${NN_CONSTANTS.OUTPUT_SIZE}`, false);
         }
         
-        // SANITY CHECK FUNCTION ADDED BACK
         function runSanityChecks() {
             try {
                 trace("--- Running Game Engine Sanity Checks ---", false);
@@ -506,6 +542,7 @@
                     currentEpochError += neuralNet.train(data.input, data.target_output);
                 }
                 totalError = currentEpochError / trainingData.length;
+                totalError = checkFloatAndStop(totalError, 'totalError', 'runAISanityTraining');
                 if (epoch % 200 === 0) trace(`[TRAINING] Epoch ${epoch}: Avg Error: ${totalError.toFixed(6)}`, false);
                 epoch++;
             }
@@ -549,11 +586,16 @@
             const h = canvas.height;
             const maxV = 10;
             return [
-                ship.x / w, ship.y / h, ship.velocity.x / maxV, ship.velocity.y / maxV,
-                ship.angle / (2 * Math.PI),
-                nearestDiamond ? nearestDiamond.x / w : 0.5, nearestDiamond ? nearestDiamond.y / h : 0.5,
-                nearestObs ? nearestObs.x / w : 0.5, nearestObs ? nearestObs.y / h : 0.5,
-                nearestObs ? (nearestObs.w + nearestObs.h) / (w + h) : 0
+                checkFloatAndStop(ship.x / w, 'ship.x / w', 'normalizeInput'),
+                checkFloatAndStop(ship.y / h, 'ship.y / h', 'normalizeInput'), 
+                checkFloatAndStop(ship.velocity.x / maxV, 'ship.velocity.x / maxV', 'normalizeInput'), 
+                checkFloatAndStop(ship.velocity.y / maxV, 'ship.velocity.y / maxV', 'normalizeInput'),
+                checkFloatAndStop(ship.angle / (2 * Math.PI), 'ship.angle / 2PI', 'normalizeInput'),
+                checkFloatAndStop(nearestDiamond ? nearestDiamond.x / w : 0.5, 'Diamond X Norm', 'normalizeInput'), 
+                checkFloatAndStop(nearestDiamond ? nearestDiamond.y / h : 0.5, 'Diamond Y Norm', 'normalizeInput'),
+                checkFloatAndStop(nearestObs ? nearestObs.x / w : 0.5, 'Obs X Norm', 'normalizeInput'), 
+                checkFloatAndStop(nearestObs ? nearestObs.y / h : 0.5, 'Obs Y Norm', 'normalizeInput'),
+                checkFloatAndStop(nearestObs ? (nearestObs.w + nearestObs.h) / (w + h) : 0, 'Obs Size Norm', 'normalizeInput')
             ];
         }
 
@@ -564,26 +606,26 @@
             let minDistanceSq = Infinity;
             gameState.diamonds.forEach(d => {
                 if (!d.collected) {
-                    const dx = ship.x - d.x;
-                    const dy = d.y - ship.y;
-                    const distSq = dx * dx + dy * dy;
+                    const dx = checkFloatAndStop(ship.x - d.x, 'dx', 'getOptimalAction');
+                    const dy = checkFloatAndStop(d.y - ship.y, 'dy', 'getOptimalAction');
+                    const distSq = checkFloatAndStop(dx * dx + dy * dy, 'distSq', 'getOptimalAction');
                     if (distSq < minDistanceSq) { minDistanceSq = distSq; nearestDiamond = d; }
                 }
             });
 
             if (nearestDiamond) {
-                const dx = nearestDiamond.x - ship.x;
-                const dy = nearestDiamond.y - ship.y;
-                const targetHeading = Math.atan2(dy, dx); 
+                const dx = checkFloatAndStop(nearestDiamond.x - ship.x, 'dx', 'getOptimalAction');
+                const dy = checkFloatAndStop(nearestDiamond.y - ship.y, 'dy', 'getOptimalAction');
+                const targetHeading = checkFloatAndStop(Math.atan2(dy, dx), 'targetHeading', 'getOptimalAction');
                 
-                let angleDiff = targetHeading - ship.angle;
-                if (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
-                if (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+                let angleDiff = checkFloatAndStop(targetHeading - ship.angle, 'angleDiff', 'getOptimalAction');
+                if (angleDiff > Math.PI) angleDiff = checkFloatAndStop(angleDiff - 2 * Math.PI, 'angleDiff - 2PI', 'getOptimalAction');
+                if (angleDiff < -Math.PI) angleDiff = checkFloatAndStop(angleDiff + 2 * Math.PI, 'angleDiff + 2PI', 'getOptimalAction');
 
-                if (angleDiff > 0.1) targetOutput[2] = 1; // Rotate Right
-                else if (angleDiff < -0.1) targetOutput[1] = 1; // Rotate Left
+                if (checkFloatAndStop(angleDiff, 'angleDiff', 'getOptimalAction') > 0.1) targetOutput[2] = 1; 
+                else if (angleDiff < -0.1) targetOutput[1] = 1; 
 
-                if (Math.abs(angleDiff) < Math.PI / 3) { targetOutput[0] = 1; } // Thrust
+                if (Math.abs(angleDiff) < Math.PI / 3) { targetOutput[0] = 1; } 
             }
             return targetOutput;
         }
@@ -594,11 +636,11 @@
             const rotateLeft = output[1] > 0.5;
             const rotateRight = output[2] > 0.5;
             
-            if (rotateLeft && !rotateRight) { ship.angle -= CONSTANTS.ROTATION_SPEED; } 
-            else if (rotateRight && !rotateLeft) { ship.angle += CONSTANTS.ROTATION_SPEED; } 
+            if (rotateLeft && !rotateRight) { ship.angle = checkFloatAndStop(ship.angle - CONSTANTS.ROTATION_SPEED, 'ship.angle', 'applyNNOutput'); } 
+            else if (rotateRight && !rotateLeft) { ship.angle = checkFloatAndStop(ship.angle + CONSTANTS.ROTATION_SPEED, 'ship.angle', 'applyNNOutput'); } 
             
-            if (ship.angle > 2 * Math.PI) ship.angle -= 2 * Math.PI;
-            if (ship.angle < 0) ship.angle += 2 * Math.PI;
+            if (ship.angle > 2 * Math.PI) ship.angle = checkFloatAndStop(ship.angle - 2 * Math.PI, 'ship.angle normalized', 'applyNNOutput');
+            if (ship.angle < 0) ship.angle = checkFloatAndStop(ship.angle + 2 * Math.PI, 'ship.angle normalized', 'applyNNOutput');
             
             return ship.isThrusting;
         }
@@ -616,10 +658,10 @@
             const particleSpeed = 1.5;
 
             particles.push({
-                x: ship.x + Math.cos(exhaustAngle) * sizeOffset,
-                y: ship.y + Math.sin(exhaustAngle) * sizeOffset,
-                vx: ship.velocity.x + Math.cos(exhaustAngle) * particleSpeed * (Math.random() * 0.5 + 0.5),
-                vy: ship.velocity.y + Math.sin(exhaustAngle) * particleSpeed * (Math.random() * 0.5 + 0.5),
+                x: checkFloatAndStop(ship.x + Math.cos(exhaustAngle) * sizeOffset, 'Particle X', 'createThrustParticle'),
+                y: checkFloatAndStop(ship.y + Math.sin(exhaustAngle) * sizeOffset, 'Particle Y', 'createThrustParticle'),
+                vx: checkFloatAndStop(ship.velocity.x + Math.cos(exhaustAngle) * particleSpeed * (Math.random() * 0.5 + 0.5), 'Particle VX', 'createThrustParticle'),
+                vy: checkFloatAndStop(ship.velocity.y + Math.sin(exhaustAngle) * particleSpeed * (Math.random() * 0.5 + 0.5), 'Particle VY', 'createThrustParticle'),
                 alpha: 1.0,
                 size: Math.random() * 3 + 1,
                 lifetime: 100
@@ -629,8 +671,8 @@
         function applyThrust(ship, isVisibleGame) {
             if (!ship.isThrusting) return;
             
-            ship.velocity.x += Math.cos(ship.angle) * CONSTANTS.THRUST_POWER;
-            ship.velocity.y += Math.sin(ship.angle) * CONSTANTS.THRUST_POWER; 
+            ship.velocity.x = checkFloatAndStop(ship.velocity.x + Math.cos(ship.angle) * CONSTANTS.THRUST_POWER, 'ship.velocity.x', 'applyThrust');
+            ship.velocity.y = checkFloatAndStop(ship.velocity.y + Math.sin(ship.angle) * CONSTANTS.THRUST_POWER, 'ship.velocity.y', 'applyThrust');
 
             // Create particles ONLY for the visible game loop
             if (isVisibleGame && Math.random() < 0.8) {
@@ -642,10 +684,10 @@
             try {
                 const ship = gameState.ship;
 
-                ship.velocity.y += CONSTANTS.GRAVITY;
+                ship.velocity.y = checkFloatAndStop(ship.velocity.y + CONSTANTS.GRAVITY, 'ship.velocity.y', 'updatePhysics');
 
-                ship.x += ship.velocity.x;
-                ship.y += ship.velocity.y;
+                ship.x = checkFloatAndStop(ship.x + ship.velocity.x, 'ship.x', 'updatePhysics');
+                ship.y = checkFloatAndStop(ship.y + ship.velocity.y, 'ship.y', 'updatePhysics');
 
                 if (ship.x < 0) ship.x = canvas.width;
                 if (ship.x > canvas.width) ship.x = 0;
@@ -660,9 +702,9 @@
                 const particles = gameState.particles;
                 for (let i = particles.length - 1; i >= 0; i--) {
                     const p = particles[i];
-                    p.x += p.vx;
-                    p.y += p.vy;
-                    p.alpha -= 0.015;
+                    p.x = checkFloatAndStop(p.x + p.vx, 'Particle X', 'updateParticles');
+                    p.y = checkFloatAndStop(p.y + p.vy, 'Particle Y', 'updateParticles');
+                    p.alpha = checkFloatAndStop(p.alpha - 0.015, 'Particle Alpha', 'updateParticles');
                     if (p.alpha <= 0 || p.lifetime-- <= 0) {
                         particles.splice(i, 1);
                     }
@@ -682,10 +724,10 @@
                 for (const obs of gameState.obstacles) {
                     const closestX = Math.max(obs.x, Math.min(ship.x, obs.x + obs.w));
                     const closestY = Math.max(obs.y, Math.min(ship.y, obs.y + obs.h));
-                    const dx = ship.x - closestX;
-                    const dy = ship.y - closestY;
+                    const dx = checkFloatAndStop(ship.x - closestX, 'Collision DX', 'checkCollision');
+                    const dy = checkFloatAndStop(ship.y - closestY, 'Collision DY', 'checkCollision');
 
-                    if ((dx * dx + dy * dy) < (shipRadius * shipRadius)) {
+                    if (checkFloatAndStop(dx * dx + dy * dy, 'Collision Dist Sq', 'checkCollision') < (shipRadius * shipRadius)) {
                         ship.isAlive = false;
                         explosionTimer = 30;
                         trace("Obstacle collision detected!", true);
@@ -699,7 +741,7 @@
                 for (let i = gameState.diamonds.length - 1; i >= 0; i--) {
                     const d = gameState.diamonds[i];
                     if (d.collected) continue;
-                    const distance = Math.sqrt((ship.x - d.x)**2 + (ship.y - d.y)**2);
+                    const distance = checkFloatAndStop(Math.sqrt((ship.x - d.x)**2 + (ship.y - d.y)**2), 'Diamond Distance', 'checkCollision');
                     if (distance < shipRadius + d.size) {
                         d.collected = true;
                         gameState.score += CONSTANTS.SCORE_DIAMOND;
@@ -744,24 +786,35 @@
                         gameState.playthroughs++;
                         
                         if (gameState.playthroughs >= NN_CONSTANTS.MAX_PLAYTHROUGHS) {
-                            gameState.currentAIMode = AI_MODE.NN_CONTROL;
                             
-                            // Final Training before NN control takes over
-                            trace("Final training starting...", false);
-                            const EPOCHS = 5000;
-                            let finalError = 0;
-                            const trainingData = dataCollector.data;
-                            for (let e = 0; e < EPOCHS; e++) {
-                                let currentEpochError = 0;
-                                for (let i = 0; i < trainingData.length; i++) {
-                                    currentEpochError += neuralNet.train(trainingData[i].input, trainingData[i].target_output);
+                            // FIX: Set mode immediately, but DEFER heavy training to prevent freezing
+                            gameState.currentAIMode = AI_MODE.NN_CONTROL;
+                            trace("Data Collection finished. Starting deferred final training.", false);
+                            
+                            setTimeout(() => { // Defer the blocking operation
+                                // Final Training before NN control takes over
+                                trace("Executing deferred Final training...", false);
+                                const EPOCHS = 5000;
+                                let finalError = 0;
+                                const trainingData = dataCollector.data;
+
+                                for (let e = 0; e < EPOCHS; e++) {
+                                    let currentEpochError = 0;
+                                    for (let i = 0; i < trainingData.length; i++) {
+                                        currentEpochError += neuralNet.train(trainingData[i].input, trainingData[i].target_output);
+                                    }
+                                    finalError = currentEpochError / trainingData.length;
+                                    finalError = checkFloatAndStop(finalError, 'finalError', 'runAI.FinalTraining');
+
+                                    if (e % 1000 === 0) trace(`[FINAL TRAIN] Epoch ${e}: Avg Error: ${finalError.toFixed(6)}`, false);
                                 }
-                                finalError = currentEpochError / trainingData.length;
-                                if (e % 1000 === 0) trace(`[FINAL TRAIN] Epoch ${e}: Avg Error: ${finalError.toFixed(6)}`, false);
-                            }
-                            trace(`Final training complete. Final Error: ${finalError.toFixed(6)}`, false);
-                            dataCollector.clear();
-                            initGameState(false);
+                                
+                                trace(`Final training complete. Final Error: ${finalError.toFixed(6)}`, false);
+
+                                dataCollector.clear();
+                                initGameState(false); // Reset happens AFTER deferred training
+                                
+                            }, 10); // Small delay
                             
                         } else {
                             initGameState(false); 
@@ -965,24 +1018,32 @@
         function startSimulationAndTraining() {
             trace("--- Starting full simulation and training procedure ---", false);
             try {
-                // 1. Initial setup
+                // 1. Initial setup (quick operations)
                 initConstants();
                 initNeuralNetwork(); 
                 initGameState(true);
                 
-                // 2. Run Sanity Checks and AI Test
+                // 2. Run Sanity Checks (quick check only)
                 if (!runSanityChecks()) {
                     trace("FATAL: Game failed initial checks. Startup halted.", true);
                     return;
                 }
                 
-                runAISanityTraining(); // Heavy computational task
-
-                // 3. Start Main Loop
+                // 3. Start Main Loop BEFORE heavy training to show UI immediately
                 requestNotificationPermission();
                 updateUI(); 
-                trace("Initialization complete. Starting game loop (Data Collection Mode).", false);
+                trace("Initialization complete. Starting game loop. AI Sanity Test running in background.", false);
                 gameLoop();
+                
+                // FIX: DEFER HEAVY TRAINING to prevent blocking the UI
+                setTimeout(() => {
+                    try {
+                        trace("Executing deferred AI Sanity Unit Test...", false);
+                        runAISanityTraining(); // Heavy computational task
+                    } catch (e) {
+                        trace(`Error during deferred AI Sanity Training: ${e.message}`, true);
+                    }
+                }, 10); // 10ms delay allows the browser to draw the initial screen first.
 
             } catch (e) {
                 trace(`CRITICAL FAILURE in simulation startup procedure: ${e.message}`, true);
@@ -1017,4 +1078,3 @@
     </script>
 </body>
 </html>
-
