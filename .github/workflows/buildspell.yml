@@ -14,7 +14,7 @@ jobs:
     - name: Build with gcc
       run: gcc -O3 -g -std=c99 spell.c -lm -o spell
 
-    - name: Run the primes program
+    - name: Run the spell program
       run: ./spell
 
     - name: Upload Artifact
