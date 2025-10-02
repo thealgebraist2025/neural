@@ -21,12 +21,12 @@
 
 // Physics Constants
 #define GRAVITY 0.05
-#define THRUST_POWER 0.35 // Increased thrust for 1D control
+#define THRUST_POWER 0.35 
 #define MAX_VELOCITY_FOR_NORM 15.0
-#define CRITICAL_LANDING_VELOCITY 1.0 // Max vertical speed for safe landing
+#define CRITICAL_LANDING_VELOCITY 1.0 
 
 // Dynamic Obstacle Constants
-#define OBSTACLE_VELOCITY 3.0 // Horizontal speed of obstacles
+#define OBSTACLE_VELOCITY 3.0 
 
 // NN & RL Constants
 // Input Size (7): Y, Vy, Diamond Y-Dist, Obs Y-Dist, Obs X-Pos, Obs Width, Collected Count
@@ -34,12 +34,12 @@
 #define NN_HIDDEN_SIZE 32
 #define NN_OUTPUT_SIZE 2 // 0:Thrust Up, 1:No Thrust
 #define NN_LEARNING_RATE 0.005
-#define GAMMA 0.99 // Discount factor for future rewards
+#define GAMMA 0.99 
 
 // Game Constants
 #define NUM_OBSTACLES 5
 #define NUM_DIAMONDS 10
-#define SIMULATION_DT (1.0 / 60.0) // 60 FPS simulation step
+#define SIMULATION_DT (1.0 / 60.0) 
 
 // Reward Goals and Values
 #define REWARD_PER_STEP -0.01 
@@ -56,23 +56,13 @@
 const char* action_names[NN_OUTPUT_SIZE] = {"THRUST", "PASSIVE"};
 
 // --- Data Structures ---
-
-typedef struct { double x, y; } Vector2D;
 typedef struct { double x, y; double w, h; double vx; } Obstacle;
 typedef struct { double x, y; double size; bool collected; } Diamond;
 typedef struct { double x, y; double vy; double size; bool is_thrusting; bool is_alive; bool has_landed; } Ship;
 typedef struct { int score; int total_diamonds; Ship ship; Obstacle obstacles[NUM_OBSTACLES]; Diamond diamonds[NUM_DIAMONDS]; } GameState;
-
-// Matrix Structures
 typedef struct { int rows; int cols; double** data; } Matrix;
-
-// RL Step Structure
 typedef struct { double input[NN_INPUT_SIZE]; int action_index; double reward; } EpisodeStep;
-
-// RL Episode Buffer
 typedef struct { EpisodeStep steps[4000]; int count; double total_score; } Episode;
-
-// Neural Network Structure
 typedef struct { Matrix weights_ih; Matrix weights_ho; double* bias_h; double* bias_o; double lr; } NeuralNetwork;
 
 
@@ -125,7 +115,6 @@ Matrix matrix_create(int rows, int cols) {
     for (int i = 0; i < rows; i++) {
         m.data[i] = (double*)malloc(cols * sizeof(double));
         for (int j = 0; j < cols; j++) {
-            // Xavier/He initialization heuristic
             m.data[i][j] = check_double((((double)rand() / RAND_MAX) * 2.0 - 1.0) * sqrt(2.0 / (rows + cols)), "rand_val", "matrix_create");
         }
     }
@@ -330,7 +319,7 @@ void init_game_state() {
     srand((unsigned int)time(NULL) * (current_episode + 1)); 
     for (int i = 0; i < NUM_OBSTACLES; i++) {
         // Obstacles span the tunnel width (w) but move horizontally (x)
-        state.obstacles[i].x = check_double(((double)rand() / RAND_MAX) * (CANVAS_WIDTH - 200.0) + 100.0, "obs_x", "init_game"); // Start within a wider range
+        state.obstacles[i].x = check_double(((double)rand() / RAND_MAX) * (CANVAS_WIDTH - 200.0) + 100.0, "obs_x", "init_game"); 
         state.obstacles[i].y = check_double(((double)rand() / RAND_MAX) * (CANVAS_HEIGHT - GROUND_HEIGHT - 100.0) + 50.0, "obs_y", "init_game");
         state.obstacles[i].w = 100.0 + ((double)rand() / RAND_MAX) * 50.0; // Variable width
         state.obstacles[i].h = 20.0;
@@ -342,7 +331,6 @@ void init_game_state() {
     // Diamonds
     for (int i = 0; i < NUM_DIAMONDS; i++) {
         state.diamonds[i].x = SHIP_FIXED_X; // Fixed X at tunnel center
-        // Spread diamonds vertically
         state.diamonds[i].y = check_double(((double)rand() / RAND_MAX) * (CANVAS_HEIGHT - GROUND_HEIGHT - 100.0) + 50.0, "diamond_y", "init_game");
         state.diamonds[i].size = 5.0;
         state.diamonds[i].collected = false;
@@ -426,17 +414,17 @@ double calculate_reward(Ship* ship, double old_min_diamond_y_dist, int diamonds_
     for (int i = 0; i < NUM_OBSTACLES; i++) {
         Obstacle* obs = &state.obstacles[i];
         
-        // Check if the ship's Y is aligned with the obstacle's Y
-        if (ship->y + ship->size > obs->y && ship->y - ship->size < obs->y + obs->h) {
-            // Check if the obstacle is currently blocking the center line (SHIP_FIXED_X)
-            bool is_blocking = (SHIP_FIXED_X >= obs->x && SHIP_FIXED_X <= obs->x + obs->w);
-            
-            if (is_blocking) {
-                // Penalize based on how close the ship is vertically to the obstacle
-                double y_dist = fabs(ship->y - (obs->y + obs->h / 2.0));
-                double proximity_factor = 1.0 - fmin(1.0, y_dist / 50.0); // Close proximity (e.g., < 50px)
-                reward += REWARD_OBSTACLE_PROXIMITY_SCALE * proximity_factor;
-            }
+        // Vertical check: is the ship's vertical profile overlapping the obstacle's vertical profile?
+        bool y_overlap = (ship->y + ship->size > obs->y && ship->y - ship->size < obs->y + obs->h);
+
+        // Horizontal check: is the obstacle's X range blocking the ship's fixed X?
+        bool x_blocking = (SHIP_FIXED_X >= obs->x && SHIP_FIXED_X <= obs->x + obs->w);
+
+        if (y_overlap && x_blocking) {
+            // Penalize based on how close the ship is vertically to the obstacle
+            double y_dist = fabs(ship->y - (obs->y + obs->h / 2.0));
+            double proximity_factor = 1.0 - fmin(1.0, y_dist / 50.0); // Close proximity (e.g., < 50px)
+            reward += REWARD_OBSTACLE_PROXIMITY_SCALE * proximity_factor;
         }
     }
     
@@ -445,10 +433,9 @@ double calculate_reward(Ship* ship, double old_min_diamond_y_dist, int diamonds_
         reward += REWARD_COLLECT_DIAMOND * diamonds_collected_this_step;
     }
 
-    // TOWARDS_DIAMOND: Small reward for progress if diamonds remain (closer in Y means better)
+    // TOWARDS_DIAMOND: Small reward for progress if diamonds remain 
     if (state.total_diamonds < NUM_DIAMONDS) {
         double new_min_diamond_y_dist = input[2] * CANVAS_HEIGHT;
-        // Progress is reduction in absolute distance
         double distance_change = fabs(old_min_diamond_y_dist) - fabs(new_min_diamond_y_dist);
         if (distance_change > 0) {
             reward += REWARD_DIAMOND_PROGRESS_SCALE * distance_change / 10.0;
@@ -473,9 +460,8 @@ void apply_action(Ship* ship, int action_index) {
     
     if (action_index == 0) { // Thrust Up
         ship->is_thrusting = true;
-    } else if (action_index == 1) { // No Thrust / Passive
-        ship->is_thrusting = false;
-    }
+    } 
+    // Action 1 is No Thrust / Passive
     
     // Record action for stats
     action_history[action_history_idx] = action_index;
@@ -502,12 +488,14 @@ void update_physics(Ship* ship, double dt) {
         Obstacle* obs = &state.obstacles[i];
         obs->x += obs->vx * dt;
 
-        // Reverse direction upon hitting canvas edges
-        if (obs->x < -obs->w || obs->x + obs->w > CANVAS_WIDTH + obs->w) {
+        // Reverse direction upon hitting canvas edges (including the obstacle's width)
+        if (obs->x < -obs->w) {
             obs->vx *= -1.0;
-            // Prevent sticking to the edge
-            if (obs->x < -obs->w) obs->x = -obs->w;
-            if (obs->x + obs->w > CANVAS_WIDTH + obs->w) obs->x = CANVAS_WIDTH - obs->w;
+            obs->x = -obs->w; // Reset to boundary
+        }
+        if (obs->x + obs->w > CANVAS_WIDTH + obs->w) {
+            obs->vx *= -1.0;
+            obs->x = CANVAS_WIDTH; // Reset to boundary
         }
     }
 }
@@ -516,23 +504,20 @@ int check_collision(Ship* ship) {
     double ship_radius = ship->size; 
     int diamonds_collected_this_step = 0;
     
-    // --- 1. Obstacle collision (if ship's Y is aligned AND obstacle blocks the tunnel center) ---
+    // --- 1. Obstacle collision (Instant crash) ---
     for (int i = 0; i < NUM_OBSTACLES; i++) {
         Obstacle* obs = &state.obstacles[i];
         
-        // Vertical check: is the ship's vertical profile overlapping the obstacle's vertical profile?
         bool y_overlap = (ship->y + ship->size > obs->y && ship->y - ship->size < obs->y + obs->h);
-
-        // Horizontal check: is the obstacle's X range blocking the ship's fixed X?
         bool x_blocking = (SHIP_FIXED_X >= obs->x && SHIP_FIXED_X <= obs->x + obs->w);
 
         if (y_overlap && x_blocking) {
             ship->is_alive = false;
-            return diamonds_collected_this_step; // Crash overrides diamond collection
+            return diamonds_collected_this_step; // Crash
         }
     }
     
-    // --- 2. Diamond collection (Only Y proximity matters, X is fixed) ---
+    // --- 2. Diamond collection ---
     for (int i = 0; i < NUM_DIAMONDS; i++) {
         Diamond* d = &state.diamonds[i];
         if (d->collected) continue;
@@ -548,8 +533,7 @@ int check_collision(Ship* ship) {
         }
     }
     
-    // --- 3. Screen Bounds ---
-    // Upper boundary
+    // --- 3. Upper Screen Bounds ---
     if (ship->y < ship->size) {
         ship->y = ship->size;
         ship->vy = 0.0;
@@ -615,7 +599,6 @@ void update_game(double dt, bool is_training_run) {
     if (ship->y + ship->size > ground_y) {
         ship->y = ground_y - ship->size;
         
-        // Landing only requires low vertical speed
         if (fabs(ship->vy) > CRITICAL_LANDING_VELOCITY) {
             ship->is_alive = false; // Crash due to high speed
         } else {
@@ -666,11 +649,8 @@ void run_reinforce_training() {
 
     // --- 3. Train the Network ---
     for (int i = 0; i < episode_buffer.count; i++) {
-        // Compute Advantage (A_t = G_t - V(s_t)). Here, we use G_t as the Advantage with mean/std baseline.
         double Gt = (returns[i] - mean_return) / std_dev; 
         
-        // The policy gradient update uses -Gt as the magnitude of the error to encourage the action
-        // (This is based on the negative log-likelihood loss function)
         nn_reinforce_train(&nn, 
                            episode_buffer.steps[i].input, 
                            episode_buffer.steps[i].action_index, 
