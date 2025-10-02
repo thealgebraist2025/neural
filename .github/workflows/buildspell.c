@@ -1,0 +1,24 @@
+name: Spell build and Run
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Build with gcc
+      run: gcc -O3 -g -std=c99 spell.c -lm -o spell
+
+    - name: Run the primes program
+      run: ./spell
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4 # Use the latest version
+      with:
+        name: spellnetwork-diagram
+        path: network.svg
