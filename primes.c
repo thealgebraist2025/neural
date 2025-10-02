@@ -12,15 +12,15 @@
 #define TEST_RANGE (MAX_PRIME_TO_TEST + 1) // Test numbers from 1 to 104729
 #define TRAINING_GOAL_PERCENT 95.0  // Target accuracy (still for reference)
 #define MAX_EPOCHS 500000           // Max total batches (safety limit)
-#define MAX_TRAINING_SECONDS 120.0  // NEW: 2 minutes limit
+#define MAX_TRAINING_SECONDS 120.0  // 2 minutes limit
 #define BATCH_SIZE_HALF 64          // 64 Primes + 64 Non-Primes = 128 total per batch
 #define GROUP_SIZE_BATCHES 100      // Test and report stats after every 100 batches
 
 // --- NN Architecture Constants ---
 #define NN_INPUT_SIZE BIT_DEPTH     // 17 bits input
 #define NN_OUTPUT_SIZE 1            // Single output for classification (Prime/Not Prime)
-#define NN_HIDDEN_SIZE 256          // Hidden layer size
-#define NN_LEARNING_RATE 0.008      // Learning rate
+#define NN_HIDDEN_SIZE 512          // INCREASED: Hidden layer size to 512
+#define NN_LEARNING_RATE 0.005      // ADJUSTED: Learning rate lowered slightly for stability
 
 // --- SVG Constants ---
 #define SVG_WIDTH 1200
@@ -204,9 +204,9 @@ double sigmoid_derivative(double y) { return y * (1.0 - y); }
 
 void nn_init(NeuralNetwork* nn) {
     nn->lr = NN_LEARNING_RATE;
-    // NN_INPUT_SIZE (17) -> NN_HIDDEN_SIZE (256)
+    // NN_INPUT_SIZE (17) -> NN_HIDDEN_SIZE (512)
     nn->weights_ih = matrix_create(NN_HIDDEN_SIZE, NN_INPUT_SIZE, NN_INPUT_SIZE);
-    // NN_HIDDEN_SIZE (256) -> NN_OUTPUT_SIZE (1)
+    // NN_HIDDEN_SIZE (512) -> NN_OUTPUT_SIZE (1)
     nn->weights_ho = matrix_create(NN_OUTPUT_SIZE, NN_HIDDEN_SIZE, NN_HIDDEN_SIZE);
     nn->bias_h = (double*)calloc(NN_HIDDEN_SIZE, sizeof(double));
     nn->bias_o = (double*)calloc(NN_OUTPUT_SIZE, sizeof(double));
@@ -433,9 +433,10 @@ void generate_network_svg(NeuralNetwork* nn) {
 
     const double Y_TOTAL_SPACE = (double)(Y_END - Y_START);
 
-    // Calculate spacing for 17 Input, 256 Hidden, 1 Output
+    // Calculate spacing for 17 Input, 512 Hidden, 1 Output
     const double Y_SPACING_IN = Y_TOTAL_SPACE / NN_INPUT_SIZE;
-    const double Y_SPACING_HIDDEN = Y_TOTAL_SPACE / NN_HIDDEN_SIZE;
+    // NOTE: Spacing for 512 neurons will be extremely tight, leading to heavy visual overlap in the SVG.
+    const double Y_SPACING_HIDDEN = Y_TOTAL_SPACE / NN_HIDDEN_SIZE; 
     const double Y_SPACING_OUT = Y_TOTAL_SPACE / NN_OUTPUT_SIZE;
 
     // --- A. Draw Layers and Calculate Neuron Coordinates ---
@@ -453,13 +454,17 @@ void generate_network_svg(NeuralNetwork* nn) {
         append_svg_string(buffer);
     }
 
-    // Hidden Layer (256 Neurons)
-    snprintf(buffer, sizeof(buffer), SVG_LAYER_LABEL_TEMPLATE, X_HIDDEN, Y_START - 20, "Hidden", NN_HIDDEN_SIZE);
+    // Hidden Layer (512 Neurons) - Sample a few visually
+    snprintf(buffer, sizeof(buffer), SVG_LAYER_LABEL_TEMPLATE, X_HIDDEN, Y_START - 20, "Hidden (Visual Sampled)", NN_HIDDEN_SIZE);
     append_svg_string(buffer);
     for (int h = 0; h < NN_HIDDEN_SIZE; h++) {
         y_hidden[h] = Y_START + h * Y_SPACING_HIDDEN + Y_SPACING_HIDDEN/2;
-        snprintf(buffer, sizeof(buffer), SVG_NEURON_TEMPLATE_OTHER, X_HIDDEN, y_hidden[h], X_HIDDEN, y_hidden[h], "");
-        append_svg_string(buffer);
+        
+        // Only draw a subset of neurons to prevent a massive file/overload
+        if (h < 20 || h > NN_HIDDEN_SIZE - 20 || h % 50 == 0) {
+             snprintf(buffer, sizeof(buffer), SVG_NEURON_TEMPLATE_OTHER, X_HIDDEN, y_hidden[h], X_HIDDEN, y_hidden[h], "");
+             append_svg_string(buffer);
+        }
     }
 
     // Output Layer (1 Neuron) - Centered vertically
@@ -470,14 +475,14 @@ void generate_network_svg(NeuralNetwork* nn) {
     append_svg_string(buffer);
 
 
-    // --- B. Draw ALL Connections (Input -> Hidden) --- 
-    for (int h = 0; h < NN_HIDDEN_SIZE; h++) {
+    // --- B. Draw Connections (Input -> Hidden) --- (Only sample 1 in 10 connections for visualization)
+    for (int h = 0; h < NN_HIDDEN_SIZE; h += 10) { 
         for (int i = 0; i < NN_INPUT_SIZE; i++) {
             double weight = nn->weights_ih.data[h][i];
             const char* class = (weight >= 0) ? "pos" : "neg";
             double abs_weight = fabs(weight);
             double width = fmin(2.5, abs_weight * 5.0);
-            double opacity = fmin(1.0, abs_weight * 3.0);
+            double opacity = fmin(0.1, abs_weight * 0.5); // Lower opacity for density
 
             snprintf(buffer, sizeof(buffer), SVG_CONNECTION_TEMPLATE, 
                      X_IN + 10, y_in[i],
@@ -488,7 +493,6 @@ void generate_network_svg(NeuralNetwork* nn) {
     }
 
     // --- C. Draw ALL Connections (Hidden -> Output) --- 
-    // The output layer only has one neuron (index 0)
     int o = 0; 
     for (int h = 0; h < NN_HIDDEN_SIZE; h++) {
         double weight = nn->weights_ho.data[o][h];
@@ -547,7 +551,8 @@ int main() {
 
     printf("Neural Network Prime Detector Initialized.\n");
     printf("Training Numbers: Primes and Non-Primes up to %d (the 10,000th prime).\n", MAX_PRIME_TO_TEST);
-    printf("Architecture: Input=%d, Hidden=%d, Output=%d\n", NN_INPUT_SIZE, NN_HIDDEN_SIZE, NN_OUTPUT_SIZE);
+    printf("Architecture: Input=%d, Hidden=%d, Output=%d (INCREASED CAPACITY)\n", NN_INPUT_SIZE, NN_HIDDEN_SIZE, NN_OUTPUT_SIZE);
+    printf("Learning Rate: %.4f (ADJUSTED)\n", NN_LEARNING_RATE);
     printf("Max Training Time: %.0f seconds.\n", MAX_TRAINING_SECONDS);
     printf("--------------------------------------------------------------------------------\n");
     printf("Batch Group | Avg MSE (Group) | Correctness (Total Range) | Backprop Time (sec)\n");
