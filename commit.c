@@ -7,6 +7,8 @@
  * NOTE: This program REQUIRES linking with -lssl, -lcrypto, and (on some systems) -lws2_32.
  */
 
+#define _POSIX_C_SOURCE 200112L
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
