@@ -17,7 +17,7 @@
 
 // Game/Physics Constants
 #define MOVE_STEP_SIZE 15.0 
-#define MAX_EPISODE_STEPS 50 
+#define MAX_EPISODE_STEPS 150 // INCREASED from 50 to allow longer episodes
 #define NUM_OBSTACLES 5
 #define NUM_DIAMONDS 10 // Increased from 5 to 10
 
@@ -31,7 +31,7 @@
 #define NN_INPUT_SIZE 9 
 #define NN_HIDDEN_SIZE 16 
 #define NN_OUTPUT_SIZE 4 
-#define NN_LEARNING_RATE 0.005
+#define NN_LEARNING_RATE 0.0025 // REDUCED from 0.005 for stability
 #define GAMMA 0.95 
 
 // Reward Goals and Values
