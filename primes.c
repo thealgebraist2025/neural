@@ -4,6 +4,7 @@
 #include <time.h>
 #include <stdbool.h>
 #include <string.h>
+#include <stdarg.h> // FIX 1: Added for va_list, va_start, va_end
 
 // --- Prime Detection & Input Constants ---
 #define BASE2_BITS 17               // Binary representation inputs
@@ -14,7 +15,7 @@
 #define NUM_EXAMPLES 10000          
 #define MAX_VAL_NEEDED 104729       
 
-#define MAX_TRAINING_SECONDS 120.0  
+#define MAX_TRAINING_SECONDS 240.0  // FIX 2: Increased from 120.0 to 240.0
 #define BATCH_SIZE_HALF 512         
 #define BATCH_SIZE (BATCH_SIZE_HALF * 2) 
 #define NUM_BATCHES (NUM_EXAMPLES / BATCH_SIZE_HALF)
@@ -596,9 +597,12 @@ void save_network_as_svg(NeuralNetwork* nn) {
         int size = layer_sizes[i];
         // Calculate the starting Y coordinate to center the layer
         int y_offset = SVG_HEIGHT / 2 - (size * (NODE_RADIUS + NODE_SPACING)) / 2;
+        
+        // FIX 3: Declare cx here to resolve the undeclared error outside the inner loop
+        int cx = x_coords[i]; 
 
         for (int j = 0; j < size; j++) {
-            int cx = x_coords[i];
+            // int cx = x_coords[i]; // Declared outside the inner loop now
             int cy = y_offset + j * (NODE_RADIUS * 2 + NODE_SPACING) + NODE_RADIUS;
             
             const char* fill_color = "#ffffff"; // Default white
@@ -675,6 +679,7 @@ int main() {
     printf("Architecture: Input(32) -> H1(32) -> H2(32) -> H3(32) -> H4(32) -> Output(1)\n");
     printf("Learning Rate: %.4f\n", NN_LEARNING_RATE);
     printf("Batch Size: %d\n", BATCH_SIZE);
+    printf("Maximum Training Time: %.0f seconds.\n", MAX_TRAINING_SECONDS); // Confirmation
     printf("------------------------------------------------------------------------------------------------\n");
     printf("Batch No. | Primes Range | Composites Range | Avg MSE (Batch) | Correctness (Total) | Backprop Time (sec)\n");
     printf("------------------------------------------------------------------------------------------------\n");
