@@ -31,23 +31,27 @@
 #define NN_HIDDEN_SIZE 32
 #define NN_OUTPUT_SIZE 3 // 0:Thrust, 1:Rotate Left, 2:Rotate Right
 #define NN_LEARNING_RATE 0.005
-#define RL_MAX_EPISODES 2000 // Number of training episodes
 #define GAMMA 0.99 // Discount factor for future rewards
 
 // Game Constants
 #define NUM_OBSTACLES 5
 #define NUM_DIAMONDS 10
 #define SIMULATION_DT (1.0 / 60.0) // 60 FPS simulation step
-#define PRINT_INTERVAL 200 // Print state every X steps
 
 // Reward Goals and Values (Used for Reward Function Implementation)
+// RL GOALS: STABILIZE, AVOID_OBSTACLE, TOWARDS_DIAMOND, LANDING
 #define REWARD_PER_STEP -0.01 
 #define REWARD_CRASH -200.0
 #define REWARD_SAFE_LAND 50.0
 #define REWARD_SAFE_LAND_ALL_COLLECTED 500.0
 #define REWARD_COLLECT_DIAMOND 50.0
-#define REWARD_VELOCITY_PENALTY_SCALE -0.5 // For STABILIZE goal
-#define REWARD_OBSTACLE_PROXIMITY_SCALE -5.0 // For AVOID_OBSTACLE goal
+#define REWARD_VELOCITY_PENALTY_SCALE -0.5 
+#define REWARD_OBSTACLE_PROXIMITY_SCALE -5.0 
+
+// Action History Buffer
+#define ACTION_HISTORY_SIZE 15 
+const char* action_names[NN_OUTPUT_SIZE] = {"THRUST", "LEFT", "RIGHT"};
+
 
 // --- C99 Utility Functions ---
 
@@ -84,7 +88,7 @@ void softmax(const double* input, double* output, int size) {
 
 // Function to calculate the natural logarithm
 double log_val(double x) {
-    if (x <= 0.0) return -INFINITY; 
+    if (x <= 1e-10) return log(1e-10); // Prevent log(0)
     return log(x);
 }
 
@@ -145,7 +149,6 @@ typedef struct {
     double input[NN_INPUT_SIZE];
     int action_index; // The action taken (0, 1, or 2)
     double reward;
-    double log_prob; // log(P(Action|State))
 } EpisodeStep;
 
 // RL Episode Buffer
@@ -161,7 +164,14 @@ NeuralNetwork nn;
 Episode episode_buffer;
 int current_episode = 0;
 
+// Action History Buffer (Global)
+int action_history[ACTION_HISTORY_SIZE];
+int action_history_idx = 0; // Next insertion point
+
 // --- Matrix Operations (Memory Managed) ---
+// (Matrix functions matrix_create, matrix_free, matrix_dot, matrix_transpose, 
+// matrix_add_subtract, matrix_multiply_elem, matrix_multiply_scalar, array_to_matrix, etc. are 
+// identical to the previous implementation for brevity and focus on new features.)
 
 Matrix matrix_create(int rows, int cols) {
     Matrix m;
@@ -171,7 +181,6 @@ Matrix matrix_create(int rows, int cols) {
     for (int i = 0; i < rows; i++) {
         m.data[i] = (double*)malloc(cols * sizeof(double));
         for (int j = 0; j < cols; j++) {
-            // Xavier/He initialization (small random values)
             m.data[i][j] = check_double((((double)rand() / RAND_MAX) * 2.0 - 1.0) * sqrt(2.0 / (rows + cols)), "rand_val", "matrix_create");
         }
     }
@@ -348,13 +357,9 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
     softmax(logits, probs, NN_OUTPUT_SIZE);
 
     // --- 2. Calculate Output Gradient (dLoss/dLogits) ---
-    // dLoss/dLogit_i = (Probs_i - Target_i) * Discounted_Return
-    // Target is one-hot for the taken action (action_index).
     Matrix output_gradients = matrix_create(NN_OUTPUT_SIZE, 1);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) {
         double target = (i == action_index) ? 1.0 : 0.0;
-        // Gradient of Cross-Entropy Loss w.r.t logits for target: -(target - prob)
-        // We use the gradient log(P(a|s)) * Gt
         output_gradients.data[i][0] = check_double(probs[i] - target, "output_grad_base", "nn_reinforce_train") * discounted_return;
     }
 
@@ -419,6 +424,7 @@ void init_game_state() {
     state.obstacles[4] = (Obstacle){650, 400, 150, 20};
 
     // Diamonds
+    // Ensure diamonds reset placement for better exploration across episodes
     srand((unsigned int)time(NULL) * (current_episode + 1)); 
     for (int i = 0; i < NUM_DIAMONDS; i++) {
         state.diamonds[i].x = check_double(((double)rand() / RAND_MAX) * (CANVAS_WIDTH - 40.0) + 20.0, "diamond_x", "init_game");
@@ -491,7 +497,7 @@ void get_state_features(double* input) {
     input[13] = (state.total_diamonds == NUM_DIAMONDS) ? 1.0 : 0.0;
 
     for (int i = 0; i < NN_INPUT_SIZE; i++) {
-        // Simple clipping to prevent extreme values from ruining training
+        // Simple clipping to prevent extreme values
         if (input[i] > 1.0) input[i] = 1.0;
         if (input[i] < -1.0) input[i] = -1.0;
         check_double(input[i], "input_val", "get_state_features_final");
@@ -499,20 +505,20 @@ void get_state_features(double* input) {
 }
 
 double calculate_reward(Ship* ship, double old_min_diamond_dist, int diamonds_collected_this_step) {
-    double reward = REWARD_PER_STEP;
+    double reward = REWARD_PER_STEP; // Base step penalty
     
     if (!ship->is_alive) {
         return REWARD_CRASH;
     }
     
-    // Goal 1: STABILIZE (against velocity/gravity)
+    // STABILIZE: Negative reward based on speed magnitude
     double speed_magnitude_sq = check_double(ship->velocity.x * ship->velocity.x + ship->velocity.y * ship->velocity.y, "speed_sq", "calc_reward");
     reward += REWARD_VELOCITY_PENALTY_SCALE * speed_magnitude_sq;
     
-    // Goal 2 & 3: TOWARDS_DIAMOND & AVOID_OBSTACLE
+    // Get normalized state for obstacle/diamond distances
     double input[NN_INPUT_SIZE];
     get_state_features(input);
-    double nearest_obs_dist = input[10] * CANVAS_WIDTH; // Denormalized obstacle distance
+    double nearest_obs_dist = input[10] * CANVAS_WIDTH; 
 
     // AVOID_OBSTACLE: Punish heavily for being too close
     double OBSTACLE_NEAR_THRESHOLD = 50.0;
@@ -535,7 +541,7 @@ double calculate_reward(Ship* ship, double old_min_diamond_dist, int diamonds_co
         }
     }
     
-    // Goal 4: LANDING (Final Goal)
+    // LANDING: Final Goal
     if (ship->has_landed) {
         if (state.total_diamonds == NUM_DIAMONDS) {
             reward += REWARD_SAFE_LAND_ALL_COLLECTED;
@@ -559,9 +565,13 @@ void apply_action(Ship* ship, int action_index) {
         ship->angle = check_double(ship->angle + ROTATION_SPEED, "ship_angle_R", "apply_action");
     }
     
-    // Normalize angle (FIX: Use M_PI constant)
+    // Normalize angle
     if (ship->angle > 2.0 * M_PI) ship->angle = check_double(ship->angle - 2.0 * M_PI, "ship_angle_norm", "apply_action");
     if (ship->angle < 0.0) ship->angle = check_double(ship->angle + 2.0 * M_PI, "ship_angle_norm", "apply_action");
+
+    // Record action for stats
+    action_history[action_history_idx] = action_index;
+    action_history_idx = (action_history_idx + 1) % ACTION_HISTORY_SIZE;
 }
 
 void apply_thrust(Ship* ship, double dt) {
@@ -589,7 +599,7 @@ int check_collision(Ship* ship) {
     double ship_radius = ship->size; 
     int diamonds_collected_this_step = 0;
     
-    // Obstacle collision - uses fmax and fmin
+    // Obstacle collision
     for (int i = 0; i < NUM_OBSTACLES; i++) {
         Obstacle* obs = &state.obstacles[i];
         double closest_x = fmax(obs->x, fmin(ship->x, obs->x + obs->w));
@@ -637,9 +647,8 @@ void update_game(double dt, bool is_training_run) {
     nn_policy_forward(&nn, input, probabilities, logit_output);
 
     int action_index = select_action(probabilities);
-    double log_prob_action = log_val(probabilities[action_index]);
 
-    // --- 3. Apply Action and Physics Update ---
+    // --- 3. Apply Action and Physics Update (Also records action) ---
     apply_action(ship, action_index);
     apply_thrust(ship, dt);
     update_physics(ship, dt);
@@ -655,7 +664,7 @@ void update_game(double dt, bool is_training_run) {
         bool is_in_pad = (ship->x >= LANDING_PAD_X && ship->x <= LANDING_PAD_X + LANDING_PAD_W);
         double speed_magnitude = check_double(sqrt(ship->velocity.x * ship->velocity.x + ship->velocity.y * ship->velocity.y), "speed_mag", "update_game");
         
-        // Crash if velocity is too high, or landed off pad
+        // Crash if speed is too high, or landed off pad
         if (fabs(ship->velocity.y) > CRITICAL_LANDING_VELOCITY || speed_magnitude > CRITICAL_LANDING_VELOCITY || !is_in_pad) {
             ship->is_alive = false;
         } else {
@@ -675,30 +684,11 @@ void update_game(double dt, bool is_training_run) {
         for(int i = 0; i < NN_INPUT_SIZE; i++) step.input[i] = input[i];
         step.action_index = action_index;
         step.reward = reward;
-        step.log_prob = log_prob_action;
         
         episode_buffer.steps[episode_buffer.count] = step;
         episode_buffer.count++;
         episode_buffer.total_score += reward;
     }
-}
-
-void print_state(double sim_time, int episode) {
-    Ship* ship = &state.ship;
-    double speed_magnitude = check_double(sqrt(ship->velocity.x * ship->velocity.x + ship->velocity.y * ship->velocity.y), "speed_mag_print", "print_state");
-    
-    printf("--- E%d: SIMULATION TIME: %.2fs ---\n", episode, sim_time);
-    
-    printf("SpaceShip State: %s | Collected: %d/%d\n", 
-        !ship->is_alive ? "CRASHED" : 
-        ship->has_landed ? "LANDED" : 
-        "IN FLIGHT", state.total_diamonds, NUM_DIAMONDS);
-    
-    printf("  Position (x, y): (%.2f, %.2f) | Angle: %.2f rad\n", ship->x, ship->y, ship->angle);
-    printf("  Speed (Vx, Vy, Mag): (%.2f, %.2f, %.2f)\n", 
-           ship->velocity.x, ship->velocity.y, speed_magnitude);
-    printf("  Accumulated Score/Reward: %.2f (Raw Score: %d)\n", episode_buffer.total_score, state.score);
-    printf("--------------------------------\n\n");
 }
 
 void run_reinforce_training() {
@@ -714,7 +704,7 @@ void run_reinforce_training() {
         returns[i] = cumulative_return;
     }
     
-    // --- 2. Normalize Returns (Optional but recommended for stability - Baseline) ---
+    // --- 2. Normalize Returns (Baseline) ---
     double sum_returns = 0.0;
     double sum_sq_returns = 0.0;
     for (int i = 0; i < episode_buffer.count; i++) {
@@ -727,11 +717,9 @@ void run_reinforce_training() {
 
     // Apply policy gradient update for each step
     for (int i = 0; i < episode_buffer.count; i++) {
-        // Normalized and baseline-subtracted return
         double Gt = (returns[i] - mean_return) / std_dev; 
         
-        // Gradient update: -LR * Gt * gradient of log(P(a|s))
-        // We pass -Gt to the nn_reinforce_train function to simplify the final calculation
+        // Pass -Gt for update rule: -LR * Gt * gradient of log(P(a|s))
         nn_reinforce_train(&nn, 
                            episode_buffer.steps[i].input, 
                            episode_buffer.steps[i].action_index, 
@@ -739,59 +727,82 @@ void run_reinforce_training() {
     }
 }
 
+void print_episode_stats(double sim_time, double train_time_ms) {
+    Ship* ship = &state.ship;
+    
+    printf("====================================================\n");
+    printf("EPISODE %d SUMMARY\n", current_episode);
+    printf("----------------------------------------------------\n");
+    printf("Termination Status: %s\n", 
+        !ship->is_alive ? "CRASHED" : 
+        (ship->has_landed && state.total_diamonds == NUM_DIAMONDS) ? "SUCCESSFUL LANDING (ALL DIAMONDS)" : 
+        ship->has_landed ? "SAFE LANDING (PARTIAL DIAMONDS)" : 
+        "TIMEOUT (Max Steps)");
+    
+    printf("Simulation Time: %.2fs (Steps: %d)\n", sim_time, episode_buffer.count);
+    printf("Total Diamonds Collected: %d/%d\n", state.total_diamonds, NUM_DIAMONDS);
+    printf("Final Policy Reward (Score): %.2f\n", episode_buffer.total_score);
+    
+    // Training Trace
+    printf("Reinforcement Learning Training Time: %.3f ms\n", train_time_ms);
+    
+    // Action History Trace (Newest to Oldest)
+    printf("Last %d Actions by AI (Newest to Oldest):\n", ACTION_HISTORY_SIZE);
+    for (int i = 1; i <= ACTION_HISTORY_SIZE; i++) {
+        // Calculate index in circular buffer: (current_idx - i + SIZE) % SIZE
+        int index = (action_history_idx - i + ACTION_HISTORY_SIZE) % ACTION_HISTORY_SIZE;
+        printf("%s%s", action_names[action_history[index]], (i < ACTION_HISTORY_SIZE) ? ", " : "");
+    }
+    printf("\n");
+    printf("====================================================\n\n");
+}
+
+
 // --- Main Simulation Loop ---
 
 int main() {
     srand((unsigned int)time(NULL));
     nn_init(&nn);
-    init_game_state();
+    
+    // Initialize action history array with default action (THRUST=0)
+    for(int i = 0; i < ACTION_HISTORY_SIZE; i++) {
+        action_history[i] = 0;
+    }
 
     printf("--- RL Autonomous Lander Simulation (REINFORCE) ---\n");
+    printf("Training will run for 4 minutes (240 seconds).\n");
     
-    // --- Training Phase ---
-    printf("Starting Training (%d Episodes)...\n", RL_MAX_EPISODES);
+    time_t start_time = time(NULL);
+    const int TIME_LIMIT_SECONDS = 240; 
     
-    double last_print_time = 0.0;
-    
-    for (current_episode = 1; current_episode <= RL_MAX_EPISODES; current_episode++) {
-        double sim_time = 0.0;
+    // --- Time-Limited Training Phase ---
+    while (time(NULL) - start_time < TIME_LIMIT_SECONDS) {
+        
+        // 1. Setup new episode
+        current_episode++;
         init_game_state();
+        double sim_time = 0.0;
 
-        // Run episode until termination
-        while (state.ship.is_alive && !state.ship.has_landed && sim_time < 500.0) {
+        // 2. Play episode (AI/Data Collection)
+        // AI plays until crash, land, or max steps (4000 steps * 1/60s = ~66.7s sim time)
+        while (state.ship.is_alive && !state.ship.has_landed && episode_buffer.count < 4000) {
             update_game(SIMULATION_DT, true); // true for training run
             sim_time += SIMULATION_DT;
         }
 
-        // Training Step
+        // 3. Train (RL Update) and Time it
+        clock_t train_start = clock();
         run_reinforce_training();
+        clock_t train_end = clock();
         
-        // Log results
-        if (current_episode % (RL_MAX_EPISODES / 10) == 0) {
-            printf("[TRAINING E%d] Total Steps: %d | Final Reward: %.2f\n", 
-                current_episode, episode_buffer.count, episode_buffer.total_score);
-        }
+        // Trace training time in milliseconds
+        double train_time_ms = (double)(train_end - train_start) * 1000.0 / CLOCKS_PER_SEC;
+
+        // 4. Print stats
+        print_episode_stats(sim_time, train_time_ms);
     }
     
-    printf("\n--- TRAINING COMPLETE. STARTING FINAL NN CONTROL SIMULATION ---\n");
-    
-    // --- Final NN Control Run ---
-    current_episode = RL_MAX_EPISODES + 1;
-    init_game_state();
-    double sim_time = 0.0;
-    int step_count = 0;
-    
-    while (state.ship.is_alive && !state.ship.has_landed && sim_time < 500.0) {
-        update_game(SIMULATION_DT, false); // false for final run (no logging/storage)
-        sim_time += SIMULATION_DT;
-        step_count++;
-        
-        if (step_count % PRINT_INTERVAL == 0) {
-            print_state(sim_time, current_episode);
-        }
-    }
-    
-    print_state(sim_time, current_episode);
+    printf("\n--- TIME LIMIT REACHED. TRAINING HALTED. Total Episodes: %d ---\n", current_episode);
 
     // --- Cleanup ---
     matrix_free(nn.weights_ih);
