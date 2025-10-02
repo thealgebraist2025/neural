@@ -46,14 +46,15 @@
 const char* action_names[NN_OUTPUT_SIZE] = {"UP", "DOWN", "LEFT", "RIGHT"};
 
 // --- Unittest Constants (FIXED & ADJUSTED) ---
-#define UNITTEST_EPISODES 50
+#define UNITTEST_EPISODES 100 // INCREASED
+#define UNITTEST_MAX_STEPS 50   // INCREASED
+#define UNITTEST_MOVE_STEP_SIZE 5.0 // NEW: Reduced step size for stability
 #define UNITTEST_SUCCESS_THRESHOLD 0.5 
-#define UNITTEST_MAX_STEPS 20 
 #define UNITTEST_PROGRESS_REWARD 1.0 
 #define UNITTEST_STEP_PENALTY -0.1 
 #define UNITTEST_CRASH_PENALTY -5.0   
 #define UNITTEST_GOAL_REWARD 50.0     
-#define UNITTEST_TRACING 1 // 1 for detailed step-by-step tracing of the first episode
+#define UNITTEST_TRACING 1 
 
 // --- Data Structures ---
 typedef struct { double x, y; double w, h; } Obstacle;
@@ -186,6 +187,7 @@ Matrix matrix_multiply_elem(Matrix A, Matrix B) {
     Matrix result = matrix_create(A.rows, A.cols);
     for (int i = 0; i < A.rows; i++) {
         for (int j = 0; j < A.cols; j++) { result.data[i][j] = check_double(A.data[i][j], "A[i][j]", "matrix_multiply_elem") * check_double(B.data[i][j], "B[i][j]", "matrix_multiply_elem"); }
+        }
     }
     return result;
 }
@@ -260,7 +262,7 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
     }
 
     // 3. Update Weights HO and Bias O
-    // FIX: Changed multiplier from -nn->lr to +nn->lr to perform Gradient ASCENT (Maximize return)
+    // FIX: Uses +nn->lr for Gradient ASCENT (Maximization)
     Matrix delta_weights_ho = matrix_multiply_scalar(matrix_dot(output_gradients, matrix_transpose(hidden_output)), nn->lr);
     Matrix new_weights_ho = matrix_add_subtract(nn->weights_ho, delta_weights_ho, true);
     matrix_free(nn->weights_ho); nn->weights_ho = new_weights_ho;
@@ -276,7 +278,7 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
     Matrix hidden_gradients = matrix_map(hidden_output, sigmoid_derivative);
     Matrix hidden_gradients_mul = matrix_multiply_elem(hidden_gradients, hidden_errors);
     
-    // FIX: Changed multiplier from -nn->lr to +nn->lr to perform Gradient ASCENT (Maximize return)
+    // FIX: Uses +nn->lr for Gradient ASCENT (Maximization)
     Matrix delta_weights_ih = matrix_multiply_scalar(matrix_dot(hidden_gradients_mul, matrix_transpose(inputs)), nn->lr);
     Matrix new_weights_ih = matrix_add_subtract(nn->weights_ih, delta_weights_ih, true);
     matrix_free(nn->weights_ih); nn->weights_ih = new_weights_ih;
@@ -296,16 +298,20 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
 // --- Game Logic Functions ---
 
 // Function to move the robot and check basic boundaries 
-void apply_action(Robot* robot, int action_index) {
+// UPDATED SIGNATURE
+void apply_action(Robot* robot, int action_index, bool is_unittest) {
+    // Select step size based on mode
+    double step_size = is_unittest ? UNITTEST_MOVE_STEP_SIZE : MOVE_STEP_SIZE;
+    
     double old_x = robot->x;
     double old_y = robot->y;
     
     // Apply movement based on action index
     switch (action_index) {
-        case 0: robot->y -= MOVE_STEP_SIZE; break; // UP
-        case 1: robot->y += MOVE_STEP_SIZE; break; // DOWN
-        case 2: robot->x -= MOVE_STEP_SIZE; break; // LEFT
-        case 3: robot->x += MOVE_STEP_SIZE; break; // RIGHT
+        case 0: robot->y -= step_size; break; // UP
+        case 1: robot->y += step_size; break; // DOWN
+        case 2: robot->x -= step_size; break; // LEFT
+        case 3: robot->x += step_size; break; // RIGHT
     }
     
     // Update action history for printing
@@ -439,9 +445,9 @@ void init_minimal_state() {
     }
 
     if (UNITTEST_TRACING) {
-        printf("UNITTEST INFO: Start (%.1f, %.1f), Target Area (%.1f, %.1f) to (%.1f, %.1f)\n", 
+        printf("UNITTEST INFO: Start (%.1f, %.1f), Target Area (%.1f, %.1f) to (%.1f, %.1f) (Step Size: %.1f)\n", 
                state.robot.x, state.robot.y, state.target.x, state.target.y, 
-               state.target.x + state.target.w, state.target.y + state.target.h);
+               state.target.x + state.target.w, state.target.y + state.target.h, UNITTEST_MOVE_STEP_SIZE);
     }
 }
 
@@ -680,7 +686,8 @@ void update_game(bool is_training_run, bool expert_run, bool is_unittest, int ep
     // Store old distance for progress reward calculation
     double old_dist_copy = old_min_dist_to_goal; 
     
-    apply_action(robot, action_index);
+    // Pass is_unittest flag to apply_action
+    apply_action(robot, action_index, is_unittest);
 
     int diamonds_collected = check_collision(robot);
     
@@ -904,11 +911,14 @@ void generate_expert_path_training_data() {
             double test_x = robot->x;
             double test_y = robot->y;
             
+            // The apply_action logic for the expert path must use the full MOVE_STEP_SIZE
+            double expert_step = MOVE_STEP_SIZE;
+            
             switch (a) {
-                case 0: test_y -= MOVE_STEP_SIZE; break; 
-                case 1: test_y += MOVE_STEP_SIZE; break; 
-                case 2: test_x -= MOVE_STEP_SIZE; break; 
-                case 3: test_x += MOVE_STEP_SIZE; break; 
+                case 0: test_y -= expert_step; break; 
+                case 1: test_y += expert_step; break; 
+                case 2: test_x -= expert_step; break; 
+                case 3: test_x += expert_step; break; 
             }
             
             double dist = distance_2d(test_x, test_y, target_x, target_y);
@@ -923,7 +933,8 @@ void generate_expert_path_training_data() {
             double input[NN_INPUT_SIZE];
             get_state_features(input, &old_min_dist_to_goal);
 
-            apply_action(robot, best_action);
+            // Pass false for is_unittest
+            apply_action(robot, best_action, false);
 
             int diamonds_collected = check_collision(robot);
             
