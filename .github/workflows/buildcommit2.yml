@@ -9,9 +9,9 @@ on:
 
 env:
   # Constants derived from your C code for informational purposes
-  REPO_OWNER: your-repo-owner
-  REPO_NAME: your-repository-name
-  FILE_PATH: images/embedded_c99_logo.svg
+  REPO_OWNER: thealgebraist2025
+  REPO_NAME: neural 
+  FILE_PATH: network.svg
   BRANCH_NAME: main
   ARTIFACT_NAME: generated-network-svg # Name used for the SVG artifact
 
@@ -30,7 +30,7 @@ jobs:
 
       - name: Compile C Code
         run: |
-          gcc -std=c99 github_commit_manual.c -o github_committer -Wall -Wextra -lssl -lcrypto
+          gcc -std=c99 commit.c -o github_committer -Wall -Wextra -lssl -lcrypto
 
       - name: Test Compiled Executable and Create Mock SVG
         run: |
