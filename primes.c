@@ -24,7 +24,7 @@
 #define SVG_WIDTH 1200
 #define SVG_HEIGHT 1600
 #define INITIAL_SVG_CAPACITY 2500
-#define SVG_FILENAME "network.svg"
+#define SVG_FILENAME "primesnetwork.svg"
 
 // --- Data Structures ---
 typedef struct { int rows; int cols; double** data; } Matrix;
