@@ -13,7 +13,7 @@
 // --- Global Constants ---
 #define CANVAS_WIDTH 800.0
 #define CANVAS_HEIGHT 600.0
-#define BORDER_WIDTH 10.0 // Wall thickness for collision check
+#define BORDER_WIDTH 10.0 
 
 // Game/Physics Constants
 #define MOVE_STEP_SIZE 15.0 
@@ -29,10 +29,15 @@
 
 // NN & RL Constants
 #define NN_INPUT_SIZE 9 
-#define NN_HIDDEN_SIZE 64 // MODIFIED: Increased network capacity from 32 to 64
+#define NN_HIDDEN_SIZE 128 // MODIFIED: Increased network capacity to 128
 #define NN_OUTPUT_SIZE 4 
-#define NN_LEARNING_RATE 0.01 // Learning rate for stable training
-#define GAMMA 0.95 // Discount factor 
+#define NN_LEARNING_RATE 0.01 
+#define GAMMA 0.99 // MODIFIED: Increased discount factor for long-term planning
+
+// Exploration Constants (Epsilon-Greedy)
+#define EPSILON_START 1.0 
+#define EPSILON_END 0.01 
+#define EPSILON_DECAY_EPISODES 5000 // Episodes over which to decay epsilon
 
 // Reward Goals and Values
 #define REWARD_PER_STEP -1.0 
@@ -104,14 +109,14 @@ void softmax(const double* input, double* output, int size) {
     double max_val = input[0];
     for (int i = 1; i < size; i++) { if (input[i] > max_val) max_val = input[i]; }
     double sum_exp = 0.0;
-    const double epsilon = 1e-12; // Added safety epsilon
+    const double epsilon_safety = 1e-12;
     
     for (int i = 0; i < size; i++) {
         output[i] = exp(input[i] - max_val);
         sum_exp += output[i];
     }
     
-    if (sum_exp < epsilon) sum_exp = epsilon; 
+    if (sum_exp < epsilon_safety) sum_exp = epsilon_safety; 
 
     for (int i = 0; i < size; i++) { output[i] = check_double(output[i] / sum_exp, "softmax_output", "softmax"); }
 }
@@ -119,7 +124,7 @@ double distance_2d(double x1, double y1, double x2, double y2) {
     return sqrt(pow(x2 - x1, 2) + pow(y2 - y1, 2));
 }
 
-// --- Matrix Functions (with memory allocation checks) ---
+// --- Matrix Functions ---
 
 Matrix matrix_create(int rows, int cols) {
     Matrix m; 
@@ -356,17 +361,90 @@ void init_game_state() {
     state.target.h = 50.0;
 }
 
-// Selects an action stochastically based on probabilities
-int select_action(const double* probabilities) {
-    double r = check_double((double)rand() / RAND_MAX, "rand_action", "select_action");
-    double cumulative_prob = 0.0;
-    for (int i = 0; i < NN_OUTPUT_SIZE; i++) {
-        cumulative_prob += probabilities[i];
-        if (r < cumulative_prob) {
-            return i;
+// Helper function: Check if a potential move is valid (used for Action Masking)
+bool is_potential_move_legal(double current_x, double current_y, int action_index) {
+    double next_x = current_x;
+    double next_y = current_y;
+    double r = state.robot.size;
+
+    switch ((Action)action_index) {
+        case ACTION_UP:    next_y -= MOVE_STEP_SIZE; break; 
+        case ACTION_DOWN:  next_y += MOVE_STEP_SIZE; break;
+        case ACTION_LEFT:  next_x -= MOVE_STEP_SIZE; break; 
+        case ACTION_RIGHT: next_x += MOVE_STEP_SIZE; break; 
+        default: return false;
+    }
+
+    // 1. Wall Collision Check
+    if (next_x - r < BORDER_WIDTH || next_x + r > CANVAS_WIDTH - BORDER_WIDTH ||
+        next_y - r < BORDER_WIDTH || next_y + r > CANVAS_HEIGHT - BORDER_WIDTH) {
+        return false; 
+    }
+    
+    // 2. Obstacle Collision Check
+    for (int i = 0; i < NUM_OBSTACLES; i++) {
+        Obstacle* obs = &state.obstacles[i];
+        double closest_x = fmax(obs->x, fmin(next_x, obs->x + obs->w));
+        double closest_y = fmax(obs->y, fmin(next_y, obs->y + obs->h));
+        
+        double dx = next_x - closest_x;
+        double dy = next_y - closest_y;
+        
+        if (dx * dx + dy * dy < r * r) {
+            return false; 
         }
     }
-    return NN_OUTPUT_SIZE - 1; 
+    
+    return true;
+}
+
+// Selects an action stochastically based on probabilities and applies epsilon-greedy with masking
+int select_action(const double* probabilities, double current_epsilon) {
+    int legal_actions[NN_OUTPUT_SIZE];
+    int num_legal = 0;
+    
+    // 1. Determine all legal actions from the current state (Action Masking)
+    for (int i = 0; i < NN_OUTPUT_SIZE; i++) {
+        if (is_potential_move_legal(state.robot.x, state.robot.y, i)) {
+            legal_actions[num_legal++] = i;
+        }
+    }
+
+    if (num_legal == 0) return ACTION_INVALID; 
+
+    // 2. Epsilon-Greedy Logic
+    double r = check_double((double)rand() / RAND_MAX, "rand_action_ep", "select_action");
+
+    if (r < current_epsilon) {
+        // EXPLORE: Choose a random LEGAL action
+        int random_index = rand() % num_legal;
+        return legal_actions[random_index];
+    } else {
+        // EXPLOIT: Choose the policy's best LEGAL action
+        int best_action = -1;
+        double max_prob = -2.0; // Max prob can be near 1/4 = 0.25
+
+        for (int i = 0; i < NN_OUTPUT_SIZE; i++) {
+            // Check if action 'i' is in the legal_actions list
+            bool is_legal = false;
+            for(int j = 0; j < num_legal; j++) {
+                if (legal_actions[j] == i) {
+                    is_legal = true;
+                    break;
+                }
+            }
+
+            if (is_legal && probabilities[i] > max_prob) {
+                max_prob = probabilities[i];
+                best_action = i;
+            }
+        }
+        
+        // Safety fallback 
+        if (best_action == -1) return legal_actions[0]; 
+
+        return best_action;
+    }
 }
 
 void get_state_features(double* input, double* min_dist_to_goal_ptr) {
@@ -453,18 +531,15 @@ double calculate_reward(double old_min_dist_to_goal, int diamonds_collected_this
         }
     }
     
-    // Progress Reward
+    // Progress Reward (Dense reward shaping)
     double min_dist_to_goal;
     double dummy_input[NN_INPUT_SIZE];
     get_state_features(dummy_input, &min_dist_to_goal); 
     
     double distance_change = old_min_dist_to_goal - min_dist_to_goal;
     
-    if (distance_change > 0) {
-        reward += REWARD_PROGRESS_SCALE * distance_change;
-    } else {
-        reward += REWARD_PROGRESS_SCALE * distance_change; 
-    }
+    // Encourage getting closer, penalize getting further (scaled by distance change)
+    reward += REWARD_PROGRESS_SCALE * distance_change;
     
     return check_double(reward, "final_reward", "calc_reward");
 }
@@ -479,7 +554,7 @@ void apply_action(Robot* robot, int action_index) {
         case ACTION_DOWN:  dy = MOVE_STEP_SIZE;  break;
         case ACTION_LEFT:  dx = -MOVE_STEP_SIZE; break; 
         case ACTION_RIGHT: dx = MOVE_STEP_SIZE;  break; 
-        case ACTION_INVALID: break;
+        case ACTION_INVALID: return;
     }
 
     robot->x += dx;
@@ -552,26 +627,39 @@ void update_game(bool is_training_run, bool expert_run) {
     double probabilities[NN_OUTPUT_SIZE];
     nn_policy_forward(&nn, input, probabilities, logit_output);
 
-    int action_index = select_action(probabilities);
-
-    apply_action(robot, action_index);
-
-    int diamonds_collected = check_collision(robot);
-    
-    double reward = calculate_reward(old_min_dist_to_goal, diamonds_collected, expert_run);
-    
-    if (is_training_run && episode_buffer.count < MAX_EPISODE_STEPS) {
-        EpisodeStep step;
-        memcpy(step.input, input, NN_INPUT_SIZE * sizeof(double));
-        step.action_index = action_index;
-        step.reward = reward;
-        
-        episode_buffer.steps[episode_buffer.count] = step;
-        episode_buffer.count++;
-        episode_buffer.total_score += reward;
+    // Epsilon decay logic
+    double current_epsilon = EPSILON_END;
+    if (current_episode < EPSILON_DECAY_EPISODES) {
+        double decay_rate = (EPSILON_START - EPSILON_END) / EPSILON_DECAY_EPISODES;
+        current_epsilon = EPSILON_START - decay_rate * current_episode;
     }
     
-    step_count++;
+    int action_index = select_action(probabilities, current_epsilon);
+    
+    if (action_index == ACTION_INVALID) {
+        // If the agent is completely trapped, terminate the episode (should be rare)
+        robot->is_alive = false;
+        step_count++; // Still counts as a step/turn
+    } else {
+        apply_action(robot, action_index);
+
+        int diamonds_collected = check_collision(robot);
+        
+        double reward = calculate_reward(old_min_dist_to_goal, diamonds_collected, expert_run);
+        
+        if (is_training_run && episode_buffer.count < MAX_EPISODE_STEPS) {
+            EpisodeStep step;
+            memcpy(step.input, input, NN_INPUT_SIZE * sizeof(double));
+            step.action_index = action_index;
+            step.reward = reward;
+            
+            episode_buffer.steps[episode_buffer.count] = step;
+            episode_buffer.count++;
+            episode_buffer.total_score += reward;
+        }
+        
+        step_count++;
+    }
 }
 
 void run_reinforce_training() {
@@ -599,11 +687,8 @@ void run_reinforce_training() {
 
     // 3. Train the Network 
     for (int i = 0; i < episode_buffer.count; i++) {
-        // Calculate the normalized advantage (A_t = G_t - B) / std_dev
         double Gt = (returns[i] - mean_return) / std_dev; 
         
-        // Pass -Gt because the formula is typically used for loss minimization, but we 
-        // minimize negative advantage for positive reinforcement.
         nn_reinforce_train(&nn, 
                            episode_buffer.steps[i].input, 
                            episode_buffer.steps[i].action_index, 
@@ -646,7 +731,7 @@ void print_episode_stats(double train_time_ms, bool is_expert) {
 }
 
 
-// --- Pathfinding and Expert Training Functions ---
+// --- Pathfinding and Expert Training Functions (for Imitation Learning component) ---
 
 double col_to_x(int c) { return c * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
 double row_to_y(int r) { return r * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
@@ -966,9 +1051,10 @@ int main() {
         action_history[i] = -1; 
     }
 
-    printf("--- RL 2D Robot Collector Simulation (EXPERT PRE-TRAIN) ---\n");
-    printf("Input Size: %d, Hidden Size: %d, Output Size: %d\n", NN_INPUT_SIZE, NN_HIDDEN_SIZE, NN_OUTPUT_SIZE);
-    printf("Learning Rate: %.4f, Discount Factor (Gamma): %.2f\n", NN_LEARNING_RATE, GAMMA);
+    printf("--- RL 2D Robot Collector Simulation (IMPROVED EXPLORATION & CAPACITY) ---\n");
+    printf("Architecture: %d-%d-%d (Hidden units increased)\n", NN_INPUT_SIZE, NN_HIDDEN_SIZE, NN_OUTPUT_SIZE);
+    printf("Learning Rate: %.4f, Discount Factor (Gamma): %.2f (Increased)\n", NN_LEARNING_RATE, GAMMA);
+    printf("Exploration: Epsilon-Greedy (Start %.2f, End %.2f, Decay over %d episodes) + Action Masking\n", EPSILON_START, EPSILON_END, EPSILON_DECAY_EPISODES);
     printf("Training will run for 3 minutes (180 seconds). Stats printed every 50 episodes.\n");
 
     // --- EXPERT PRE-TRAINING PHASE ---
@@ -996,7 +1082,7 @@ int main() {
         
         double train_time_ms = (double)(train_end - train_start) * 1000.0 / CLOCKS_PER_SEC;
 
-        // MODIFIED: Print every 50 episodes for significantly less output
+        // Print every 50 episodes for less output
         if (current_episode % 50 == 0) { 
             print_episode_stats(train_time_ms, false);
         }
