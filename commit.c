@@ -24,7 +24,7 @@
 #else
     #include <sys/socket.h>
     #include <netinet/in.h>
-    #include <netdb.h> // <-- FIX: Added to define struct addrinfo and getaddrinfo/freeaddrinfo
+    #include <netdb.h> // <-- Essential for addrinfo, getaddrinfo, and gai_strerror
     #include <unistd.h> // for close()
 #endif
 
@@ -160,8 +160,12 @@ int tcp_connect(const char *host, int port) {
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
 
-    if (getaddrinfo(host, port_str, &hints, &servinfo) != 0) {
-        fprintf(stderr, "tcp_connect error: getaddrinfo failed for %s. %s\n", host, gai_strerror(getaddrinfo(host, port_str, &hints, &servinfo)));
+    // Call getaddrinfo once and store the status
+    int status = getaddrinfo(host, port_str, &hints, &servinfo);
+    
+    if (status != 0) {
+        // FIX: Use the 'status' code from the single call to getaddrinfo
+        fprintf(stderr, "tcp_connect error: getaddrinfo failed for %s. %s\n", host, gai_strerror(status));
         return -1;
     }
 
@@ -234,10 +238,7 @@ void *ssl_connect(int socket_fd) {
         return NULL;
     }
 
-    // NOTE: In a clean program, SSL_CTX_free is only called after all SSL objects
-    // associated with it are freed. We rely on the implicit linkage here.
     printf("NETWORK SUCCESS: TLS/SSL handshake completed.\n");
-    // We don't free ctx here, as SSL_free implicitly decrements its reference count.
     return (void *)ssl;
 }
 
@@ -264,13 +265,11 @@ int ssl_send(void *ssl_session, const char *buffer, size_t len) {
  */
 int ssl_recv(void *ssl_session, char *buffer, size_t len) {
     SSL *ssl = (SSL *)ssl_session;
-    // Attempt a single read
     int bytes_received = SSL_read(ssl, buffer, (int)len);
 
     if (bytes_received < 0) {
         int err = SSL_get_error(ssl, bytes_received);
         if (err == SSL_ERROR_ZERO_RETURN) {
-            // Connection closed gracefully
             return 0;
         }
         fprintf(stderr, "ssl_recv error: Failed to read data (SSL Error: %d).\n", err);
@@ -288,7 +287,6 @@ int ssl_recv(void *ssl_session, char *buffer, size_t len) {
 int ssl_disconnect(void *ssl_session) {
     SSL *ssl = (SSL *)ssl_session;
     if (ssl) {
-        // Initiate the close-notify alert
         SSL_shutdown(ssl);
         SSL_free(ssl);
         printf("NETWORK CLEANUP: TLS/SSL session disconnected.\n");
@@ -390,18 +388,14 @@ int main(void) {
     // 4d. Receive Response
     char response_buffer[4096];
     memset(response_buffer, 0, sizeof(response_buffer));
-    // We might need to loop here for a full response in a real client, but for simplicity, we try a single read.
     int bytes_received = ssl_recv(ssl_session, response_buffer, sizeof(response_buffer) - 1);
 
     if (bytes_received > 0) {
-        // Look for the HTTP status line to check for success (201 Created)
         if (strncmp(response_buffer, "HTTP/1.1 201 Created", 18) == 0) {
             printf("5. HTTP Commit SUCCESS: Received 201 Created response.\n");
             return_code = EXIT_SUCCESS;
         } else {
-             // Extract and report the actual status code
              char status_line[128] = {0};
-             // Find the end of the first line (the status line)
              char *end_of_line = strstr(response_buffer, "\r\n");
              size_t len_to_copy = end_of_line ? (size_t)(end_of_line - response_buffer) : bytes_received;
 
