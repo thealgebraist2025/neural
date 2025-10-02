@@ -30,7 +30,7 @@ jobs:
         # -lssl -lcrypto: Link with the OpenSSL libraries.
         # Note: The C code uses POSIX sockets which are generally available on Linux without an extra flag.
         run: |
-          gcc -std=c99 github_commit_manual.c -o github_committer -Wall -Wextra -lssl -lcrypto
+          gcc -std=c99 commit.c -o commit -Wall -Wextra -lssl -lcrypto
 
       - name: Test Compiled Executable (Simulated Run)
         # Verify the executable was created.
@@ -42,7 +42,7 @@ jobs:
         run: |
           echo "Attempting a simulated run to check for successful linking and placeholder token check..."
           # The exit code is expected to be non-zero (EXIT_FAILURE) because the placeholder token is used.
-          ./github_committer || echo "Test passed: Executable failed with expected exit code (due to placeholder token)."
+          ./commit || echo "Test passed: Executable failed with expected exit code (due to placeholder token)."
         env:
           GITHUB_TOKEN: "YOUR_GITHUB_PERSONAL_ACCESS_TOKEN" # Explicitly use the placeholder token
 
@@ -50,6 +50,6 @@ jobs:
         # Upload the compiled binary as a workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: github-committer-linux
-          path: github_committer
+          name: commit-linux
+          path: commit
           retention-days: 7
