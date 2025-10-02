@@ -51,6 +51,8 @@ const char* action_names[NN_OUTPUT_SIZE] = {"UP", "DOWN", "LEFT", "RIGHT"};
 #define UNITTEST_MAX_STEPS 20 
 #define UNITTEST_PROGRESS_REWARD 1.0 
 #define UNITTEST_STEP_PENALTY -0.1 
+#define UNITTEST_CRASH_PENALTY -5.0   // NY: Mindre straf for Unit Test
+#define UNITTEST_GOAL_REWARD 50.0     // NY: Klar succesbelønning for Unit Test
 
 // --- Data Structures ---
 typedef struct { double x, y; double w, h; } Obstacle;
@@ -78,7 +80,6 @@ int step_count = 0;
 time_t last_print_time = 0; 
 
 // --- FORWARD DECLARATIONS TIL FEJLFINDING ---
-// Disse funktioner er defineret længere nede, men kaldes tidligt (f.eks. i check_collision)
 bool is_point_legal(double x, double y);
 bool is_point_in_rect(double px, double py, double rx, double ry, double rw, double rh);
 
@@ -208,9 +209,8 @@ void nn_init(NeuralNetwork* nn) {
     nn->weights_ih = matrix_create(NN_HIDDEN_SIZE, NN_INPUT_SIZE);
     nn->weights_ho = matrix_create(NN_OUTPUT_SIZE, NN_HIDDEN_SIZE);
     nn->bias_h = (double*)malloc(NN_HIDDEN_SIZE * sizeof(double));
-    nn->bias_o = (double*)malloc(NN_OUTPUT_SIZE * sizeof(double));
-
     for (int i = 0; i < NN_HIDDEN_SIZE; i++) nn->bias_h[i] = check_double((((double)rand() / RAND_MAX) * 2.0 - 1.0) * 0.01, "bias_h_val", "nn_init");
+    nn->bias_o = (double*)malloc(NN_OUTPUT_SIZE * sizeof(double));
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) nn->bias_o[i] = check_double((((double)rand() / RAND_MAX) * 2.0 - 1.0) * 0.01, "bias_o_val", "nn_init");
 }
 
@@ -551,21 +551,28 @@ double calculate_reward(double old_min_dist_to_goal, int diamonds_collected_this
     double reward;
     Robot* robot = &state.robot;
     double progress_scale;
+    double crash_penalty; 
     double step_penalty;
+    double success_reward;
     
     if (is_unittest) {
         // Use high-signal rewards for the minimal test
         reward = 0.0; // Start neutral
         progress_scale = UNITTEST_PROGRESS_REWARD;
         step_penalty = UNITTEST_STEP_PENALTY;
+        crash_penalty = UNITTEST_CRASH_PENALTY; // BRUG NY UNIT TEST PENALTY
+        success_reward = UNITTEST_GOAL_REWARD;
     } else {
         // Use normal, complex rewards for the full simulation/expert
         reward = expert_run ? 5.0 : REWARD_PER_STEP;
         progress_scale = REWARD_PROGRESS_SCALE;
         step_penalty = REWARD_PER_STEP;
+        crash_penalty = REWARD_CRASH; // BRUG FULD SIMULERING PENALTY
+        success_reward = REWARD_SUCCESS;
     }
     
-    if (!robot->is_alive) return REWARD_CRASH;
+    // CRASH CHECK FLYTTET OG BRUGER LOKALT DEFINERET PENALTY
+    if (!robot->is_alive) return crash_penalty; 
     
     if (diamonds_collected_this_step > 0) {
         reward += REWARD_COLLECT_DIAMOND * diamonds_collected_this_step;
@@ -595,7 +602,7 @@ double calculate_reward(double old_min_dist_to_goal, int diamonds_collected_this
     
     // Terminal Rewards (Overwrite progress/step rewards for the final step)
     if (robot->has_reached_target) {
-        reward = REWARD_SUCCESS;
+        reward = success_reward; // BRUGER LOKALT DEFINERET SUCCESS REWARD
         // In full sim, penalize if diamonds are missed
         if (!is_unittest && state.total_diamonds < NUM_DIAMONDS) {
              if (NUM_DIAMONDS > 0) reward -= (NUM_DIAMONDS - state.total_diamonds) * 50.0; 
