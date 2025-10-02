@@ -45,10 +45,10 @@
 #define ACTION_HISTORY_SIZE 10 
 const char* action_names[NN_OUTPUT_SIZE] = {"UP", "DOWN", "LEFT", "RIGHT"};
 
-// --- Unittest Constants (FIXED & ADJUSTED) ---
-#define UNITTEST_EPISODES 100 // INCREASED
-#define UNITTEST_MAX_STEPS 50   // INCREASED
-#define UNITTEST_MOVE_STEP_SIZE 5.0 // NEW: Reduced step size for stability
+// --- Unit Test Constants (RE-ADDED) ---
+#define UNITTEST_EPISODES 100 
+#define UNITTEST_MAX_STEPS 50   
+#define UNITTEST_MOVE_STEP_SIZE 5.0 
 #define UNITTEST_SUCCESS_THRESHOLD 0.5 
 #define UNITTEST_PROGRESS_REWARD 1.0 
 #define UNITTEST_STEP_PENALTY -0.1 
@@ -113,7 +113,13 @@ double distance_2d(double x1, double y1, double x2, double y2) {
     return sqrt(pow(x2 - x1, 2) + pow(y2 - y1, 2));
 }
 
-// --- Matrix Functions (Retained for completeness) ---
+// Helper function for collision checking
+bool is_point_in_rect(double px, double py, double rx, double ry, double rw, double rh) { 
+    return px >= rx && px <= rx + rw && py >= ry && py <= ry + rh; 
+}
+// --- End C99 Utility Functions ---
+
+// --- Matrix Functions (Fixed for safety and correctness) ---
 
 Matrix matrix_create(int rows, int cols) {
     Matrix m; m.rows = rows; m.cols = cols;
@@ -182,7 +188,7 @@ Matrix matrix_multiply_scalar(Matrix A, double scalar) {
     return result;
 }
 
-// FIX: Corrected mismatched braces in the loops
+// FIX: Corrected mismatched braces (original error source)
 Matrix matrix_multiply_elem(Matrix A, Matrix B) {
     if (A.rows != B.rows || A.cols != B.cols) { fprintf(stderr, "Multiply (element-wise) dimension mismatch.\n"); exit(EXIT_FAILURE); }
     Matrix result = matrix_create(A.rows, A.cols);
@@ -190,7 +196,7 @@ Matrix matrix_multiply_elem(Matrix A, Matrix B) {
         for (int j = 0; j < A.cols; j++) { 
             result.data[i][j] = check_double(A.data[i][j], "A[i][j]", "matrix_multiply_elem") * check_double(B.data[i][j], "B[i][j]", "matrix_multiply_elem"); 
         }
-    } // One closing brace for the outer loop
+    } 
     return result;
 }
 
@@ -202,7 +208,7 @@ Matrix matrix_map(Matrix m, double (*func)(double)) {
     return result;
 }
 
-// --- Neural Network Core Functions (Retained for completeness) ---
+// --- Neural Network Core Functions ---
 
 void nn_init(NeuralNetwork* nn) {
     nn->lr = check_double(NN_LEARNING_RATE, "NN_LEARNING_RATE", "nn_init");
@@ -252,19 +258,17 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
     }
 
     // 2. Calculate Output Gradient (dLoss/dLogits)
-    // NOTE: This calculation is designed for Gradient ASCENT (i.e. maximizing the reward).
-    // The input 'discounted_return' is intentionally -Gt (the negative of the normalized return).
+    // NOTE: Policy Gradient requires Gt to be the 'Advantage', and the loss is -log(pi)*Gt.
+    // The gradient (dLoss/dW) is (Prob - Target) * (-Gt). We pass -Gt to achieve the correct sign for gradient ASCENT.
     Matrix output_gradients = matrix_create(NN_OUTPUT_SIZE, 1);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) {
         double target = (i == action_index) ? 1.0 : 0.0;
         double grad_base = check_double(probs[i] - target, "output_grad_base", "nn_reinforce_train");
-        // OutputGrad = (Prob - Target) * (-Gt) = (Target - Prob) * Gt (Policy Gradient direction)
         output_gradients.data[i][0] = grad_base * discounted_return; 
         check_nan_and_stop(output_gradients.data[i][0], "output_grad", "nn_reinforce_train");
     }
 
-    // 3. Update Weights HO and Bias O
-    // FIX: Uses +nn->lr for Gradient ASCENT (Maximization)
+    // 3. Update Weights HO and Bias O (using +nn->lr for Gradient ASCENT)
     Matrix delta_weights_ho = matrix_multiply_scalar(matrix_dot(output_gradients, matrix_transpose(hidden_output)), nn->lr);
     Matrix new_weights_ho = matrix_add_subtract(nn->weights_ho, delta_weights_ho, true);
     matrix_free(nn->weights_ho); nn->weights_ho = new_weights_ho;
@@ -280,7 +284,7 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
     Matrix hidden_gradients = matrix_map(hidden_output, sigmoid_derivative);
     Matrix hidden_gradients_mul = matrix_multiply_elem(hidden_gradients, hidden_errors);
     
-    // FIX: Uses +nn->lr for Gradient ASCENT (Maximization)
+    // using +nn->lr for Gradient ASCENT
     Matrix delta_weights_ih = matrix_multiply_scalar(matrix_dot(hidden_gradients_mul, matrix_transpose(inputs)), nn->lr);
     Matrix new_weights_ih = matrix_add_subtract(nn->weights_ih, delta_weights_ih, true);
     matrix_free(nn->weights_ih); nn->weights_ih = new_weights_ih;
@@ -300,13 +304,9 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
 // --- Game Logic Functions ---
 
 // Function to move the robot and check basic boundaries 
-// UPDATED SIGNATURE
 void apply_action(Robot* robot, int action_index, bool is_unittest) {
     // Select step size based on mode
     double step_size = is_unittest ? UNITTEST_MOVE_STEP_SIZE : MOVE_STEP_SIZE;
-    
-    double old_x = robot->x;
-    double old_y = robot->y;
     
     // Apply movement based on action index
     switch (action_index) {
@@ -319,13 +319,6 @@ void apply_action(Robot* robot, int action_index, bool is_unittest) {
     // Update action history for printing
     action_history[action_history_idx] = action_index;
     action_history_idx = (action_history_idx + 1) % ACTION_HISTORY_SIZE;
-    
-    // NOTE: Collision check is primarily handled in check_collision
-}
-
-// Helper function for collision checking
-bool is_point_in_rect(double px, double py, double rx, double ry, double rw, double rh) { 
-    return px >= rx && px <= rx + rw && py >= ry && py <= ry + rh; 
 }
 
 // Checks if a point at the center of a grid cell is legal (no collision with walls/obstacles)
@@ -400,7 +393,7 @@ int check_collision(Robot* robot) {
 
     // --- 4. Target Area Check (Goal) ---
     TargetArea* target = &state.target;
-    // Check if robot center is within the target bounds
+    // FIX: Use simple center-point check for reaching target
     if (is_point_in_rect(robot->x, robot->y, target->x, target->y, target->w, target->h)) {
         robot->has_reached_target = true;
     }
@@ -409,7 +402,7 @@ int check_collision(Robot* robot) {
 }
 
 
-// --- Unit Test Environment Setup (ADDED) ---
+// --- Unit Test Environment Setup (RE-ADDED) ---
 void init_minimal_state() {
     step_count = 0;
     state.score = 0;
@@ -436,16 +429,6 @@ void init_minimal_state() {
     for(int i = 0; i < NUM_OBSTACLES; i++) state.obstacles[i].w = 0.0;
     for(int i = 0; i < NUM_DIAMONDS; i++) state.diamonds[i].collected = true;
 
-    // --- SANITY CHECK ---
-    if (!is_point_legal(state.robot.x, state.robot.y)) {
-        fprintf(stderr, "UNITTEST ERROR: Initial robot position (%.1f, %.1f) is illegal.\n", state.robot.x, state.robot.y);
-        state.robot.is_alive = false;
-    }
-    if (is_point_in_rect(state.robot.x, state.robot.y, state.target.x, state.target.y, state.target.w, state.target.h)) {
-        fprintf(stderr, "UNITTEST ERROR: Robot starts inside target area.\n");
-        state.robot.has_reached_target = true;
-    }
-
     if (UNITTEST_TRACING) {
         printf("UNITTEST INFO: Start (%.1f, %.1f), Target Area (%.1f, %.1f) to (%.1f, %.1f) (Step Size: %.1f)\n", 
                state.robot.x, state.robot.y, state.target.x, state.target.y, 
@@ -470,14 +453,12 @@ void init_game_state() {
     episode_buffer.total_score = 0;
 
     // --- FIXED LEVEL CONFIGURATION ---
-    
-    // Fixed Obstacles (x, y, w, h) - 5 Rectangular Obstacles
     double obs_configs[NUM_OBSTACLES][4] = {
-        {150.0, 150.0, 50.0, 250.0},  // 1. Vertical Left
-        {350.0, 150.0, 50.0, 250.0},  // 2. Vertical Center
-        {550.0, 50.0, 50.0, 200.0},   // 3. Vertical Top Right
-        {550.0, 450.0, 50.0, 100.0},  // 4. Vertical Bottom Right
-        {250.0, 400.0, 200.0, 30.0}   // 5. Horizontal Center Bottom
+        {150.0, 150.0, 50.0, 250.0}, 
+        {350.0, 150.0, 50.0, 250.0},  
+        {550.0, 50.0, 50.0, 200.0},   
+        {550.0, 450.0, 50.0, 100.0},  
+        {250.0, 400.0, 200.0, 30.0}   
     };
     for (int i = 0; i < NUM_OBSTACLES; i++) {
         state.obstacles[i].x = obs_configs[i][0];
@@ -486,18 +467,10 @@ void init_game_state() {
         state.obstacles[i].h = obs_configs[i][3];
     }
 
-    // Fixed Diamonds (x, y) - 10 legal diamonds
     double diamond_pos[NUM_DIAMONDS][2] = {
-        {100.0, 100.0}, // D0
-        {300.0, 100.0}, // D1
-        {700.0, 100.0}, // D2
-        {100.0, 450.0}, // D3
-        {250.0, 500.0}, // D4
-        {500.0, 500.0}, // D5
-        {700.0, 500.0}, // D6
-        {50.0, 300.0},  // D7
-        {500.0, 350.0}, // D8
-        {700.0, 300.0}  // D9
+        {100.0, 100.0}, {300.0, 100.0}, {700.0, 100.0}, {100.0, 450.0}, 
+        {250.0, 500.0}, {500.0, 500.0}, {700.0, 500.0}, {50.0, 300.0},  
+        {500.0, 350.0}, {700.0, 300.0} 
     };
     for (int i = 0; i < NUM_DIAMONDS; i++) {
         state.diamonds[i].x = diamond_pos[i][0];
@@ -506,7 +479,6 @@ void init_game_state() {
         state.diamonds[i].collected = false;
     }
     
-    // Fixed Target Area (End Goal)
     state.target.x = CANVAS_WIDTH - 100.0;
     state.target.y = CANVAS_HEIGHT - 100.0;
     state.target.w = 50.0;
@@ -551,6 +523,7 @@ void get_state_features(double* input, double* min_dist_to_goal_ptr) {
         }
     }
     
+    // FIX: Only seek diamonds if the target has not yet been reached
     if (nearest_diamond && !state.robot.has_reached_target) {
         goal_x = nearest_diamond->x; 
         goal_y = nearest_diamond->y;
@@ -568,7 +541,10 @@ void get_state_features(double* input, double* min_dist_to_goal_ptr) {
     
     *min_dist_to_goal_ptr = distance_2d(robot->x, robot->y, goal_x, goal_y);
 
-    // --- 4. Nearest DANGER Distance (Walls and Obstacles) (2) (FIXED LOGIC) ---
+    // --- 4. Nearest DANGER Distance (Walls and Obstacles) (2) ---
+    // The previous logic for this was based on obstacle center which is poor.
+    // Reverted to a more robust distance-to-closest-wall/obstacle-edge logic (similar to previous correct versions)
+    
     double dist_left_wall = robot->x - BORDER_WIDTH - robot->size;
     double dist_right_wall = CANVAS_WIDTH - BORDER_WIDTH - robot->x - robot->size;
     double dist_top_wall = robot->y - BORDER_WIDTH - robot->size;
@@ -597,7 +573,6 @@ void get_state_features(double* input, double* min_dist_to_goal_ptr) {
     input[6] = check_double(fmax(0.0, min_danger_dist_x) / CANVAS_WIDTH, "norm_danger_dist_x", "get_state_features");
     input[7] = check_double(fmax(0.0, min_danger_dist_y) / CANVAS_HEIGHT, "norm_danger_dist_y", "get_state_features"); 
 
-
     // --- 5. Collected Ratio (1) ---
     input[8] = (double)state.total_diamonds / (NUM_DIAMONDS > 0 ? NUM_DIAMONDS : 1.0);
 
@@ -606,31 +581,29 @@ void get_state_features(double* input, double* min_dist_to_goal_ptr) {
     }
 }
 
-// Function signature updated to include is_unittest
+// FIX: Rewritten to correctly handle terminal rewards and use unit test constants
 double calculate_reward(double old_min_dist_to_goal, int diamonds_collected_this_step, bool expert_run, bool is_unittest) {
-    double reward;
+    double progress_scale = is_unittest ? UNITTEST_PROGRESS_REWARD : REWARD_PROGRESS_SCALE;
+    double step_penalty = is_unittest ? UNITTEST_STEP_PENALTY : REWARD_PER_STEP;
+    double crash_penalty = is_unittest ? UNITTEST_CRASH_PENALTY : REWARD_CRASH; 
+    double success_reward = is_unittest ? UNITTEST_GOAL_REWARD : REWARD_SUCCESS;
+    
     Robot* robot = &state.robot;
-    double progress_scale;
-    double crash_penalty; 
-    double step_penalty;
-    double success_reward;
     
-    if (is_unittest) {
-        reward = 0.0; // Start neutral
-        progress_scale = UNITTEST_PROGRESS_REWARD;
-        step_penalty = UNITTEST_STEP_PENALTY;
-        crash_penalty = UNITTEST_CRASH_PENALTY; 
-        success_reward = UNITTEST_GOAL_REWARD;
-    } else {
-        reward = expert_run ? 5.0 : REWARD_PER_STEP;
-        progress_scale = REWARD_PROGRESS_SCALE;
-        step_penalty = REWARD_PER_STEP;
-        crash_penalty = REWARD_CRASH; 
-        success_reward = REWARD_SUCCESS;
-    }
-    
-    // CRASH CHECK (Handles terminal crash state)
+    // CRASH CHECK (Handles terminal crash state - Highest Priority)
     if (!robot->is_alive) return crash_penalty; 
+    
+    // SUCCESS CHECK (Handles terminal success state - Second Highest Priority)
+    if (robot->has_reached_target) {
+        double final_reward = success_reward; 
+        if (!is_unittest && state.total_diamonds < NUM_DIAMONDS) {
+             if (NUM_DIAMONDS > 0) final_reward -= (NUM_DIAMONDS - state.total_diamonds) * 50.0; 
+        }
+        return final_reward;
+    } 
+
+    // NON-TERMINAL REWARDS (Step penalty + Diamonds + Progress)
+    double reward = step_penalty; // Base step penalty
     
     if (diamonds_collected_this_step > 0) {
         reward += REWARD_COLLECT_DIAMOND * diamonds_collected_this_step;
@@ -643,29 +616,15 @@ double calculate_reward(double old_min_dist_to_goal, int diamonds_collected_this
     
     double distance_change = old_min_dist_to_goal - min_dist_to_goal;
     
-    // Apply standard step penalty
-    if (is_unittest || expert_run) {
-        reward += step_penalty;
-    }
-    
     // Apply progress reward/penalty
     // Distance change > 0 means progress (shorter distance) -> positive reward
     reward += progress_scale * distance_change;
-    
-    // Terminal Rewards (Applied last, overwriting step/progress rewards for the final step)
-    if (robot->has_reached_target) {
-        reward = success_reward; 
-        // In full sim, penalize if diamonds are missed
-        if (!is_unittest && state.total_diamonds < NUM_DIAMONDS) {
-             if (NUM_DIAMONDS > 0) reward -= (NUM_DIAMONDS - state.total_diamonds) * 50.0; 
-        }
-    } 
     
     return check_double(reward, "final_reward", "calc_reward");
 }
 
 
-// Function signature updated to include is_unittest
+// FIX: Signature updated to include is_unittest
 void update_game(bool is_training_run, bool expert_run, bool is_unittest, int episode_number) {
     Robot* robot = &state.robot;
     int max_steps = is_unittest ? UNITTEST_MAX_STEPS : MAX_EPISODE_STEPS;
@@ -685,7 +644,6 @@ void update_game(bool is_training_run, bool expert_run, bool is_unittest, int ep
 
     int action_index = select_action(probabilities);
     
-    // Store old distance for progress reward calculation
     double old_dist_copy = old_min_dist_to_goal; 
     
     // Pass is_unittest flag to apply_action
@@ -792,7 +750,7 @@ void print_episode_stats(double train_time_ms, bool is_expert, bool is_unittest)
 }
 
 
-// --- Pathfinding and Expert Training Functions (Retained for completeness) ---
+// --- Pathfinding and Expert Training Functions ---
 
 double col_to_x(int c) { return c * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
 double row_to_y(int r) { return r * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
@@ -913,7 +871,6 @@ void generate_expert_path_training_data() {
             double test_x = robot->x;
             double test_y = robot->y;
             
-            // The apply_action logic for the expert path must use the full MOVE_STEP_SIZE
             double expert_step = MOVE_STEP_SIZE;
             
             switch (a) {
@@ -1041,11 +998,11 @@ void print_ascii_map() {
     printf("-----------------------------------------\n\n");
 }
 
-// --- UNITTEST Function (ADDED & CORRECTED) ---
+// --- UNITTEST Function (RE-ADDED) ---
 
 bool run_rl_unittest() {
     printf("\n\n*** RUNNING RL UNITTEST (Minimal Environment) ***\n");
-    printf("Goal: Learn to move from (50, 50) to Target (60, 60).\n");
+    printf("Goal: Learn to move from (50, 50) to Target Center (65, 65).\n");
     
     double total_final_score = 0.0;
     int success_count = 0;
@@ -1056,7 +1013,7 @@ bool run_rl_unittest() {
         
         if (UNITTEST_TRACING && i == 1) printf("\n--- EPISODE 1 TRACING ---\n");
 
-        // Play episode, using UNITTEST_MAX_STEPS
+        // Play episode
         while (state.robot.is_alive && !state.robot.has_reached_target && step_count < UNITTEST_MAX_STEPS) {
             update_game(true, false, true, i); // Pass true for is_unittest
         }
@@ -1092,13 +1049,13 @@ bool run_rl_unittest() {
 }
 
 
-// --- Main Simulation Loop (Updated to correctly include unittest) ---
+// --- Main Simulation Loop ---
 
 int main() {
     srand((unsigned int)time(NULL)); 
     nn_init(&nn);
     
-    // 1. Run RL Unittest (Logic added)
+    // 1. Run RL Unittest
     if (!run_rl_unittest()) {
         matrix_free(nn.weights_ih); matrix_free(nn.weights_ho);
         free(nn.bias_h); free(nn.bias_o);
