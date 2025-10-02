@@ -12,7 +12,7 @@ jobs:
       uses: actions/checkout@v2
 
     - name: Build with gcc
-      run: gcc -O3 -std=c99 -lm spaceship.c -o spaceship
+      run: gcc -O3 -std=c99  spaceship.c -lm -o spaceship
 
     - name: Run the spaceship program
       run: ./spaceship
