@@ -3,6 +3,7 @@
 #include <math.h>
 #include <time.h>
 #include <stdbool.h>
+#include <string.h>
 
 // --- Fix for M_PI undeclared error ---
 #ifndef M_PI
@@ -12,53 +13,43 @@
 // --- Global Constants ---
 #define CANVAS_WIDTH 800.0
 #define CANVAS_HEIGHT 600.0
-#define GROUND_HEIGHT 50.0
+#define BORDER_WIDTH 10.0 // Wall thickness for collision check
 
-// Tunnel & Ship Constants
-#define SHIP_FIXED_X (CANVAS_WIDTH / 2.0)
-#define LANDING_PAD_Y (CANVAS_HEIGHT - GROUND_HEIGHT)
-
-// Physics Constants (Unchanged)
-#define GRAVITY 0.05
-#define THRUST_POWER 0.35 
-#define MAX_VELOCITY_FOR_NORM 15.0
-#define CRITICAL_LANDING_VELOCITY 1.0 
-
-// NN & RL Constants (NN_HIDDEN_SIZE reduced for faster training)
-#define NN_INPUT_SIZE 7 
-#define NN_HIDDEN_SIZE 16 // Reduced from 32
-#define NN_OUTPUT_SIZE 2 // 0:Thrust Up, 1:No Thrust
-#define NN_LEARNING_RATE 0.005
-#define GAMMA 0.99 
-
-// Game Constants
+// Game/Physics Constants
+#define MOVE_STEP_SIZE 15.0 // Robot moves this distance per action
+#define MAX_EPISODE_STEPS 50 // New move limit
 #define NUM_OBSTACLES 5
-#define NUM_DIAMONDS 10
-#define SIMULATION_DT (1.0 / 60.0) 
+#define NUM_DIAMONDS 5
 
-// Reward Goals and Values (Unchanged)
-#define REWARD_PER_STEP -0.01 
-#define REWARD_CRASH -200.0
-#define REWARD_SAFE_LAND 50.0
-#define REWARD_SAFE_LAND_ALL_COLLECTED 500.0
-#define REWARD_COLLECT_DIAMOND 50.0
-#define REWARD_VELOCITY_PENALTY_SCALE -0.2 
-#define REWARD_OBSTACLE_PROXIMITY_SCALE -5.0 
-#define REWARD_DIAMOND_PROGRESS_SCALE 0.05 
+// NN & RL Constants
+// Input Size (9): Robot X, Robot Y, Target X, Target Y, Diamond dX, Diamond dY, Obstacle dX, Obstacle dY, Collected Ratio
+#define NN_INPUT_SIZE 9 
+#define NN_HIDDEN_SIZE 16 // Reduced for faster training
+#define NN_OUTPUT_SIZE 4  // 0:Up, 1:Down, 2:Left, 3:Right
+#define NN_LEARNING_RATE 0.005
+#define GAMMA 0.95 
+
+// Reward Goals and Values
+#define REWARD_PER_STEP -1.0 
+#define REWARD_CRASH -500.0
+#define REWARD_SUCCESS 1000.0
+#define REWARD_COLLECT_DIAMOND 100.0
+#define REWARD_PROGRESS_SCALE 0.01 // Small reward for reducing distance to goal
 
 // Action History Buffer
-#define ACTION_HISTORY_SIZE 15 
-const char* action_names[NN_OUTPUT_SIZE] = {"THRUST", "PASSIVE"};
+#define ACTION_HISTORY_SIZE 10 
+const char* action_names[NN_OUTPUT_SIZE] = {"UP", "DOWN", "LEFT", "RIGHT"};
 
 // --- Data Structures ---
-// (No changes to structures)
-typedef struct { double x, y; double w, h; double vx; } Obstacle;
+typedef struct { double x, y; double w, h; } Obstacle;
 typedef struct { double x, y; double size; bool collected; } Diamond;
-typedef struct { double x, y; double vy; double size; bool is_thrusting; bool is_alive; bool has_landed; } Ship;
-typedef struct { int score; int total_diamonds; Ship ship; Obstacle obstacles[NUM_OBSTACLES]; Diamond diamonds[NUM_DIAMONDS]; } GameState;
+typedef struct { double x, y; double w, h; } TargetArea;
+typedef struct { double x, y; double size; bool is_alive; bool has_reached_target; } Robot;
+typedef struct { int score; int total_diamonds; Robot robot; Obstacle obstacles[NUM_OBSTACLES]; Diamond diamonds[NUM_DIAMONDS]; TargetArea target; } GameState;
+
 typedef struct { int rows; int cols; double** data; } Matrix;
 typedef struct { double input[NN_INPUT_SIZE]; int action_index; double reward; } EpisodeStep;
-typedef struct { EpisodeStep steps[4000]; int count; double total_score; } Episode;
+typedef struct { EpisodeStep steps[MAX_EPISODE_STEPS]; int count; double total_score; } Episode;
 typedef struct { Matrix weights_ih; Matrix weights_ho; double* bias_h; double* bias_o; double lr; } NeuralNetwork;
 
 
@@ -69,25 +60,18 @@ Episode episode_buffer;
 int current_episode = 0;
 int action_history[ACTION_HISTORY_SIZE];
 int action_history_idx = 0; 
+int step_count = 0;
 
 // --- C99 Utility Functions ---
 void check_nan_and_stop(double value, const char* var_name, const char* context) {
-    if (isnan(value)) {
-        fprintf(stderr, "\n\nCRITICAL NAN ERROR: %s in %s is NaN. Stopping execution.\n", var_name, context);
-        exit(EXIT_FAILURE);
-    }
+    if (isnan(value)) { fprintf(stderr, "\n\nCRITICAL NAN ERROR: %s in %s is NaN. Stopping execution.\n", var_name, context); exit(EXIT_FAILURE); }
 }
 double check_double(double value, const char* var_name, const char* context) {
     check_nan_and_stop(value, var_name, context);
     return value;
 }
-double sigmoid(double x) {
-    return check_double(1.0 / (1.0 + exp(-x)), "sigmoid_output", "sigmoid");
-}
-double sigmoid_derivative(double y) {
-    double result = y * (1.0 - y);
-    return check_double(result, "sigmoid_deriv_output", "sigmoid_derivative");
-}
+double sigmoid(double x) { return check_double(1.0 / (1.0 + exp(-x)), "sigmoid_output", "sigmoid"); }
+double sigmoid_derivative(double y) { double result = y * (1.0 - y); return check_double(result, "sigmoid_deriv_output", "sigmoid_derivative"); }
 void softmax(const double* input, double* output, int size) {
     double max_val = input[0];
     for (int i = 1; i < size; i++) { if (input[i] > max_val) max_val = input[i]; }
@@ -98,13 +82,8 @@ void softmax(const double* input, double* output, int size) {
     }
     for (int i = 0; i < size; i++) { output[i] = check_double(output[i] / sum_exp, "softmax_output", "softmax"); }
 }
-double log_val(double x) {
-    if (x <= 1e-10) return log(1e-10);
-    return log(x);
-}
 
-// --- Matrix Functions ---
-
+// --- Matrix Functions (Same as previous version, omitted for brevity but included in the file block) ---
 Matrix matrix_create(int rows, int cols) {
     Matrix m; m.rows = rows; m.cols = cols;
     m.data = (double**)malloc(rows * sizeof(double*));
@@ -223,7 +202,6 @@ void nn_init(NeuralNetwork* nn) {
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) nn->bias_o[i] = check_double((((double)rand() / RAND_MAX) * 2.0 - 1.0) * 0.01, "bias_o_val", "nn_init");
 }
 
-// NN Forward Pass (Policy/Action Selection) - Logits and Probs
 void nn_policy_forward(NeuralNetwork* nn, const double* input_array, double* output_probabilities, double* logit_output) {
     Matrix inputs = array_to_matrix(input_array, NN_INPUT_SIZE);
     Matrix hidden = matrix_dot(nn->weights_ih, inputs);
@@ -238,11 +216,10 @@ void nn_policy_forward(NeuralNetwork* nn, const double* input_array, double* out
     matrix_free(inputs); matrix_free(hidden); matrix_free(hidden_output); matrix_free(output_logits_m);
 }
 
-// nn_reinforce_train implements backpropagation using the policy gradient method.
 void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action_index, double discounted_return) {
     Matrix inputs = array_to_matrix(input_array, NN_INPUT_SIZE);
     
-    // --- 1. Feedforward (Calculates intermediates) ---
+    // 1. Feedforward (Calculate intermediates)
     Matrix hidden = matrix_dot(nn->weights_ih, inputs);
     for (int i = 0; i < NN_HIDDEN_SIZE; i++) hidden.data[i][0] += nn->bias_h[i];
     Matrix hidden_output = matrix_map(hidden, sigmoid);
@@ -255,16 +232,14 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
     double probs[NN_OUTPUT_SIZE];
     softmax(logits, probs, NN_OUTPUT_SIZE);
 
-    // --- 2. Calculate Output Gradient (dLoss/dLogits) ---
-    // The core backpropagation step for Policy Gradient (REINFORCE)
+    // 2. Calculate Output Gradient (dLoss/dLogits) - Core Backprop Step
     Matrix output_gradients = matrix_create(NN_OUTPUT_SIZE, 1);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) {
         double target = (i == action_index) ? 1.0 : 0.0;
-        // The gradient is scaled by the negative of the discounted return (Advantage)
         output_gradients.data[i][0] = check_double(probs[i] - target, "output_grad_base", "nn_reinforce_train") * discounted_return;
     }
 
-    // --- 3. Update Weights HO and Bias O ---
+    // 3. Update Weights HO and Bias O
     Matrix delta_weights_ho = matrix_multiply_scalar(matrix_dot(output_gradients, matrix_transpose(hidden_output)), -nn->lr);
     Matrix new_weights_ho = matrix_add_subtract(nn->weights_ho, delta_weights_ho, true);
     matrix_free(nn->weights_ho); nn->weights_ho = new_weights_ho;
@@ -273,7 +248,7 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
         nn->bias_o[i] = check_double(nn->bias_o[i], "bias_o", "nn_train_upd") - check_double(output_gradients.data[i][0], "grad_o", "nn_train_upd") * nn->lr;
     }
 
-    // --- 4. Calculate Hidden Errors and Update Weights IH and Bias H (Backprop to Hidden Layer) ---
+    // 4. Calculate Hidden Errors and Update Weights IH and Bias H (Backprop to Hidden Layer)
     Matrix weights_ho_T = matrix_transpose(nn->weights_ho);
     Matrix hidden_errors = matrix_dot(weights_ho_T, output_gradients);
 
@@ -288,7 +263,7 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
         nn->bias_h[i] = check_double(nn->bias_h[i], "bias_h", "nn_train_upd") - check_double(hidden_gradients_mul.data[i][0], "grad_h", "nn_train_upd") * nn->lr;
     }
     
-    // --- 5. Cleanup ---
+    // 5. Cleanup
     matrix_free(inputs); matrix_free(hidden); matrix_free(hidden_output);
     matrix_free(output_logits_m); matrix_free(output_gradients); matrix_free(weights_ho_T);
     matrix_free(hidden_errors); matrix_free(hidden_gradients); matrix_free(hidden_gradients_mul);
@@ -298,17 +273,16 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
 // --- Game Logic Functions ---
 
 void init_game_state() {
+    step_count = 0;
     state.score = 0;
     state.total_diamonds = 0;
 
-    // Ship setup
-    state.ship.x = SHIP_FIXED_X;
-    state.ship.y = CANVAS_HEIGHT / 2.0; 
-    state.ship.vy = 0.0;
-    state.ship.size = 15.0;
-    state.ship.is_thrusting = false;
-    state.ship.is_alive = true;
-    state.ship.has_landed = false;
+    // Robot setup (Start position)
+    state.robot.x = 50.0;
+    state.robot.y = 50.0; 
+    state.robot.size = 10.0;
+    state.robot.is_alive = true;
+    state.robot.has_reached_target = false;
     
     // Reset episode buffer
     episode_buffer.count = 0;
@@ -316,36 +290,37 @@ void init_game_state() {
 
     // --- FIXED LEVEL CONFIGURATION ---
     
-    // Fixed Obstacles (No randomization, vx=0)
+    // Fixed Obstacles (x, y, w, h)
     double obs_configs[NUM_OBSTACLES][4] = {
-        // y, x, w, h
-        {120.0, 300.0, 200.0, 20.0},
-        {280.0, 450.0, 150.0, 20.0},
-        {420.0, 350.0, 100.0, 20.0},
-        {50.0, 380.0, 50.0, 20.0},
-        {520.0, 400.0, 120.0, 20.0}
+        {150.0, 150.0, 50.0, 250.0},
+        {350.0, 150.0, 50.0, 250.0},
+        {550.0, 50.0, 50.0, 200.0},
+        {550.0, 450.0, 50.0, 100.0},
+        {250.0, 400.0, 200.0, 30.0}
     };
-    
     for (int i = 0; i < NUM_OBSTACLES; i++) {
-        state.obstacles[i].y = check_double(obs_configs[i][0], "obs_y", "init_game");
-        state.obstacles[i].x = check_double(obs_configs[i][1], "obs_x", "init_game");
-        state.obstacles[i].w = check_double(obs_configs[i][2], "obs_w", "init_game");
-        state.obstacles[i].h = check_double(obs_configs[i][3], "obs_h", "init_game");
-        state.obstacles[i].vx = 0.0; // Fixed obstacles
+        state.obstacles[i].x = obs_configs[i][0];
+        state.obstacles[i].y = obs_configs[i][1];
+        state.obstacles[i].w = obs_configs[i][2];
+        state.obstacles[i].h = obs_configs[i][3];
     }
 
-    // Fixed Diamonds (Fixed X, spread vertically)
-    double diamond_y_positions[NUM_DIAMONDS] = {
-        100.0, 150.0, 200.0, 250.0, 300.0, 
-        350.0, 400.0, 450.0, 500.0, 550.0
+    // Fixed Diamonds (x, y)
+    double diamond_pos[NUM_DIAMONDS][2] = {
+        {100.0, 300.0}, {300.0, 100.0}, {500.0, 300.0}, {700.0, 100.0}, {700.0, 500.0}
     };
-    
     for (int i = 0; i < NUM_DIAMONDS; i++) {
-        state.diamonds[i].x = SHIP_FIXED_X; 
-        state.diamonds[i].y = check_double(diamond_y_positions[i], "diamond_y", "init_game");
-        state.diamonds[i].size = 5.0;
+        state.diamonds[i].x = diamond_pos[i][0];
+        state.diamonds[i].y = diamond_pos[i][1];
+        state.diamonds[i].size = 8.0;
         state.diamonds[i].collected = false;
     }
+    
+    // Fixed Target Area (End Goal)
+    state.target.x = CANVAS_WIDTH - 100.0;
+    state.target.y = CANVAS_HEIGHT - 100.0;
+    state.target.w = 50.0;
+    state.target.h = 50.0;
 }
 
 // Selects an action stochastically based on probabilities
@@ -358,179 +333,218 @@ int select_action(const double* probabilities) {
             return i;
         }
     }
-    return NN_OUTPUT_SIZE - 1; // Fallback
+    return NN_OUTPUT_SIZE - 1; // Fallback to RIGHT
 }
 
-void get_state_features(double* input) {
-    Ship* ship = &state.ship;
+double distance_2d(double x1, double y1, double x2, double y2) {
+    return sqrt(pow(x2 - x1, 2) + pow(y2 - y1, 2));
+}
+
+void get_state_features(double* input, double* min_dist_to_goal_ptr) {
+    Robot* robot = &state.robot;
     
-    // --- 1. Ship State Features (2) ---
-    input[0] = check_double(ship->y / CANVAS_HEIGHT, "norm_y", "get_state_features"); 
-    input[1] = check_double(ship->vy / MAX_VELOCITY_FOR_NORM, "norm_vy", "get_state_features"); 
+    // --- 1. Robot State (2) ---
+    input[0] = robot->x / CANVAS_WIDTH;  // Normalized X position
+    input[1] = robot->y / CANVAS_HEIGHT; // Normalized Y position
     
-    // --- 2. Nearest Diamond Features (1) ---
-    Diamond* nearest_diamond = NULL;
-    double min_diamond_y_dist = INFINITY;
-    for (int i = 0; i < NUM_DIAMONDS; i++) {
-        Diamond* d = &state.diamonds[i];
-        if (!d->collected) {
-            double y_dist = check_double(ship->y - d->y, "d_y_dist", "get_state_features");
-            if (fabs(y_dist) < fabs(min_diamond_y_dist)) { min_diamond_y_dist = y_dist; nearest_diamond = d; }
+    // --- 2. Target State (2) ---
+    // Target is static, but relative distance is more useful. We use absolute target pos for simplicity
+    input[2] = (state.target.x + state.target.w/2.0) / CANVAS_WIDTH;
+    input[3] = (state.target.y + state.target.h/2.0) / CANVAS_HEIGHT;
+    
+    // Determine the GOAL location (Target or Nearest Diamond)
+    double goal_x, goal_y;
+    
+    if (state.total_diamonds < NUM_DIAMONDS) {
+        // Find Nearest Diamond
+        Diamond* nearest_diamond = NULL;
+        double min_diamond_dist = INFINITY;
+        
+        for (int i = 0; i < NUM_DIAMONDS; i++) {
+            Diamond* d = &state.diamonds[i];
+            if (!d->collected) {
+                double dist = distance_2d(robot->x, robot->y, d->x, d->y);
+                if (dist < min_diamond_dist) { min_diamond_dist = dist; nearest_diamond = d; }
+            }
         }
+        
+        // If diamonds remain, goal is the nearest diamond
+        goal_x = nearest_diamond ? nearest_diamond->x : robot->x; 
+        goal_y = nearest_diamond ? nearest_diamond->y : robot->y;
+        
+    } else {
+        // All collected, goal is the target area center
+        goal_x = state.target.x + state.target.w / 2.0;
+        goal_y = state.target.y + state.target.h / 2.0;
     }
-    input[2] = check_double(min_diamond_y_dist / CANVAS_HEIGHT, "norm_d_y_dist", "get_state_features");
     
-    // --- 3. Nearest Obstacle Features (3) ---
+    // --- 3. Goal Distance (2) - Nearest Diamond or Target Area ---
+    double goal_dx = goal_x - robot->x;
+    double goal_dy = goal_y - robot->y;
+    
+    input[4] = check_double(goal_dx / CANVAS_WIDTH, "norm_goal_dx", "get_state_features"); 
+    input[5] = check_double(goal_dy / CANVAS_HEIGHT, "norm_goal_dy", "get_state_features"); 
+    
+    *min_dist_to_goal_ptr = distance_2d(robot->x, robot->y, goal_x, goal_y);
+
+    // --- 4. Nearest Obstacle Distance (2) ---
     Obstacle* nearest_obs = NULL;
-    double min_obs_y_dist = INFINITY;
+    double min_obs_dist = INFINITY;
     for (int i = 0; i < NUM_OBSTACLES; i++) {
         Obstacle* obs = &state.obstacles[i];
+        double obs_center_x = obs->x + obs->w / 2.0;
         double obs_center_y = obs->y + obs->h / 2.0;
-        double y_dist = check_double(ship->y - obs_center_y, "o_y_dist", "get_state_features");
-        if (fabs(y_dist) < fabs(min_obs_y_dist)) { min_obs_y_dist = y_dist; nearest_obs = obs; }
+        
+        double dist = distance_2d(robot->x, robot->y, obs_center_x, obs_center_y);
+        if (dist < min_obs_dist) { min_obs_dist = dist; nearest_obs = obs; }
     }
     
-    input[3] = check_double(min_obs_y_dist / CANVAS_HEIGHT, "norm_o_y_dist", "get_state_features"); 
-    input[4] = nearest_obs ? check_double((nearest_obs->x + nearest_obs->w / 2.0) / CANVAS_WIDTH, "norm_o_x", "get_state_features") : 0.5;
-    input[5] = nearest_obs ? check_double(nearest_obs->w / CANVAS_WIDTH, "norm_o_w", "get_state_features") : 0.0;
+    // Normalized signed distance vector to nearest obstacle center
+    double obs_dx = nearest_obs ? (nearest_obs->x + nearest_obs->w / 2.0) - robot->x : 0.0;
+    double obs_dy = nearest_obs ? (nearest_obs->y + nearest_obs->h / 2.0) - robot->y : 0.0;
+    
+    input[6] = check_double(obs_dx / CANVAS_WIDTH, "norm_obs_dx", "get_state_features");
+    input[7] = check_double(obs_dy / CANVAS_HEIGHT, "norm_obs_dy", "get_state_features"); 
 
-    // --- 4. All Collected Flag (1) ---
-    input[6] = (double)state.total_diamonds / NUM_DIAMONDS;
+    // --- 5. Collected Ratio (1) ---
+    input[8] = (double)state.total_diamonds / NUM_DIAMONDS;
 
+    // Clamp features between -1.0 and 1.0 (already handled by normalization above, but safe)
     for (int i = 0; i < NN_INPUT_SIZE; i++) {
         if (input[i] > 1.0) input[i] = 1.0;
         if (input[i] < -1.0) input[i] = -1.0;
-        check_double(input[i], "input_val", "get_state_features_final");
     }
 }
 
-double calculate_reward(Ship* ship, double old_min_diamond_y_dist, int diamonds_collected_this_step) {
-    double reward = REWARD_PER_STEP; // Base step penalty
+double calculate_reward(double old_min_dist_to_goal, int diamonds_collected_this_step) {
+    double reward = REWARD_PER_STEP; 
+    Robot* robot = &state.robot;
     
-    if (!ship->is_alive) return REWARD_CRASH;
+    if (!robot->is_alive) return REWARD_CRASH;
     
-    // Stabilize: Negative reward based on speed magnitude
-    double speed_magnitude_sq = check_double(ship->vy * ship->vy, "speed_sq", "calc_reward");
-    reward += REWARD_VELOCITY_PENALTY_SCALE * speed_magnitude_sq;
-    
-    double input[NN_INPUT_SIZE];
-    get_state_features(input);
-    
-    // Obstacle proximity penalty (Still valid as obstacles are fixed blocks)
-    for (int i = 0; i < NUM_OBSTACLES; i++) {
-        Obstacle* obs = &state.obstacles[i];
-        
-        bool y_overlap = (ship->y + ship->size > obs->y && ship->y - ship->size < obs->y + obs->h);
-        bool x_blocking = (SHIP_FIXED_X >= obs->x && SHIP_FIXED_X <= obs->x + obs->w);
-
-        if (y_overlap && x_blocking) {
-            double y_dist = fabs(ship->y - (obs->y + obs->h / 2.0));
-            double proximity_factor = 1.0 - fmin(1.0, y_dist / 50.0); 
-            reward += REWARD_OBSTACLE_PROXIMITY_SCALE * proximity_factor;
-        }
-    }
-    
-    // Reward for collection and progress
+    // --- Collection Reward ---
     if (diamonds_collected_this_step > 0) {
         reward += REWARD_COLLECT_DIAMOND * diamonds_collected_this_step;
     }
 
-    if (state.total_diamonds < NUM_DIAMONDS) {
-        double new_min_diamond_y_dist = input[2] * CANVAS_HEIGHT;
-        double distance_change = fabs(old_min_diamond_y_dist) - fabs(new_min_diamond_y_dist);
-        if (distance_change > 0) {
-            reward += REWARD_DIAMOND_PROGRESS_SCALE * distance_change / 10.0;
+    // --- Success Reward ---
+    if (robot->has_reached_target) {
+        reward += REWARD_SUCCESS;
+        if (state.total_diamonds < NUM_DIAMONDS) {
+            // Penalize reaching target without all diamonds (less than full success)
+            reward -= (NUM_DIAMONDS - state.total_diamonds) * 50.0; 
         }
     }
     
-    // Landing Goal
-    if (ship->has_landed) {
-        reward += (state.total_diamonds == NUM_DIAMONDS) ? REWARD_SAFE_LAND_ALL_COLLECTED : REWARD_SAFE_LAND;
+    // --- Progress Reward (Shaping) ---
+    double min_dist_to_goal;
+    double dummy_input[NN_INPUT_SIZE];
+    get_state_features(dummy_input, &min_dist_to_goal); // Calculate current goal distance
+    
+    double distance_change = old_min_dist_to_goal - min_dist_to_goal;
+    
+    if (distance_change > 0) {
+        // Small positive reward for moving closer to the current goal
+        reward += REWARD_PROGRESS_SCALE * distance_change;
+    } else {
+         // Small penalty for moving away
+        reward += REWARD_PROGRESS_SCALE * distance_change;
     }
+    
+    // Penalize movement if goal is reached or robot died (though this case shouldn't happen)
+    if (robot->has_reached_target || !robot->is_alive) reward = 0.0;
     
     return check_double(reward, "final_reward", "calc_reward");
 }
 
 
-void apply_action(Ship* ship, int action_index) {
-    ship->is_thrusting = (action_index == 0); 
+void apply_action(Robot* robot, int action_index) {
+    double dx = 0.0;
+    double dy = 0.0;
     
+    switch (action_index) {
+        case 0: dy = -MOVE_STEP_SIZE; break; // UP (Negative Y is up)
+        case 1: dy = MOVE_STEP_SIZE;  break; // DOWN
+        case 2: dx = -MOVE_STEP_SIZE; break; // LEFT
+        case 3: dx = MOVE_STEP_SIZE;  break; // RIGHT
+    }
+
+    robot->x += dx;
+    robot->y += dy;
+    
+    // Record action for stats
     action_history[action_history_idx] = action_index;
     action_history_idx = (action_history_idx + 1) % ACTION_HISTORY_SIZE;
 }
 
-void apply_thrust(Ship* ship, double dt) {
-    if (!ship->is_thrusting) return;
-    
-    double thrust_force = check_double(THRUST_POWER * dt / SIMULATION_DT, "thrust_force", "apply_thrust");
-    ship->vy = check_double(ship->vy - thrust_force, "ship_vy", "apply_thrust");
-}
 
-void update_physics(Ship* ship, double dt) {
-    // Apply Gravity
-    ship->vy = check_double(ship->vy + GRAVITY * dt / SIMULATION_DT, "ship_vy_grav", "update_physics");
-
-    // Update Y position
-    ship->y = check_double(ship->y + ship->vy * dt, "ship_y", "update_physics");
-
-    // Obstacle movement logic REMOVED - the level is fixed.
-}
-
-int check_collision(Ship* ship) {
-    double ship_radius = ship->size; 
+int check_collision(Robot* robot) {
+    double r = robot->size; 
     int diamonds_collected_this_step = 0;
     
-    // --- 1. Obstacle collision (Instant crash) ---
+    // --- 1. Wall Collision (Instant crash) ---
+    if (robot->x - r < BORDER_WIDTH || robot->x + r > CANVAS_WIDTH - BORDER_WIDTH ||
+        robot->y - r < BORDER_WIDTH || robot->y + r > CANVAS_HEIGHT - BORDER_WIDTH) {
+        robot->is_alive = false;
+        return 0; 
+    }
+    
+    // --- 2. Obstacle Collision (Instant crash) ---
     for (int i = 0; i < NUM_OBSTACLES; i++) {
         Obstacle* obs = &state.obstacles[i];
         
-        bool y_overlap = (ship->y + ship->size > obs->y && ship->y - ship->size < obs->y + obs->h);
-        bool x_blocking = (SHIP_FIXED_X >= obs->x && SHIP_FIXED_X <= obs->x + obs->w);
-
-        if (y_overlap && x_blocking) {
-            ship->is_alive = false;
-            return diamonds_collected_this_step; 
+        // AABB-Circle approximate check
+        double closest_x = fmax(obs->x, fmin(robot->x, obs->x + obs->w));
+        double closest_y = fmax(obs->y, fmin(robot->y, obs->y + obs->h));
+        
+        double dx = robot->x - closest_x;
+        double dy = robot->y - closest_y;
+        
+        if (dx * dx + dy * dy < r * r) {
+            robot->is_alive = false;
+            return 0; // Crash
         }
     }
     
-    // --- 2. Diamond collection ---
+    // --- 3. Diamond Collection ---
     for (int i = 0; i < NUM_DIAMONDS; i++) {
         Diamond* d = &state.diamonds[i];
         if (d->collected) continue;
         
-        double dy = check_double(ship->y - d->y, "diamond_dy_coll", "check_collision");
-        double distance = check_double(fabs(dy), "diamond_dist", "check_collision");
-
-        if (distance < ship_radius + d->size) {
+        if (distance_2d(robot->x, robot->y, d->x, d->y) < robot->size + d->size) {
             d->collected = true;
             state.total_diamonds++;
             diamonds_collected_this_step++;
             state.score += (int)REWARD_COLLECT_DIAMOND;
         }
     }
-    
-    // --- 3. Upper Screen Bounds ---
-    if (ship->y < ship->size) {
-        ship->y = ship->size;
-        ship->vy = 0.0;
-    }
 
+    // --- 4. Target Area Check (Goal) ---
+    TargetArea* target = &state.target;
+    if (robot->x + r > target->x && robot->x - r < target->x + target->w &&
+        robot->y + r > target->y && robot->y - r < target->y + target->h) {
+        robot->has_reached_target = true;
+        // The episode will terminate in the caller (update_game)
+    }
+    
     return diamonds_collected_this_step;
 }
 
-void print_episode_stats(double sim_time, double train_time_ms) {
-    Ship* ship = &state.ship;
+void print_episode_stats(double train_time_ms) {
+    Robot* robot = &state.robot;
     
     printf("====================================================\n");
-    printf("EPISODE %d SUMMARY\n", current_episode);
+    printf("EPISODE %d SUMMARY (Steps: %d/%d)\n", current_episode, step_count, MAX_EPISODE_STEPS);
     printf("----------------------------------------------------\n");
-    printf("Termination Status: %s\n", 
-        !ship->is_alive ? "CRASHED" : 
-        (ship->has_landed && state.total_diamonds == NUM_DIAMONDS) ? "SUCCESSFUL LANDING (ALL DIAMONDS)" : 
-        ship->has_landed ? "SAFE LANDING (PARTIAL DIAMONDS)" : 
-        "TIMEOUT (Max Steps)");
     
-    printf("Simulation Time: %.2fs (Steps: %d)\n", sim_time, episode_buffer.count);
+    const char* status = "TIMEOUT (Max Steps)";
+    if (!robot->is_alive) {
+        status = "CRASHED (Wall/Obstacle)";
+    } else if (robot->has_reached_target) {
+        status = (state.total_diamonds == NUM_DIAMONDS) ? "SUCCESS (ALL COLLECTED)" : "SUCCESS (PARTIAL)";
+    }
+    
+    printf("Termination Status: %s\n", status);
     printf("Total Diamonds Collected: %d/%d\n", state.total_diamonds, NUM_DIAMONDS);
     printf("Final Policy Reward (Score): %.2f\n", episode_buffer.total_score);
     
@@ -545,47 +559,34 @@ void print_episode_stats(double sim_time, double train_time_ms) {
     printf("====================================================\n\n");
 }
 
-void update_game(double dt, bool is_training_run) {
-    Ship* ship = &state.ship;
+void update_game(bool is_training_run) {
+    Robot* robot = &state.robot;
     
-    if (!ship->is_alive || ship->has_landed) return; 
+    if (!robot->is_alive || robot->has_reached_target || step_count >= MAX_EPISODE_STEPS) return; 
 
+    // --- 1. Get current state features and previous goal distance ---
     double input[NN_INPUT_SIZE];
-    get_state_features(input);
-    double old_min_diamond_y_dist = input[2] * CANVAS_HEIGHT; 
+    double old_min_dist_to_goal;
+    get_state_features(input, &old_min_dist_to_goal);
 
+    // --- 2. Feedforward and Action Selection ---
     double logit_output[NN_OUTPUT_SIZE];
     double probabilities[NN_OUTPUT_SIZE];
     nn_policy_forward(&nn, input, probabilities, logit_output);
 
     int action_index = select_action(probabilities);
 
-    apply_action(ship, action_index);
-    apply_thrust(ship, dt);
-    update_physics(ship, dt);
+    // --- 3. Apply Action and Check Collision ---
+    apply_action(robot, action_index);
 
-    int diamonds_collected = check_collision(ship);
+    int diamonds_collected = check_collision(robot);
     
-    // Check Landing
-    double ground_y = LANDING_PAD_Y;
-    if (ship->y + ship->size > ground_y) {
-        ship->y = ground_y - ship->size;
-        
-        if (fabs(ship->vy) > CRITICAL_LANDING_VELOCITY) {
-            ship->is_alive = false; 
-        } else {
-            ship->has_landed = true; 
-        }
-        
-        ship->vy = 0.0;
-        ship->is_thrusting = false;
-    }
-
-    double reward = calculate_reward(ship, old_min_diamond_y_dist, diamonds_collected);
+    // --- 4. Calculate Reward and Store Step ---
+    double reward = calculate_reward(old_min_dist_to_goal, diamonds_collected);
     
-    if (is_training_run && episode_buffer.count < 4000) {
+    if (is_training_run && episode_buffer.count < MAX_EPISODE_STEPS) {
         EpisodeStep step;
-        for(int i = 0; i < NN_INPUT_SIZE; i++) step.input[i] = input[i];
+        memcpy(step.input, input, NN_INPUT_SIZE * sizeof(double));
         step.action_index = action_index;
         step.reward = reward;
         
@@ -593,6 +594,8 @@ void update_game(double dt, bool is_training_run) {
         episode_buffer.count++;
         episode_buffer.total_score += reward;
     }
+    
+    step_count++;
 }
 
 void run_reinforce_training() {
@@ -618,47 +621,43 @@ void run_reinforce_training() {
     double variance = (sum_sq_returns / episode_buffer.count) - (mean_return * mean_return);
     double std_dev = sqrt(variance > 1e-6 ? variance : 1.0); 
 
-    // --- 3. Train the Network using Backpropagation ---
+    // --- 3. Train the Network using Backpropagation (REINFORCE) ---
     for (int i = 0; i < episode_buffer.count; i++) {
-        // Gt acts as the advantage for the policy gradient update
         double Gt = (returns[i] - mean_return) / std_dev; 
         
         nn_reinforce_train(&nn, 
                            episode_buffer.steps[i].input, 
                            episode_buffer.steps[i].action_index, 
-                           -Gt); // Pass -Gt for the policy gradient implementation
+                           -Gt); 
     }
 }
 
 // --- Main Simulation Loop ---
 
 int main() {
-    // Seed is still necessary for initial weight randomization and action sampling
     srand((unsigned int)time(NULL)); 
     nn_init(&nn);
     
     for(int i = 0; i < ACTION_HISTORY_SIZE; i++) {
-        action_history[i] = 1; 
+        action_history[i] = 3; // Default to RIGHT
     }
 
-    printf("--- RL 1D Tunnel Lander Simulation (FIXED LEVEL / Simplified NN) ---\n");
-    printf("Hidden Layer Size: %d\n", NN_HIDDEN_SIZE);
-    printf("Training will run for 4 minutes (240 seconds).\n");
+    printf("--- RL 2D Robot Collector Simulation (Fixed Level / 50 Moves) ---\n");
+    printf("Input Size: %d, Hidden Size: %d, Output Size: %d\n", NN_INPUT_SIZE, NN_HIDDEN_SIZE, NN_OUTPUT_SIZE);
+    printf("Training will run for 3 minutes (180 seconds).\n");
     
     time_t start_time = time(NULL);
-    const int TIME_LIMIT_SECONDS = 240; 
+    const int TIME_LIMIT_SECONDS = 180; 
     
     // --- Time-Limited Training Phase ---
     while (time(NULL) - start_time < TIME_LIMIT_SECONDS) {
         
         current_episode++;
         init_game_state();
-        double sim_time = 0.0;
 
         // Play episode
-        while (state.ship.is_alive && !state.ship.has_landed && episode_buffer.count < 4000) {
-            update_game(SIMULATION_DT, true); // true for training run
-            sim_time += SIMULATION_DT;
+        while (state.robot.is_alive && !state.robot.has_reached_target && step_count < MAX_EPISODE_STEPS) {
+            update_game(true); // true for training run
         }
 
         // Train and Time it
@@ -669,7 +668,7 @@ int main() {
         double train_time_ms = (double)(train_end - train_start) * 1000.0 / CLOCKS_PER_SEC;
 
         // Print stats
-        print_episode_stats(sim_time, train_time_ms);
+        print_episode_stats(train_time_ms);
     }
     
     printf("\n--- TIME LIMIT REACHED. TRAINING HALTED. Total Episodes: %d ---\n", current_episode);
