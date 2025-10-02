@@ -24,7 +24,7 @@
 #else
     #include <sys/socket.h>
     #include <netinet/in.h>
-    #include <netdb.h>
+    #include <netdb.h> // <-- FIX: Added to define struct addrinfo and getaddrinfo/freeaddrinfo
     #include <unistd.h> // for close()
 #endif
 
@@ -41,7 +41,7 @@
 // --- EMBEDDED SVG TEST STRING ---
 #define SVG_TEST_CONTENT "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"60\"><rect width=\"120\" height=\"60\" fill=\"#3b82f6\" rx=\"10\"/><text x=\"60\" y=\"38\" font-family=\"Inter, sans-serif\" font-size=\"18\" text-anchor=\"middle\" fill=\"#ffffff\">C99 SVG</text></svg>"
 
-// --- PURE C99: BASE64 ENCODING (Unchanged) ---
+// --- PURE C99: BASE64 ENCODING ---
 
 static const char b64_table[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -76,7 +76,7 @@ char *base64_encode(const unsigned char *data, size_t input_length, size_t *outp
     return encoded_data;
 }
 
-// --- PURE C99: JSON PAYLOAD GENERATION (Unchanged) ---
+// --- PURE C99: JSON PAYLOAD GENERATION ---
 
 char *generate_json_payload(const char *content_b64) {
     size_t content_len = strlen(content_b64);
@@ -93,7 +93,7 @@ char *generate_json_payload(const char *content_b64) {
     return payload;
 }
 
-// --- PURE C99: HTTP REQUEST ASSEMBLY (Unchanged) ---
+// --- PURE C99: HTTP REQUEST ASSEMBLY ---
 
 char *generate_http_request(const char *json_payload) {
     const char *path_format = "/repos/%s/%s/contents/%s";
@@ -161,7 +161,7 @@ int tcp_connect(const char *host, int port) {
     hints.ai_socktype = SOCK_STREAM;
 
     if (getaddrinfo(host, port_str, &hints, &servinfo) != 0) {
-        fprintf(stderr, "tcp_connect error: getaddrinfo failed for %s.\n", host);
+        fprintf(stderr, "tcp_connect error: getaddrinfo failed for %s. %s\n", host, gai_strerror(getaddrinfo(host, port_str, &hints, &servinfo)));
         return -1;
     }
 
@@ -234,14 +234,10 @@ void *ssl_connect(int socket_fd) {
         return NULL;
     }
 
-    // The context is often tied to the lifetime of the program, but we'll include it
-    // in the SSL pointer to ensure it's freed if we need to clean up SSL state explicitly.
-    // For simplicity, we just return the SSL pointer. The CTX cleanup is omitted here,
-    // as it is usually done at program exit for a robust client, but for this single
-    // transaction, we'll rely on the SSL_free to implicitly handle its context reference.
-    // NOTE: In a clean implementation, SSL_CTX_free is only called after all SSL objects
-    // associated with it are freed.
+    // NOTE: In a clean program, SSL_CTX_free is only called after all SSL objects
+    // associated with it are freed. We rely on the implicit linkage here.
     printf("NETWORK SUCCESS: TLS/SSL handshake completed.\n");
+    // We don't free ctx here, as SSL_free implicitly decrements its reference count.
     return (void *)ssl;
 }
 
@@ -292,8 +288,7 @@ int ssl_recv(void *ssl_session, char *buffer, size_t len) {
 int ssl_disconnect(void *ssl_session) {
     SSL *ssl = (SSL *)ssl_session;
     if (ssl) {
-        // SSL_CTX is usually shared, but SSL_free handles its context reference.
-        // We ensure a shutdown first.
+        // Initiate the close-notify alert
         SSL_shutdown(ssl);
         SSL_free(ssl);
         printf("NETWORK CLEANUP: TLS/SSL session disconnected.\n");
@@ -395,6 +390,7 @@ int main(void) {
     // 4d. Receive Response
     char response_buffer[4096];
     memset(response_buffer, 0, sizeof(response_buffer));
+    // We might need to loop here for a full response in a real client, but for simplicity, we try a single read.
     int bytes_received = ssl_recv(ssl_session, response_buffer, sizeof(response_buffer) - 1);
 
     if (bytes_received > 0) {
@@ -405,9 +401,15 @@ int main(void) {
         } else {
              // Extract and report the actual status code
              char status_line[128] = {0};
-             strncpy(status_line, response_buffer, sizeof(status_line) - 1);
-             char *end_of_line = strstr(status_line, "\r\n");
-             if (end_of_line) *end_of_line = '\0';
+             // Find the end of the first line (the status line)
+             char *end_of_line = strstr(response_buffer, "\r\n");
+             size_t len_to_copy = end_of_line ? (size_t)(end_of_line - response_buffer) : bytes_received;
+
+             if (len_to_copy > sizeof(status_line) - 1) {
+                 len_to_copy = sizeof(status_line) - 1;
+             }
+             strncpy(status_line, response_buffer, len_to_copy);
+             status_line[len_to_copy] = '\0';
 
              fprintf(stderr, "CRITICAL: GitHub API request failed. Received status: %s\n", status_line);
              if (strstr(status_line, "401 Unauthorized")) {
