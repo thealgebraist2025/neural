@@ -12,17 +12,16 @@
 #define TEST_RANGE (MAX_PRIME_TO_TEST + 1)
 #define MAX_VAL_NEEDED 104729       // Max value we need to classify/store.
 
-#define MAX_TRAINING_SECONDS 240.0  // 2 minutes limit
-#define BATCH_SIZE_HALF 512         // NEW: 512 Primes + 512 Non-Primes = 1024 total per batch
+#define MAX_TRAINING_SECONDS 120.0  // 2 minutes limit
+#define BATCH_SIZE_HALF 512         // Batch size: 512 Primes + 512 Non-Primes = 1024 total
 #define BATCH_SIZE (BATCH_SIZE_HALF * 2) 
-#define NUM_BATCHES (NUM_EXAMPLES / BATCH_SIZE_HALF) // 10000 / 512 = 19 batches total (with remainder)
-// Note: NUM_BATCHES is 19. The last batch will be smaller (10000 % 512 = 384 examples of each).
+#define NUM_BATCHES (NUM_EXAMPLES / BATCH_SIZE_HALF) // 10000 / 512 = 19 full batches + 1 partial batch
 
 // --- NN Architecture Constants ---
 #define NN_INPUT_SIZE BIT_DEPTH
 #define NN_OUTPUT_SIZE 1
 #define NN_HIDDEN_SIZE 512
-#define NN_LEARNING_RATE 0.0005     // CRUCIAL FIX: Learning rate reduced drastically for stability
+#define NN_LEARNING_RATE 0.0005     // FIXED: Reduced for stability
 
 // --- SVG Constants ---
 #define SVG_WIDTH 1200
@@ -34,7 +33,7 @@
 int primes_array[NUM_EXAMPLES];
 int composites_array[NUM_EXAMPLES];
 
-// --- Data Structures (Retained) ---
+// --- Data Structures ---
 typedef struct { int rows; int cols; double** data; } Matrix;
 
 typedef struct {
@@ -43,6 +42,7 @@ typedef struct {
     double* bias_h;
     double* bias_o;
     double lr;
+    // Intermediate results stored for backpropagation
     Matrix inputs;
     Matrix hidden_inputs;
     Matrix hidden_outputs;
@@ -50,7 +50,7 @@ typedef struct {
     Matrix output_outputs;
 } NeuralNetwork;
 
-// --- SVG String Management Struct (Retained) ---
+// --- SVG String Management Struct ---
 typedef struct { char* str; size_t length; bool is_valid; } SvgString;
 SvgString* svg_strings = NULL;
 size_t svg_count = 0;
@@ -77,7 +77,6 @@ void precompute_primes_sieve() {
 
 double generate_precomputed_data() {
     clock_t start = clock();
-    
     int prime_count = 0;
     int composite_count = 0;
 
@@ -95,17 +94,11 @@ double generate_precomputed_data() {
             break;
         }
     }
-
-    if (prime_count < NUM_EXAMPLES || composite_count < NUM_EXAMPLES) {
-        fprintf(stderr, "\nWARNING: Only found %d primes and %d composites up to %d. Training data may be incomplete.\n", 
-                prime_count, composite_count, MAX_VAL_NEEDED);
-    }
-
     clock_t end = clock();
     return ((double)(end - start)) / CLOCKS_PER_SEC;
 }
 
-// NEW: Shuffling function
+// Shuffling function for epoch-based training stability
 void shuffle_array(int arr[], int n) {
     if (n > 1) {
         for (int i = 0; i < n - 1; i++) {
@@ -129,11 +122,10 @@ void int_to_binary_array(int n, double* arr) {
 }
 
 void validate_precomputed_data() {
-    int check_size = BATCH_SIZE_HALF * 2; 
     int prime_errors = 0;
     int composite_errors = 0;
     
-    printf("\n--- Data Validation (First 1024 entries) ---\n");
+    printf("\n--- Data Validation (First 512 entries of each) ---\n");
     
     for (int i = 0; i < BATCH_SIZE_HALF; i++) {
         if (!is_prime(primes_array[i])) { prime_errors++; }
@@ -151,7 +143,7 @@ void validate_precomputed_data() {
 }
 
 
-// --- Matrix & NN Core Utility Functions (Retained) ---
+// --- Matrix & NN Core Utility Functions ---
 Matrix matrix_create(int rows, int cols, int input_size) {
     Matrix m; m.rows = rows; m.cols = cols;
     m.data = (double**)calloc(rows, sizeof(double*));
@@ -169,6 +161,22 @@ void matrix_free(Matrix m) {
     for (int i = 0; i < m.rows; i++) free(m.data[i]);
     free(m.data);
 }
+
+// FIX: Definition for matrix_copy_in to resolve the 'undefined reference' error
+void matrix_copy_in(Matrix A, const Matrix B) {
+    if (A.rows != B.rows || A.cols != B.cols) {
+        fprintf(stderr, "FATAL ERROR: matrix_copy_in dimensions mismatch (%dx%d vs %dx%d).\n", 
+                A.rows, A.cols, B.rows, B.cols);
+        exit(EXIT_FAILURE);
+    }
+    for (int i = 0; i < A.rows; i++) {
+        for (int j = 0; j < A.cols; j++) {
+            A.data[i][j] = B.data[i][j];
+        }
+    }
+}
+// END FIX
+
 Matrix array_to_matrix(const double* arr, int size) {
     Matrix m = matrix_create(size, 1, 0);
     for (int i = 0; i < size; i++) { m.data[i][0] = arr[i]; }
@@ -228,7 +236,7 @@ double tanh_derivative(double y) { return 1.0 - (y * y); }
 double sigmoid_activation(double x) { return 1.0 / (1.0 + exp(-x)); }
 double sigmoid_derivative(double y) { return y * (1.0 - y); }
 
-// --- Neural Network Functions (Retained) ---
+// --- Neural Network Functions ---
 
 void nn_init(NeuralNetwork* nn) {
     nn->lr = NN_LEARNING_RATE;
@@ -236,6 +244,7 @@ void nn_init(NeuralNetwork* nn) {
     nn->weights_ho = matrix_create(NN_OUTPUT_SIZE, NN_HIDDEN_SIZE, NN_HIDDEN_SIZE);
     nn->bias_h = (double*)calloc(NN_HIDDEN_SIZE, sizeof(double));
     nn->bias_o = (double*)calloc(NN_OUTPUT_SIZE, sizeof(double));
+    // Pre-allocate space for intermediate matrices
     nn->inputs = matrix_create(NN_INPUT_SIZE, 1, 0);
     nn->hidden_inputs = matrix_create(NN_HIDDEN_SIZE, 1, 0);
     nn->hidden_outputs = matrix_create(NN_HIDDEN_SIZE, 1, 0);
@@ -252,10 +261,13 @@ void nn_free(NeuralNetwork* nn) {
 
 void nn_forward(NeuralNetwork* nn, const double* input_array, double* output_array) {
     Matrix inputs_m = array_to_matrix(input_array, NN_INPUT_SIZE);
-    // ... (Matrix ops for forward pass)
+    
+    // Input -> Hidden
     Matrix hidden_in_m = matrix_dot(nn->weights_ih, inputs_m);
     for (int i = 0; i < NN_HIDDEN_SIZE; i++) hidden_in_m.data[i][0] += nn->bias_h[i];
     Matrix hidden_out_m = matrix_map(hidden_in_m, tanh_activation);
+
+    // Hidden -> Output
     Matrix output_in_m = matrix_dot(nn->weights_ho, hidden_out_m);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) output_in_m.data[i][0] += nn->bias_o[i];
     Matrix output_out_m = matrix_map(output_in_m, sigmoid_activation);
@@ -265,6 +277,7 @@ void nn_forward(NeuralNetwork* nn, const double* input_array, double* output_arr
     matrix_copy_in(nn->hidden_outputs, hidden_out_m);
     matrix_copy_in(nn->output_outputs, output_out_m);
 
+    // Copy result to output array
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) { output_array[i] = output_out_m.data[i][0]; }
 
     matrix_free(inputs_m); matrix_free(hidden_in_m); matrix_free(hidden_out_m); 
@@ -275,7 +288,7 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     double mse_loss = 0.0;
     Matrix targets_m = array_to_matrix(target_array, NN_OUTPUT_SIZE);
     
-    // Calculate Output Error
+    // Calculate Output Error and Loss
     Matrix output_errors_m = matrix_add_subtract(nn->output_outputs, targets_m, false);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) { 
         double error = output_errors_m.data[i][0]; mse_loss += error * error; 
@@ -332,7 +345,6 @@ double train_sequential_batch(NeuralNetwork* nn, int batch_index, double* bp_tim
     int start_index = batch_index * BATCH_SIZE_HALF;
     int end_index = start_index + BATCH_SIZE_HALF;
     
-    // Adjust end_index for the last, possibly smaller batch
     if (end_index > NUM_EXAMPLES) {
         end_index = NUM_EXAMPLES;
     }
@@ -353,12 +365,12 @@ double train_sequential_batch(NeuralNetwork* nn, int batch_index, double* bp_tim
     }
     
     clock_t end_bp = clock();
-    *bp_time = ((double)(end_bp - start_bp)) / CLOCKS_PER_SEC;
+    *bp_time = ((double)(end - start_bp)) / CLOCKS_PER_SEC;
 
     return total_mse / (current_batch_size_half * 2);
 }
 
-// Testing function (Retained)
+// Testing function: Measures accuracy on all numbers up to the MAX_VAL_NEEDED
 double test_network(NeuralNetwork* nn, double* test_time) {
     clock_t start_test = clock();
     int correct_predictions = 0;
@@ -383,7 +395,7 @@ double test_network(NeuralNetwork* nn, double* test_time) {
 }
 
 
-// --- SVG Utility Functions (Retained, for completeness) ---
+// --- SVG Utility Functions (for visualization) ---
 
 bool validate_svg_string(const SvgString* s) {
     return s != NULL && s->is_valid && s->str != NULL && s->length == strlen(s->str);
@@ -427,6 +439,7 @@ void free_svg_strings() {
     svg_count = 0;
     svg_capacity = 0;
 }
+
 const char* SVG_HEADER_TEMPLATE = "<svg width=\"%d\" height=\"%d\" viewBox=\"0 0 %d %d\" xmlns=\"http://www.w3.org/2000/svg\">\n<rect width=\"100%%\" height=\"100%%\" fill=\"#FAFAFA\"/>\n<style>\n.neuron{stroke:#000;stroke-width:1;}\n.text{font:10px sans-serif; fill:#333;}\n.neg{stroke:red;}.pos{stroke:blue;}\n</style>\n";
 const char* SVG_FOOTER = "\n</svg>";
 const char* SVG_LAYER_LABEL_TEMPLATE = "<text x=\"%d\" y=\"%d\" class=\"text\" font-size=\"20\" font-weight=\"bold\" text-anchor=\"middle\">%s (%d)</text>\n";
@@ -547,16 +560,17 @@ int main() {
     for (int epoch = 0; epoch < max_epochs; epoch++) {
         bool time_limit_reached = false;
         
-        // --- Shuffle Data at Start of Epoch (CRUCIAL FIX) ---
+        // --- Shuffle Data at Start of Epoch (CRUCIAL FIX for stability) ---
         shuffle_array(primes_array, NUM_EXAMPLES);
         shuffle_array(composites_array, NUM_EXAMPLES);
         printf("\n--- EPOCH %d STARTED (Data Shuffled). ---\n", epoch + 1);
 
         // Inner loop iterates through all sequential batches
-        for (int i = 0; i <= NUM_BATCHES; i++) { // Run NUM_BATCHES + 1 to include the partial last batch
+        // Run NUM_BATCHES to include the 19 full batches, and an extra loop for the partial last batch.
+        for (int i = 0; i <= NUM_BATCHES; i++) { 
             
             int start_index = i * BATCH_SIZE_HALF;
-            if (start_index >= NUM_EXAMPLES) break; // Check if we are past the data size
+            if (start_index >= NUM_EXAMPLES) break; 
 
             if (difftime(time(NULL), start_time) >= MAX_TRAINING_SECONDS) {
                 time_limit_reached = true;
