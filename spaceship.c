@@ -291,6 +291,61 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
 
 // --- Game Logic Functions ---
 
+// Function to move the robot and check basic boundaries (NEW)
+void apply_action(Robot* robot, int action_index) {
+    double old_x = robot->x;
+    double old_y = robot->y;
+    
+    // Apply movement based on action index
+    switch (action_index) {
+        case 0: robot->y -= MOVE_STEP_SIZE; break; // UP
+        case 1: robot->y += MOVE_STEP_SIZE; break; // DOWN
+        case 2: robot->x -= MOVE_STEP_SIZE; break; // LEFT
+        case 3: robot->x += MOVE_STEP_SIZE; break; // RIGHT
+    }
+    
+    // Check if the new position is legal (walls and obstacles)
+    // is_point_legal must be called BEFORE check_collision, as it is used to check for walls/obstacles
+    if (!is_point_legal(robot->x, robot->y)) {
+        // If movement leads to a crash, mark as not alive and revert position temporarily
+        robot->is_alive = false;
+        // Revert to old position so that the state input features reflect the pre-crash position
+        robot->x = old_x; 
+        robot->y = old_y;
+    }
+}
+
+// Function to check for collisions (diamonds, target, and confirm obstacles/walls) (NEW)
+int check_collision(Robot* robot) {
+    int diamonds_collected_this_step = 0;
+
+    if (!robot->is_alive) return 0; // Already crashed in apply_action
+
+    // 1. Diamond Collection Check
+    for (int i = 0; i < NUM_DIAMONDS; i++) {
+        Diamond* d = &state.diamonds[i];
+        if (!d->collected) {
+            double dist = distance_2d(robot->x, robot->y, d->x, d->y);
+            // If robot is close enough to collect the diamond (simple circular collision)
+            if (dist < robot->size + d->size) {
+                d->collected = true;
+                state.total_diamonds++;
+                diamonds_collected_this_step++;
+            }
+        }
+    }
+    
+    // 2. Target Area Check (Goal)
+    TargetArea* target = &state.target;
+    // Check if robot center is within the target bounds
+    if (is_point_in_rect(robot->x, robot->y, target->x, target->y, target->w, target->h)) {
+        robot->has_reached_target = true;
+    }
+    
+    return diamonds_collected_this_step;
+}
+
+
 void init_minimal_state() {
     step_count = 0;
     state.score = 0;
@@ -545,9 +600,11 @@ void update_game(bool is_training_run, bool expert_run, bool is_unittest) {
     
     // Store old distance for progress reward calculation
     double old_dist_copy = old_min_dist_to_goal; 
-
+    
+    // *** MISSING FUNCTION CALL 1 ***
     apply_action(robot, action_index);
 
+    // *** MISSING FUNCTION CALL 2 ***
     int diamonds_collected = check_collision(robot);
     
     // Calculate reward, passing is_unittest
@@ -563,6 +620,10 @@ void update_game(bool is_training_run, bool expert_run, bool is_unittest) {
         episode_buffer.count++;
         episode_buffer.total_score += final_reward;
     }
+    
+    // Update action history for printing
+    action_history[action_history_idx] = action_index;
+    action_history_idx = (action_history_idx + 1) % ACTION_HISTORY_SIZE;
     
     step_count++;
 }
@@ -649,14 +710,22 @@ bool is_point_in_rect(double px, double py, double rx, double ry, double rw, dou
 
 bool is_point_legal(double x, double y) {
     double r = state.robot.size; 
+    // Wall Check: Check if any part of the robot circle is outside the canvas bounds
     if (x - r < BORDER_WIDTH || x + r > CANVAS_WIDTH - BORDER_WIDTH || y - r < BORDER_WIDTH || y + r > CANVAS_HEIGHT - BORDER_WIDTH) { return false; }
+    
+    // Obstacle Check: Circle vs. Rectangle collision detection
     for (int i = 0; i < NUM_OBSTACLES; i++) {
         Obstacle* obs = &state.obstacles[i];
         if (obs->w <= 0.0) continue; 
+        
+        // Find the closest point on the rectangle (obs) to the circle center (x, y)
         double closest_x = fmax(obs->x, fmin(x, obs->x + obs->w));
         double closest_y = fmax(obs->y, fmin(y, obs->y + obs->h));
+        
+        // Calculate the distance squared from the closest point to the circle center
         double dx = x - closest_x;
         double dy = y - closest_y;
+        
         if (dx * dx + dy * dy < r * r) { return false; }
     }
     return true;
@@ -772,6 +841,7 @@ void generate_expert_path_training_data() {
         double min_dist_after_move = INFINITY;
         int best_action = -1;
         
+        // Find the action that moves closest to the target grid cell
         for (int a = 0; a < NN_OUTPUT_SIZE; a++) {
             double test_x = robot->x;
             double test_y = robot->y;
@@ -795,8 +865,10 @@ void generate_expert_path_training_data() {
             double input[NN_INPUT_SIZE];
             get_state_features(input, &old_min_dist_to_goal);
 
+            // *** MISSING FUNCTION CALL 1 ***
             apply_action(robot, best_action);
 
+            // *** MISSING FUNCTION CALL 2 ***
             int diamonds_collected = check_collision(robot);
             
             // Pass false for is_unittest
