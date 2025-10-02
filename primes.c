@@ -7,18 +7,19 @@
 
 // --- Prime Detection Constants ---
 // The 10,000th prime is 104,729. We need 17 bits to represent up to 131,071.
-#define BIT_DEPTH 17                // NEW Input size: Binary representation of the number
-#define MAX_PRIME_TO_TEST 104729    // NEW Target: The 10,000th prime is 104729
+#define BIT_DEPTH 17                // Input size: Binary representation of the number
+#define MAX_PRIME_TO_TEST 104729    // Target: The 10,000th prime is 104729
 #define TEST_RANGE (MAX_PRIME_TO_TEST + 1) // Test numbers from 1 to 104729
-#define TRAINING_GOAL_PERCENT 95.0  // Target accuracy on the test set
+#define TRAINING_GOAL_PERCENT 95.0  // Target accuracy (still for reference)
 #define MAX_EPOCHS 500000           // Max total batches (safety limit)
+#define MAX_TRAINING_SECONDS 120.0  // NEW: 2 minutes limit
 #define BATCH_SIZE_HALF 64          // 64 Primes + 64 Non-Primes = 128 total per batch
-#define GROUP_SIZE_BATCHES 100      // NEW: Test and report stats after every 100 batches
+#define GROUP_SIZE_BATCHES 100      // Test and report stats after every 100 batches
 
 // --- NN Architecture Constants ---
 #define NN_INPUT_SIZE BIT_DEPTH     // 17 bits input
 #define NN_OUTPUT_SIZE 1            // Single output for classification (Prime/Not Prime)
-#define NN_HIDDEN_SIZE 256          // INCREASED Hidden layer size to 256
+#define NN_HIDDEN_SIZE 256          // Hidden layer size
 #define NN_LEARNING_RATE 0.008      // Learning rate
 
 // --- SVG Constants ---
@@ -94,22 +95,20 @@ void int_to_binary_array(int n, double* arr) {
     }
 }
 
-// Generates one training example
+// Generates one training example from the first 10000 primes/non-primes
 void generate_prime_nonprime_example(double input[BIT_DEPTH], double* target) {
     int n;
     
-    // Choose whether to generate a prime or non-prime number
+    // Choose whether to generate a prime (Target: 1.0) or non-prime (Target: 0.0)
     if (rand() % 2 == 0) {
-        // Generate a prime number (Target: 1.0)
         *target = 1.0;
         do {
-            n = 2 + rand() % (MAX_PRIME_TO_TEST - 1); // Range [2, 104729]
+            n = 2 + rand() % (MAX_PRIME_TO_TEST - 1); 
         } while (!is_prime(n));
     } else {
-        // Generate a non-prime number (Target: 0.0)
         *target = 0.0;
         do {
-            n = 4 + rand() % (MAX_PRIME_TO_TEST - 3); // Range [4, 104729]
+            n = 4 + rand() % (MAX_PRIME_TO_TEST - 3); 
         } while (is_prime(n));
     }
     
@@ -309,7 +308,6 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
 }
 
 // Training Session (Batch)
-// Returns MSE and fills in the time spent on backpropagation for this batch
 double train_batch(NeuralNetwork* nn, double* bp_time) {
     clock_t start_bp = clock();
     double total_mse = 0.0;
@@ -334,7 +332,6 @@ double train_batch(NeuralNetwork* nn, double* bp_time) {
 }
 
 // Testing function: Measures accuracy on all numbers up to the MAX_PRIME_TO_TEST
-// Returns accuracy and fills in the time spent on testing
 double test_network(NeuralNetwork* nn, double* test_time) {
     clock_t start_test = clock();
     
@@ -417,7 +414,6 @@ void free_svg_strings() {
 const char* SVG_HEADER_TEMPLATE = "<svg width=\"%d\" height=\"%d\" viewBox=\"0 0 %d %d\" xmlns=\"http://www.w3.org/2000/svg\">\n<rect width=\"100%%\" height=\"100%%\" fill=\"#FAFAFA\"/>\n<style>\n.neuron{stroke:#000;stroke-width:1;}\n.text{font:10px sans-serif; fill:#333;}\n.neg{stroke:red;}.pos{stroke:blue;}\n</style>\n";
 const char* SVG_FOOTER = "\n</svg>";
 const char* SVG_LAYER_LABEL_TEMPLATE = "<text x=\"%d\" y=\"%d\" class=\"text\" font-size=\"20\" font-weight=\"bold\" text-anchor=\"middle\">%s (%d)</text>\n";
-// The label for the input neurons is now simply their bit index (0 to 16)
 const char* SVG_NEURON_TEMPLATE_IN = "<circle cx=\"%d\" cy=\"%.2f\" r=\"12\" class=\"neuron\" fill=\"#FFF\"/>\n<text x=\"%d\" y=\"%.2f\" class=\"text\" font-size=\"10\" text-anchor=\"middle\" dominant-baseline=\"central\">%d</text>\n";
 const char* SVG_NEURON_TEMPLATE_OTHER = "<circle cx=\"%d\" cy=\"%.2f\" r=\"12\" class=\"neuron\" fill=\"#FFF\"/>\n<text x=\"%d\" y=\"%.2f\" class=\"text\" font-size=\"10\" text-anchor=\"middle\" dominant-baseline=\"central\">%s</text>\n";
 const char* SVG_CONNECTION_TEMPLATE = "<line x1=\"%d\" y1=\"%.2f\" x2=\"%d\" y2=\"%.2f\" class=\"%s\" stroke-width=\"%.2f\" opacity=\"%.2f\"/>\n";
@@ -550,12 +546,9 @@ int main() {
     nn_init(&nn);
 
     printf("Neural Network Prime Detector Initialized.\n");
-    printf("Test Range: 1 to %d (Contains the first 10,000 primes).\n", MAX_PRIME_TO_TEST);
-    printf("Architecture: Input=%d (Bits), Hidden=%d, Output=%d\n",
-           NN_INPUT_SIZE, NN_HIDDEN_SIZE, NN_OUTPUT_SIZE);
-    printf("Learning Rate: %.4f\n", NN_LEARNING_RATE);
-    printf("Goal: Achieve %.2f%% accuracy on the test range.\n", TRAINING_GOAL_PERCENT);
-    printf("Reporting Stats every %d batches (Group Size).\n", GROUP_SIZE_BATCHES);
+    printf("Training Numbers: Primes and Non-Primes up to %d (the 10,000th prime).\n", MAX_PRIME_TO_TEST);
+    printf("Architecture: Input=%d, Hidden=%d, Output=%d\n", NN_INPUT_SIZE, NN_HIDDEN_SIZE, NN_OUTPUT_SIZE);
+    printf("Max Training Time: %.0f seconds.\n", MAX_TRAINING_SECONDS);
     printf("--------------------------------------------------------------------------------\n");
     printf("Batch Group | Avg MSE (Group) | Correctness (Total Range) | Backprop Time (sec)\n");
     printf("--------------------------------------------------------------------------------\n");
@@ -569,8 +562,8 @@ int main() {
     double total_mse_group = 0.0;
     double total_bp_time_group = 0.0;
 
-    // Safety limit, but the primary exit is the success rate
-    while (batch_count < MAX_EPOCHS && current_success_rate < TRAINING_GOAL_PERCENT) {
+    // The primary loop termination condition is the time limit
+    while (difftime(time(NULL), start_time) < MAX_TRAINING_SECONDS) {
 
         double bp_time = 0.0;
         double avg_mse = train_batch(&nn, &bp_time);
@@ -592,21 +585,23 @@ int main() {
                    batch_count, avg_mse_group, current_success_rate, avg_bp_time_per_batch);
             fflush(stdout);
             
-            // Log milestones (10%, 20%, ..., 90%, 95%)
-            while (current_success_rate >= next_milestone_percent) {
+            // Log milestones
+            while (current_success_rate >= next_milestone_percent && next_milestone_percent < TRAINING_GOAL_PERCENT) {
                 printf("--- MILESTONE REACHED --- Batch: %d | Time: %.0f sec | Correctness: %.2f%%\n",
                        batch_count, difftime(time(NULL), start_time), current_success_rate);
                 fflush(stdout);
                 
-                // Set next milestone. Handle the jump from 90% to 95%.
                 if (next_milestone_percent == 90) {
-                    next_milestone_percent = (int)TRAINING_GOAL_PERCENT; // 95
-                } else if (next_milestone_percent >= TRAINING_GOAL_PERCENT) {
-                    // Stop training if goal is met
-                    break;
+                    next_milestone_percent = (int)TRAINING_GOAL_PERCENT; 
                 } else {
                     next_milestone_percent += 10;
                 }
+            }
+
+            // Check for goal completion (if it happens before the time limit)
+            if (current_success_rate >= TRAINING_GOAL_PERCENT) {
+                 printf("--- GOAL ACHIEVED --- Correctness %.2f%% reached.\n", current_success_rate);
+                 break; 
             }
             
             // Reset group totals
@@ -618,11 +613,8 @@ int main() {
     printf("--------------------------------------------------------------------------------\n");
     printf("\n#####################################################\n");
     printf("## TRAINING TERMINATED ##\n");
-    if (current_success_rate >= TRAINING_GOAL_PERCENT) {
-        printf("GOAL ACHIEVED: Correctness %.2f%% reached.\n", current_success_rate);
-    } else {
-        printf("MAX EPOCHS reached. Final correctness: %.2f%%\n", current_success_rate);
-    }
+    printf("Reason: %s\n", (current_success_rate >= TRAINING_GOAL_PERCENT) ? "Goal achieved." : "Time limit reached (%.0f seconds)." );
+    printf("Final correctness: %.2f%%\n", current_success_rate);
     printf("Total Batches Run: %d\n", batch_count);
     printf("Total Training Time: %.0f seconds.\n", difftime(time(NULL), start_time));
     printf("#####################################################\n");
