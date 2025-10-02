@@ -17,7 +17,7 @@
 
 // Game/Physics Constants
 #define MOVE_STEP_SIZE 15.0 
-#define MAX_EPISODE_STEPS 150 // INCREASED from 50 to allow longer episodes
+#define MAX_EPISODE_STEPS 150 
 #define NUM_OBSTACLES 5
 #define NUM_DIAMONDS 10 
 
@@ -47,10 +47,10 @@ const char* action_names[NN_OUTPUT_SIZE] = {"UP", "DOWN", "LEFT", "RIGHT"};
 
 // --- Unittest Constants (UPDATED) ---
 #define UNITTEST_EPISODES 50
-#define UNITTEST_SUCCESS_THRESHOLD 0.5 // Threshold for average reward per step
-#define UNITTEST_MAX_STEPS 20 // Max steps for the minimal test
-#define UNITTEST_PROGRESS_REWARD 1.0 // Strong reward for moving closer (replaces REWARD_PROGRESS_SCALE)
-#define UNITTEST_STEP_PENALTY -0.1 // Minimal penalty for time (replaces REWARD_PER_STEP)
+#define UNITTEST_SUCCESS_THRESHOLD 0.5 
+#define UNITTEST_MAX_STEPS 20 
+#define UNITTEST_PROGRESS_REWARD 1.0 
+#define UNITTEST_STEP_PENALTY -0.1 
 
 // --- Data Structures ---
 typedef struct { double x, y; double w, h; } Obstacle;
@@ -76,6 +76,12 @@ int action_history[ACTION_HISTORY_SIZE];
 int action_history_idx = 0; 
 int step_count = 0;
 time_t last_print_time = 0; 
+
+// --- FORWARD DECLARATIONS TIL FEJLFINDING ---
+// Disse funktioner er defineret længere nede, men kaldes tidligt (f.eks. i check_collision)
+bool is_point_legal(double x, double y);
+bool is_point_in_rect(double px, double py, double rx, double ry, double rw, double rh);
+
 
 // --- C99 Utility Functions ---
 void check_nan_and_stop(double value, const char* var_name, const char* context) {
@@ -291,7 +297,7 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
 
 // --- Game Logic Functions ---
 
-// Function to move the robot and check basic boundaries (NEW)
+// Function to move the robot and check basic boundaries 
 void apply_action(Robot* robot, int action_index) {
     double old_x = robot->x;
     double old_y = robot->y;
@@ -305,7 +311,6 @@ void apply_action(Robot* robot, int action_index) {
     }
     
     // Check if the new position is legal (walls and obstacles)
-    // is_point_legal must be called BEFORE check_collision, as it is used to check for walls/obstacles
     if (!is_point_legal(robot->x, robot->y)) {
         // If movement leads to a crash, mark as not alive and revert position temporarily
         robot->is_alive = false;
@@ -315,7 +320,7 @@ void apply_action(Robot* robot, int action_index) {
     }
 }
 
-// Function to check for collisions (diamonds, target, and confirm obstacles/walls) (NEW)
+// Function to check for collisions (diamonds, target, and confirm obstacles/walls) 
 int check_collision(Robot* robot) {
     int diamonds_collected_this_step = 0;
 
@@ -601,10 +606,8 @@ void update_game(bool is_training_run, bool expert_run, bool is_unittest) {
     // Store old distance for progress reward calculation
     double old_dist_copy = old_min_dist_to_goal; 
     
-    // *** MISSING FUNCTION CALL 1 ***
     apply_action(robot, action_index);
 
-    // *** MISSING FUNCTION CALL 2 ***
     int diamonds_collected = check_collision(robot);
     
     // Calculate reward, passing is_unittest
@@ -706,7 +709,12 @@ double col_to_x(int c) { return c * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
 double row_to_y(int r) { return r * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
 int x_to_col(double x) { return (int)(x / GRID_CELL_SIZE); }
 int y_to_row(double y) { return (int)(y / GRID_CELL_SIZE); }
-bool is_point_in_rect(double px, double py, double rx, double ry, double rw, double rh) { return px >= rx && px <= rx + rw && py >= ry && py <= ry + rh; }
+
+// *** IMPLEMENTERING AF FORKLARATIONER ***
+// Flyttet fra bunden til efter forward declarations
+bool is_point_in_rect(double px, double py, double rx, double ry, double rw, double rh) { 
+    return px >= rx && px <= rx + rw && py >= ry && py <= ry + rh; 
+}
 
 bool is_point_legal(double x, double y) {
     double r = state.robot.size; 
@@ -730,6 +738,8 @@ bool is_point_legal(double x, double y) {
     }
     return true;
 }
+// *** SLUT IMPLEMENTERING AF FORKLARATIONER ***
+
 
 int find_path_segment_bfs(double start_x, double start_y, double end_x, double end_y, PathNode* path_out) {
     int start_r = y_to_row(start_y); int start_c = x_to_col(start_x);
@@ -865,10 +875,8 @@ void generate_expert_path_training_data() {
             double input[NN_INPUT_SIZE];
             get_state_features(input, &old_min_dist_to_goal);
 
-            // *** MISSING FUNCTION CALL 1 ***
             apply_action(robot, best_action);
 
-            // *** MISSING FUNCTION CALL 2 ***
             int diamonds_collected = check_collision(robot);
             
             // Pass false for is_unittest
