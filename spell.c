@@ -15,31 +15,31 @@
 #define NN_OUTPUT_SIZE (MAX_WORD_LEN * ALPHABET_SIZE)   // 10 * 27 = 270
 
 #define NUM_TRAIN_WORDS 64          
-#define MISSPELLED_PER_WORD 32      
+#define MISSPELLED_PER_WORD 16      // CHANGED: Reduced from 32 to 16
 #define CORRECT_WORD_PROPORTION 0.1 
-#define BATCH_SIZE ((int)(NUM_TRAIN_WORDS * MISSPELLED_PER_WORD / (1.0 - CORRECT_WORD_PROPORTION))) 
+#define BATCH_SIZE ((int)(NUM_TRAIN_WORDS * MISSPELLED_PER_WORD / (1.0 - CORRECT_WORD_PROPORTION))) // ~1137 examples
 #define CORRECT_SAMPLES_IN_BATCH (BATCH_SIZE - (NUM_TRAIN_WORDS * MISSPELLED_PER_WORD)) 
 
 #define NUM_TEST_WORDS VOCAB_SIZE   
 #define MISSPELLED_PER_TEST_WORD 16 
-#define TOTAL_TESTS (NUM_TEST_WORDS * MISSPELLED_PER_TEST_WORD) 
+#define TOTAL_TESTS (NUM_TEST_WORDS * MISSPELLED_PER_TEST_WORD) // 8192
 
 #define MAX_TRAINING_SECONDS 240.0  
-#define TEST_INTERVAL_SECONDS 10.0  
+#define TEST_INTERVAL_SECONDS 30.0  // CHANGED: Increased from 10.0 to 30.0
 
 // --- NN Architecture Constants (Single Hidden Layer) ---
-#define NN_HIDDEN_SIZE 512           // CHANGED: Single hidden layer with 512 neurons
+#define NN_HIDDEN_SIZE 512          
 #define NN_INITIAL_LEARNING_RATE 0.005 
 #define NN_LR_DECAY_RATE 0.0001     
 
 // --- SVG Constants ---
-#define SVG_WIDTH 1000 // Reduced width as there are fewer layers
+#define SVG_WIDTH 1000 
 #define SVG_HEIGHT 500
 #define INITIAL_SVG_CAPACITY 2500
 #define SVG_FILENAME "network.svg"
 #define NODE_RADIUS 6
 #define NODE_SPACING 12
-#define LAYER_SPACING 300 // Increased layer spacing
+#define LAYER_SPACING 300 
 
 // --- Vocabulary and Encoding Arrays ---
 const char* ENGLISH_WORDS[VOCAB_SIZE] = {
@@ -148,7 +148,7 @@ typedef struct {
     Matrix output_errors;
 } NeuralNetwork;
 
-// --- SVG String Management Struct (Unchanged) ---
+// --- SVG String Management Struct ---
 typedef struct { char* str; size_t length; bool is_valid; } SvgString;
 SvgString* svg_strings = NULL;
 size_t svg_count = 0;
@@ -176,7 +176,7 @@ void softmax(double* arr) {
 }
 
 
-// --- Encoding/Decoding Functions (Unchanged from previous OHE version) ---
+// --- Encoding/Decoding Functions ---
 
 void encode_word_ohe(const char* word, double* arr) {
     memset(arr, 0, NN_OUTPUT_SIZE * sizeof(double));
@@ -283,7 +283,7 @@ void generate_misspelled_word(const char* original_word, char* misspelled_word_o
     }
 }
 
-// --- Matrix Utility Functions (Unchanged) ---
+// --- Matrix Utility Functions ---
 Matrix matrix_create(int rows, int cols, int input_size) {
     Matrix m; m.rows = rows; m.cols = cols;
     m.data = (double**)calloc(rows, sizeof(double*));
@@ -378,8 +378,8 @@ void nn_init(NeuralNetwork* nn) {
     int h = NN_HIDDEN_SIZE;
     
     // Weights 
-    nn->weights_ih = matrix_create(h, NN_INPUT_SIZE, NN_INPUT_SIZE); // Input -> Hidden
-    nn->weights_ho = matrix_create(NN_OUTPUT_SIZE, h, h);             // Hidden -> Output
+    nn->weights_ih = matrix_create(h, NN_INPUT_SIZE, NN_INPUT_SIZE); 
+    nn->weights_ho = matrix_create(NN_OUTPUT_SIZE, h, h);             
     
     // Biases
     nn->bias_h = (double*)calloc(h, sizeof(double));
@@ -424,7 +424,7 @@ void nn_forward(NeuralNetwork* nn, const double* input_array, double* output_arr
         double block[ALPHABET_SIZE];
         for(int j = 0; j < ALPHABET_SIZE; j++) block[j] = output_in_m.data[start_idx + j][0];
         
-        softmax(block); // Softmax function modifies the block array in place
+        softmax(block); 
         
         for(int j = 0; j < ALPHABET_SIZE; j++) output_out_m.data[start_idx + j][0] = block[j];
     }
@@ -448,9 +448,8 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     int h = NN_HIDDEN_SIZE;
     
     // --- 1. Output Layer Error (Softmax + CCE) ---
-    // Error is (Output - Target) for CCE with Softmax. 
     Matrix output_errors_m = matrix_add_subtract(nn->output_outputs, targets_m, false);
-    matrix_copy_in(nn->output_errors, output_errors_m); // Store the error
+    matrix_copy_in(nn->output_errors, output_errors_m); 
 
     // Calculate CCE loss
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) { 
@@ -489,11 +488,10 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     matrix_free(weights_ho_t_m); matrix_free(h_errors_m); matrix_free(h_d_m); matrix_free(h_gradients_m);
     matrix_free(inputs_t_m); matrix_free(delta_ih_m); matrix_free(new_ih_m); 
     
-    // Return average CCE loss per character position
     return total_cce_loss / MAX_WORD_LEN;
 }
 
-// Sequential Batch Training Function (Unchanged logic)
+// Sequential Batch Training Function 
 double train_sequential_batch(NeuralNetwork* nn, int* word_indices, double* bp_time) {
     clock_t start_bp = clock();
     double total_loss = 0.0;
@@ -509,7 +507,7 @@ double train_sequential_batch(NeuralNetwork* nn, int* word_indices, double* bp_t
         
         encode_word_ohe(correct_word, target_arr);
         
-        for (int j = 0; j < MISSPELLED_PER_WORD; j++) {
+        for (int j = 0; j < MISSPELLED_PER_WORD; j++) { // NEW: Only 16 misspellings/word
             generate_misspelled_word(correct_word, work_word);
             encode_word_ohe(work_word, input_arr); 
 
@@ -536,7 +534,7 @@ double train_sequential_batch(NeuralNetwork* nn, int* word_indices, double* bp_t
     return total_loss / BATCH_SIZE;
 }
 
-// Testing function (Unchanged logic)
+// Testing function 
 double test_network(NeuralNetwork* nn, double* test_time, bool verbose, int* fixed_count) {
     clock_t start_test = clock();
     int correct_words = 0;
@@ -575,7 +573,7 @@ double test_network(NeuralNetwork* nn, double* test_time, bool verbose, int* fix
 }
 
 
-// --- SVG Utility Functions (Modified for I->H->O structure) ---
+// --- SVG Utility Functions ---
 
 void svg_init_storage() {
     svg_capacity = INITIAL_SVG_CAPACITY;
@@ -641,7 +639,7 @@ void save_network_as_svg(NeuralNetwork* nn) {
 
     // --- Helper for Layer Coordinates ---
     int layer_sizes[] = {NN_INPUT_SIZE, NN_HIDDEN_SIZE, NN_OUTPUT_SIZE};
-    int num_layers = sizeof(layer_sizes) / sizeof(layer_sizes[0]); // 3 layers
+    int num_layers = sizeof(layer_sizes) / sizeof(layer_sizes[0]); 
     int x_coords[num_layers];
     
     for (int i = 0; i < num_layers; i++) {
@@ -666,13 +664,12 @@ void save_network_as_svg(NeuralNetwork* nn) {
         int y_offset_prev = SVG_HEIGHT / 2 - (prev_size * (r1 + s1)) / 2;
         int y_offset_curr = SVG_HEIGHT / 2 - (curr_size * (r2 + s2)) / 2;
         
-        // Sampling for drawing connections (sample every 10 from I/O, every 5 from H)
-        int step_prev = (i == 0 || i == num_layers - 1) ? 10 : 5;
+        int step_prev = (i == 0) ? 10 : 5;
         int step_curr = (i == num_layers - 2) ? 10 : 5;
 
 
-        for (int j = 0; j < curr_size; j += step_curr) { // Current Layer (rows in matrix)
-            for (int k = 0; k < prev_size; k += step_prev) { // Previous Layer (cols in matrix)
+        for (int j = 0; j < curr_size; j += step_curr) { 
+            for (int k = 0; k < prev_size; k += step_prev) { 
                 double weight = weights->data[j][k];
                 double abs_weight = fabs(weight);
                 const char* css_class = (weight >= 0) ? "positive" : "negative";
@@ -710,7 +707,7 @@ void save_network_as_svg(NeuralNetwork* nn) {
                            cx, cy, r, fill_color);
 
             // Add Bias Labels 
-            if (i == 1 && j % 100 == 0) { // Only sample biases from the Hidden Layer
+            if (i == 1 && j % 100 == 0) { 
                 double bias = nn->bias_h[j];
                 svg_add_string("<text x=\"%d\" y=\"%d\" font-size=\"8\" fill=\"#666666\" class=\"bias\">%.2f</text>\n",
                                cx + r + 2, cy + 3, bias);
@@ -747,7 +744,7 @@ void save_network_as_svg(NeuralNetwork* nn) {
     svg_free_storage();
 }
 
-// --- Main Execution (Unchanged logic) ---
+// --- Main Execution ---
 
 int main() {
     srand((unsigned int)time(NULL));
@@ -796,7 +793,7 @@ int main() {
         last_batch_cce_loss = train_sequential_batch(&nn, word_indices, &bp_time);
         total_batches_run++;
 
-        // Testing Step
+        // Testing Step (Less frequent check)
         time_t current_time = time(NULL);
         if (difftime(current_time, last_test_time) >= TEST_INTERVAL_SECONDS || total_batches_run == 1) {
             double test_time = 0.0;
