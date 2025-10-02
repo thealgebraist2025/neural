@@ -61,7 +61,18 @@ typedef struct { double x, y; double w, h; } Obstacle;
 typedef struct { double x, y; double size; bool collected; } Diamond;
 typedef struct { double x, y; double w, h; } TargetArea;
 typedef struct { double x, y; double size; bool is_alive; bool has_reached_target; } Robot;
-typedef struct { int score; int total_diamonds; Robot robot; Obstacle obstacles[NUM_OBSTACLES]; Diamond diamonds[NUM_DIAMONDS]; TargetArea target; } GameState;
+typedef struct { double x, y; } Position; // NEW: For path tracing
+
+typedef struct { 
+    int score; 
+    int total_diamonds; 
+    Robot robot; 
+    Obstacle obstacles[NUM_OBSTACLES]; 
+    Diamond diamonds[NUM_DIAMONDS]; 
+    TargetArea target; 
+    Position path_history[MAX_EPISODE_STEPS]; // NEW: Path history buffer
+    int path_length;                       // NEW: Current path length
+} GameState;
 
 typedef struct { int rows; int cols; double** data; } Matrix;
 typedef struct { double input[NN_INPUT_SIZE]; int action_index; double reward; } EpisodeStep;
@@ -117,6 +128,12 @@ double distance_2d(double x1, double y1, double x2, double y2) {
 bool is_point_in_rect(double px, double py, double rx, double ry, double rw, double rh) { 
     return px >= rx && px <= rx + rw && py >= ry && py <= ry + rh; 
 }
+
+// Pathfinding Helpers
+double col_to_x(int c) { return c * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
+double row_to_y(int r) { return r * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
+int x_to_col(double x) { return (int)(x / GRID_CELL_SIZE); }
+int y_to_row(double y) { return (int)(y / GRID_CELL_SIZE); }
 // --- End C99 Utility Functions ---
 
 // --- Matrix Functions (Fixed for safety and correctness) ---
@@ -407,6 +424,7 @@ void init_minimal_state() {
     step_count = 0;
     state.score = 0;
     state.total_diamonds = 0;
+    state.path_length = 0; // NEW: Reset path length
 
     // Robot setup (Start position)
     state.robot.x = 50.0;
@@ -428,6 +446,13 @@ void init_minimal_state() {
     // Clear all obstacles and diamonds
     for(int i = 0; i < NUM_OBSTACLES; i++) state.obstacles[i].w = 0.0;
     for(int i = 0; i < NUM_DIAMONDS; i++) state.diamonds[i].collected = true;
+    
+    // NEW: Store initial position
+    if (state.path_length < MAX_EPISODE_STEPS) {
+        state.path_history[state.path_length].x = state.robot.x;
+        state.path_history[state.path_length].y = state.robot.y;
+        state.path_length++; // Store initial state as step 0
+    }
 
     if (UNITTEST_TRACING) {
         printf("UNITTEST INFO: Start (%.1f, %.1f), Target Area (%.1f, %.1f) to (%.1f, %.1f) (Step Size: %.1f)\n", 
@@ -440,6 +465,7 @@ void init_game_state() {
     step_count = 0;
     state.score = 0;
     state.total_diamonds = 0;
+    state.path_length = 0; // NEW: Reset path length
 
     // Robot setup (Start position)
     state.robot.x = 50.0;
@@ -483,6 +509,13 @@ void init_game_state() {
     state.target.y = CANVAS_HEIGHT - 100.0;
     state.target.w = 50.0;
     state.target.h = 50.0;
+
+    // NEW: Store initial position
+    if (state.path_length < MAX_EPISODE_STEPS) {
+        state.path_history[state.path_length].x = state.robot.x;
+        state.path_history[state.path_length].y = state.robot.y;
+        state.path_length++; // Store initial state as step 0
+    }
 }
 
 // Selects an action stochastically based on probabilities
@@ -648,6 +681,13 @@ void update_game(bool is_training_run, bool expert_run, bool is_unittest, int ep
     
     // Pass is_unittest flag to apply_action
     apply_action(robot, action_index, is_unittest);
+    
+    // NEW: Store new position and increment path length
+    if (state.path_length < MAX_EPISODE_STEPS) {
+        state.path_history[state.path_length].x = robot->x;
+        state.path_history[state.path_length].y = robot->y;
+        state.path_length++;
+    }
 
     int diamonds_collected = check_collision(robot);
     
@@ -711,6 +751,68 @@ void run_reinforce_training() {
     }
 }
 
+// NEW FUNCTION: Prints the ASCII map with the robot's path
+void print_ascii_map_with_path() {
+    printf("\n\n--- AI PATH TRACE (P) ---\n");
+    printf("Legend: #=Wall, O=Obstacle, D=Diamond, S=Start (Robot), T=Target (Goal), P=Path, .=Free\n");
+    
+    for (int r = 0; r < GRID_ROWS; r++) {
+        for (int c = 0; c < GRID_COLS; c++) {
+            
+            char final_symbol = '.';
+            double cell_x = col_to_x(c);
+            double cell_y = row_to_y(r);
+
+            // 1. Check for Obstacle
+            for (int i = 0; i < NUM_OBSTACLES; i++) {
+                Obstacle* obs = &state.obstacles[i];
+                if (is_point_in_rect(cell_x, cell_y, obs->x, obs->y, obs->w, obs->h)) {
+                    final_symbol = 'O'; 
+                    break;
+                }
+            }
+            
+            // 2. Check for Diamond
+            for (int i = 0; i < NUM_DIAMONDS; i++) {
+                Diamond* d = &state.diamonds[i];
+                if (x_to_col(d->x) == c && y_to_row(d->y) == r) {
+                    final_symbol = 'D'; 
+                    break;
+                }
+            }
+            
+            // 3. Check for Target
+            TargetArea* target = &state.target;
+            if (is_point_in_rect(cell_x, cell_y, target->x, target->y, target->w, target->h)) {
+                final_symbol = 'T'; 
+            }
+            
+            // 4. Check for Path (Index 1 to end - overrides '.', 'D', 'O', 'T')
+            for(int i = 1; i < state.path_length; i++) { 
+                 if (x_to_col(state.path_history[i].x) == c && y_to_row(state.path_history[i].y) == r) {
+                    final_symbol = 'P';
+                    break;
+                }
+            }
+
+            // 5. Check for Start (Index 0 - overrides everything except '#')
+            if (state.path_length > 0 && x_to_col(state.path_history[0].x) == c && y_to_row(state.path_history[0].y) == r) {
+                final_symbol = 'S';
+            }
+            
+            // 6. Check for Wall (Highest Priority)
+            if (r == 0 || r == GRID_ROWS - 1 || c == 0 || c == GRID_COLS - 1) {
+                final_symbol = '#'; 
+            }
+
+            printf("%c", final_symbol);
+        }
+        printf("\n");
+    }
+    printf("-----------------------------------------\n\n");
+}
+
+
 void print_episode_stats(double train_time_ms, bool is_expert, bool is_unittest) {
     Robot* robot = &state.robot;
     
@@ -731,9 +833,14 @@ void print_episode_stats(double train_time_ms, bool is_expert, bool is_unittest)
     }
     
     printf("Termination Status: %s\n", status);
-    if (!is_unittest) {
-        printf("Total Diamonds Collected: %d/%d\n", state.total_diamonds, NUM_DIAMONDS);
+    
+    printf("Total Diamonds Collected: %d/%d\n", state.total_diamonds, NUM_DIAMONDS);
+    
+    // NEW: Conditional ASCII Path Trace
+    if (!is_unittest && state.total_diamonds > 4) {
+        print_ascii_map_with_path();
     }
+    
     printf("Final Policy Reward (Score): %.2f\n", episode_buffer.total_score);
     
     printf("Reinforcement Learning Training Time: %.3f ms\n", train_time_ms);
@@ -752,10 +859,14 @@ void print_episode_stats(double train_time_ms, bool is_expert, bool is_unittest)
 
 // --- Pathfinding and Expert Training Functions ---
 
+// Pathfinding Helpers (Moved up)
+/*
 double col_to_x(int c) { return c * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
 double row_to_y(int r) { return r * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
 int x_to_col(double x) { return (int)(x / GRID_CELL_SIZE); }
 int y_to_row(double y) { return (int)(y / GRID_CELL_SIZE); }
+*/
+
 
 int find_path_segment_bfs(double start_x, double start_y, double end_x, double end_y, PathNode* path_out) {
     int start_r = y_to_row(start_y); int start_c = x_to_col(start_x);
@@ -859,6 +970,15 @@ void generate_expert_path_training_data() {
     episode_buffer.count = 0;
     episode_buffer.total_score = 0;
     
+    // Reset path length from init_game_state to start recording from the full expert path
+    // We only need the state features, so let's reset the robot's position and path length from init_game_state
+    // and use the waypoints to drive the robot instead of the path history.
+    
+    // A simpler way: just reset the robot's position to the start and run a simplified update_game.
+    state.robot.x = waypoints_x[0];
+    state.robot.y = waypoints_y[0];
+    state.path_length = 1; // Only the start position is currently stored
+    
     for (int i = 0; i < full_path_len && episode_buffer.count < MAX_EPISODE_STEPS; i++) {
         PathNode current_node = full_path[i];
         double target_x = col_to_x(current_node.c);
@@ -895,6 +1015,13 @@ void generate_expert_path_training_data() {
             // Pass false for is_unittest
             apply_action(robot, best_action, false);
 
+            // Store new position for expert path trace
+            if (state.path_length < MAX_EPISODE_STEPS) {
+                state.path_history[state.path_length].x = robot->x;
+                state.path_history[state.path_length].y = robot->y;
+                state.path_length++;
+            }
+
             int diamonds_collected = check_collision(robot);
             
             // Pass false for is_unittest
@@ -913,6 +1040,8 @@ void generate_expert_path_training_data() {
         }
     }
     
+    // Path tracing isn't strictly necessary for expert pre-training but the logic above keeps it in sync.
+
     if (robot->has_reached_target) {
         episode_buffer.total_score += (state.total_diamonds == NUM_DIAMONDS) ? REWARD_SUCCESS : REWARD_SUCCESS / 2.0;
     } else if (!robot->is_alive) {
@@ -1104,7 +1233,9 @@ int main() {
 
         // Print stats every 10 seconds
         time_t current_time = time(NULL);
-        if (current_time - last_print_time >= 10) {
+        // Note: The print condition is now also triggered if diamonds > 4 for the path trace.
+        // I will keep the time condition for normal output frequency.
+        if (current_time - last_print_time >= 10 || state.total_diamonds > 4) {
             print_episode_stats(train_time_ms, false, false);
             last_print_time = current_time;
         }
