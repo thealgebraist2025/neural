@@ -29,10 +29,10 @@
 
 // NN & RL Constants
 #define NN_INPUT_SIZE 9 
-#define NN_HIDDEN_SIZE 32 // CHANGE: Increased network capacity from 16 to 32
+#define NN_HIDDEN_SIZE 64 // MODIFIED: Increased network capacity from 32 to 64
 #define NN_OUTPUT_SIZE 4 
-#define NN_LEARNING_RATE 0.01 // CHANGE: Set to 0.01 for stable training (up from 0.0025)
-#define GAMMA 0.95 
+#define NN_LEARNING_RATE 0.01 // Learning rate for stable training
+#define GAMMA 0.95 // Discount factor 
 
 // Reward Goals and Values
 #define REWARD_PER_STEP -1.0 
@@ -44,7 +44,7 @@
 // Action History Buffer
 #define ACTION_HISTORY_SIZE 10 
 
-// CHANGE: Use enum for type safety and clarity
+// Use enum for type safety and clarity
 typedef enum {
     ACTION_UP = 0,
     ACTION_DOWN,
@@ -90,14 +90,13 @@ double check_double(double value, const char* var_name, const char* context) {
     return value;
 }
 
-// CHANGE: Hidden Layer Activation Function to ReLU
+// ReLU Activation Function
 double relu(double x) {
     return check_double(x > 0 ? x : 0.0, "relu_output", "relu");
 }
 
-// CHANGE: ReLU Derivative
+// ReLU Derivative
 double relu_derivative(double y) {
-    // Note: y is the output of ReLU (hidden_output)
     return check_double(y > 0 ? 1.0 : 0.0, "relu_deriv_output", "relu_derivative");
 }
 
@@ -105,14 +104,13 @@ void softmax(const double* input, double* output, int size) {
     double max_val = input[0];
     for (int i = 1; i < size; i++) { if (input[i] > max_val) max_val = input[i]; }
     double sum_exp = 0.0;
-    const double epsilon = 1e-12; // CHANGE: Added safety epsilon for division by zero
+    const double epsilon = 1e-12; // Added safety epsilon
     
     for (int i = 0; i < size; i++) {
         output[i] = exp(input[i] - max_val);
         sum_exp += output[i];
     }
     
-    // Safety check for near-zero sum
     if (sum_exp < epsilon) sum_exp = epsilon; 
 
     for (int i = 0; i < size; i++) { output[i] = check_double(output[i] / sum_exp, "softmax_output", "softmax"); }
@@ -121,23 +119,21 @@ double distance_2d(double x1, double y1, double x2, double y2) {
     return sqrt(pow(x2 - x1, 2) + pow(y2 - y1, 2));
 }
 
-// --- Matrix Functions ---
+// --- Matrix Functions (with memory allocation checks) ---
 
 Matrix matrix_create(int rows, int cols) {
     Matrix m; 
     m.rows = rows; 
     m.cols = cols;
     
-    // CHANGE: Allocation check 1 (rows)
     m.data = (double**)calloc(rows, sizeof(double*));
     if (m.data == NULL) { fprintf(stderr, "Allocation failed for matrix rows.\n"); exit(EXIT_FAILURE); }
     
     for (int i = 0; i < rows; i++) {
-        // CHANGE: Allocation check 2 (columns)
         m.data[i] = (double*)calloc(cols, sizeof(double));
         if (m.data[i] == NULL) { fprintf(stderr, "Allocation failed for matrix column %d.\n", i); exit(EXIT_FAILURE); }
         
-        // Use He-like initialization for ReLU
+        // He-like initialization for ReLU
         for (int j = 0; j < cols; j++) {
             m.data[i][j] = check_double((((double)rand() / RAND_MAX) * 2.0 - 1.0) * sqrt(2.0 / (rows + cols)), "rand_val", "matrix_create");
         }
@@ -145,7 +141,6 @@ Matrix matrix_create(int rows, int cols) {
     return m;
 }
 
-// CHANGE: Explicit Free Function
 void matrix_free(Matrix m) {
     for (int i = 0; i < m.rows; i++) free(m.data[i]);
     free(m.data);
@@ -224,7 +219,7 @@ void nn_init(NeuralNetwork* nn) {
     nn->weights_ih = matrix_create(NN_HIDDEN_SIZE, NN_INPUT_SIZE);
     nn->weights_ho = matrix_create(NN_OUTPUT_SIZE, NN_HIDDEN_SIZE);
     
-    // CHANGE: Allocate and check biases
+    // Allocate and check biases
     nn->bias_h = (double*)malloc(NN_HIDDEN_SIZE * sizeof(double));
     if (nn->bias_h == NULL) { fprintf(stderr, "Allocation failed for bias_h.\n"); exit(EXIT_FAILURE); }
     
@@ -239,7 +234,7 @@ void nn_policy_forward(NeuralNetwork* nn, const double* input_array, double* out
     Matrix inputs = array_to_matrix(input_array, NN_INPUT_SIZE);
     Matrix hidden = matrix_dot(nn->weights_ih, inputs);
     for (int i = 0; i < NN_HIDDEN_SIZE; i++) hidden.data[i][0] += nn->bias_h[i];
-    Matrix hidden_output = matrix_map(hidden, relu); // CHANGE: ReLU Activation
+    Matrix hidden_output = matrix_map(hidden, relu); 
     Matrix output_logits_m = matrix_dot(nn->weights_ho, hidden_output);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) {
         output_logits_m.data[i][0] += nn->bias_o[i];
@@ -255,7 +250,7 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
     // 1. Feedforward 
     Matrix hidden = matrix_dot(nn->weights_ih, inputs);
     for (int i = 0; i < NN_HIDDEN_SIZE; i++) hidden.data[i][0] += nn->bias_h[i];
-    Matrix hidden_output = matrix_map(hidden, relu); // CHANGE: ReLU Activation
+    Matrix hidden_output = matrix_map(hidden, relu); 
 
     Matrix output_logits_m = matrix_dot(nn->weights_ho, hidden_output);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) output_logits_m.data[i][0] += nn->bias_o[i];
@@ -269,6 +264,7 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
     Matrix output_gradients = matrix_create(NN_OUTPUT_SIZE, 1);
     for (int i = 0; i < NN_OUTPUT_SIZE; i++) {
         double target = (i == action_index) ? 1.0 : 0.0;
+        // Policy gradient term: (Prob - Target) * Advantage
         output_gradients.data[i][0] = check_double(probs[i] - target, "output_grad_base", "nn_reinforce_train") * discounted_return;
     }
 
@@ -281,11 +277,11 @@ void nn_reinforce_train(NeuralNetwork* nn, const double* input_array, int action
         nn->bias_o[i] = check_double(nn->bias_o[i], "bias_o", "nn_train_upd") - check_double(output_gradients.data[i][0], "grad_o", "nn_train_upd") * nn->lr;
     }
 
-    // 4. Calculate Hidden Errors and Update Weights IH and Bias H (Backprop to Hidden Layer)
+    // 4. Calculate Hidden Errors and Update Weights IH and Bias H
     Matrix weights_ho_T = matrix_transpose(nn->weights_ho);
     Matrix hidden_errors = matrix_dot(weights_ho_T, output_gradients);
 
-    Matrix hidden_gradients = matrix_map(hidden_output, relu_derivative); // CHANGE: ReLU Derivative
+    Matrix hidden_gradients = matrix_map(hidden_output, relu_derivative); 
     Matrix hidden_gradients_mul = matrix_multiply_elem(hidden_gradients, hidden_errors);
     
     Matrix delta_weights_ih = matrix_multiply_scalar(matrix_dot(hidden_gradients_mul, matrix_transpose(inputs)), -nn->lr);
@@ -341,16 +337,10 @@ void init_game_state() {
 
     // Fixed Diamonds (x, y) - 10 legal diamonds
     double diamond_pos[NUM_DIAMONDS][2] = {
-        {100.0, 100.0}, // D0
-        {300.0, 100.0}, // D1
-        {700.0, 100.0}, // D2
-        {100.0, 450.0}, // D3
-        {250.0, 500.0}, // D4
-        {500.0, 500.0}, // D5
-        {700.0, 500.0}, // D6
-        {50.0, 300.0},  // D7
-        {500.0, 350.0}, // D8
-        {700.0, 300.0}  // D9
+        {100.0, 100.0}, {300.0, 100.0}, {700.0, 100.0}, 
+        {100.0, 450.0}, {250.0, 500.0}, {500.0, 500.0}, 
+        {700.0, 500.0}, {50.0, 300.0},  {500.0, 350.0}, 
+        {700.0, 300.0}  
     };
     for (int i = 0; i < NUM_DIAMONDS; i++) {
         state.diamonds[i].x = diamond_pos[i][0];
@@ -476,9 +466,6 @@ double calculate_reward(double old_min_dist_to_goal, int diamonds_collected_this
         reward += REWARD_PROGRESS_SCALE * distance_change; 
     }
     
-    // NOTE: The previous code had a bug that zeroed out crash/success rewards. Removed the line:
-    // if (robot->has_reached_target || !robot->is_alive) reward = 0.0;
-    
     return check_double(reward, "final_reward", "calc_reward");
 }
 
@@ -487,7 +474,6 @@ void apply_action(Robot* robot, int action_index) {
     double dx = 0.0;
     double dy = 0.0;
     
-    // CHANGE: Use enum for type safety and clarity
     switch ((Action)action_index) {
         case ACTION_UP:    dy = -MOVE_STEP_SIZE; break; 
         case ACTION_DOWN:  dy = MOVE_STEP_SIZE;  break;
@@ -600,7 +586,7 @@ void run_reinforce_training() {
         returns[i] = cumulative_return;
     }
     
-    // 2. Normalize Returns (Baseline)
+    // 2. Normalize Returns (Baseline - Monte Carlo Policy Gradient with Normalized Advantage)
     double sum_returns = 0.0;
     double sum_sq_returns = 0.0;
     for (int i = 0; i < episode_buffer.count; i++) {
@@ -611,10 +597,13 @@ void run_reinforce_training() {
     double variance = (sum_sq_returns / episode_buffer.count) - (mean_return * mean_return);
     double std_dev = sqrt(variance > 1e-6 ? variance : 1.0); 
 
-    // 3. Train the Network using Backpropagation (REINFORCE)
+    // 3. Train the Network 
     for (int i = 0; i < episode_buffer.count; i++) {
+        // Calculate the normalized advantage (A_t = G_t - B) / std_dev
         double Gt = (returns[i] - mean_return) / std_dev; 
         
+        // Pass -Gt because the formula is typically used for loss minimization, but we 
+        // minimize negative advantage for positive reinforcement.
         nn_reinforce_train(&nn, 
                            episode_buffer.steps[i].input, 
                            episode_buffer.steps[i].action_index, 
@@ -647,7 +636,6 @@ void print_episode_stats(double train_time_ms, bool is_expert) {
         for (int i = 1; i <= ACTION_HISTORY_SIZE; i++) {
             int index = (action_history_idx - i + ACTION_HISTORY_SIZE) % ACTION_HISTORY_SIZE;
             
-            // Check for uninitialized state (-1)
             if (action_history[index] != -1) { 
                 printf("%s%s", action_names[action_history[index]], (i < ACTION_HISTORY_SIZE) ? ", " : "");
             }
@@ -658,7 +646,7 @@ void print_episode_stats(double train_time_ms, bool is_expert) {
 }
 
 
-// --- Pathfinding and Expert Training Functions (Fully included utility) ---
+// --- Pathfinding and Expert Training Functions ---
 
 double col_to_x(int c) { return c * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
 double row_to_y(int r) { return r * GRID_CELL_SIZE + GRID_CELL_SIZE / 2.0; }
@@ -701,7 +689,6 @@ int find_path_segment_bfs(double start_x, double start_y, double end_x, double e
     int end_c = x_to_col(end_x);
     
     if (!is_point_legal(start_x, start_y) || !is_point_legal(end_x, end_y)) {
-        // fprintf(stderr, "Error: Start or End point is illegal for pathfinding. (Start: %.1f, %.1f | End: %.1f, %.1f)\n", start_x, start_y, end_x, end_y);
         return 0;
     }
 
@@ -780,7 +767,7 @@ void generate_expert_path_training_data() {
     waypoints_x[0] = state.robot.x;
     waypoints_y[0] = state.robot.y;
 
-    // Find a random but legal intermediate point
+    // Find a random but legal intermediate point (to force a more complex path)
     double rnd_x, rnd_y;
     do {
         rnd_x = 600.0 + (double)rand() / RAND_MAX * 150.0; 
@@ -965,7 +952,6 @@ void print_ascii_map() {
 // --- Main Simulation Loop ---
 
 int main() {
-    // CHANGE: Add srand(time(NULL)) for reproducible randomness
     srand((unsigned int)time(NULL)); 
     nn_init(&nn);
     
@@ -975,7 +961,7 @@ int main() {
     // 2. Print the ASCII Level Map (Called only once)
     print_ascii_map();
 
-    // CHANGE: Initialize history to -1 (invalid action) for clarity
+    // Initialize history to -1 (invalid action) for clarity
     for(int i = 0; i < ACTION_HISTORY_SIZE; i++) {
         action_history[i] = -1; 
     }
@@ -983,7 +969,7 @@ int main() {
     printf("--- RL 2D Robot Collector Simulation (EXPERT PRE-TRAIN) ---\n");
     printf("Input Size: %d, Hidden Size: %d, Output Size: %d\n", NN_INPUT_SIZE, NN_HIDDEN_SIZE, NN_OUTPUT_SIZE);
     printf("Learning Rate: %.4f, Discount Factor (Gamma): %.2f\n", NN_LEARNING_RATE, GAMMA);
-    printf("Training will run for 3 minutes (180 seconds). Stats printed every 10 episodes.\n");
+    printf("Training will run for 3 minutes (180 seconds). Stats printed every 50 episodes.\n");
 
     // --- EXPERT PRE-TRAINING PHASE ---
     pre_train_with_shortest_path();
@@ -1010,8 +996,8 @@ int main() {
         
         double train_time_ms = (double)(train_end - train_start) * 1000.0 / CLOCKS_PER_SEC;
 
-        // CHANGE: Print every 10 episodes for better progress tracking
-        if (current_episode % 10 == 0) { 
+        // MODIFIED: Print every 50 episodes for significantly less output
+        if (current_episode % 50 == 0) { 
             print_episode_stats(train_time_ms, false);
         }
     }
@@ -1021,8 +1007,8 @@ int main() {
     // --- Cleanup: Ensure no memory leaks ---
     matrix_free(nn.weights_ih);
     matrix_free(nn.weights_ho);
-    free(nn.bias_h); // Explicit free for biases
-    free(nn.bias_o); // Explicit free for biases
+    free(nn.bias_h);
+    free(nn.bias_o);
     printf("Simulation finished and memory cleaned up.\n");
     return 0;
 }
