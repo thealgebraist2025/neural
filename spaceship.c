@@ -10,8 +10,10 @@
 #define MAX_16BIT 65535.0           // Max value for 16-bit positive integer
 #define BATCH_SIZE 100              // Number of training examples per batch
 #define TEST_BATCH_SIZE 20          // Number of test examples per test run
-#define TEST_INTERVAL_SECONDS 10    // Frequency of testing (in seconds)
-#define LOG_INTERVAL_SECONDS 2      // Frequency of performance logging (in seconds)
+#define TRAINING_GOAL_PERCENT 99.0  // Target success rate to stop training
+#define MAX_EPOCHS 500000           // Max total batches (safety limit)
+#define TEST_INTERVAL_BATCHES 500   // Test every 500 batches to frequently check progress
+#define LOG_INTERVAL_SECONDS 2      // Frequency of general performance logging (in seconds)
 #define MAX_TEST_ATTEMPTS 1000      // Max attempts to find a wrongly sorted example
 
 // --- NN & Training Constants ---
@@ -19,12 +21,11 @@
 #define NN_OUTPUT_SIZE ARRAY_SIZE   // 16
 #define NN_HIDDEN_SIZE 64           // Chosen hidden layer size
 #define NN_LEARNING_RATE 0.005
-#define EPOCHS 50000                // Total training batches to run
 
 // --- SVG Constants (Adjusted for 64 neurons) ---
 #define SVG_WIDTH 1200
 #define SVG_HEIGHT 1600
-#define INITIAL_SVG_CAPACITY 2500   // Increased capacity to hold all elements + overhead
+#define INITIAL_SVG_CAPACITY 2500   // Capacity to hold all elements + overhead
 
 // --- Data Structures ---
 typedef struct { int rows; int cols; double** data; } Matrix;
@@ -56,9 +57,8 @@ SvgString* svg_strings = NULL;
 size_t svg_count = 0;
 size_t svg_capacity = 0;
 
-// --- Utility Functions (Matrix Operations, NN Core Stubs, etc. - omitted for brevity in explanation) ---
+// --- Utility Functions ---
 
-// Creates and initializes a matrix with random values (using Xavier/He init scaling)
 Matrix matrix_create(int rows, int cols, int input_size) {
     Matrix m; m.rows = rows; m.cols = cols;
     m.data = (double**)calloc(rows, sizeof(double*));
@@ -275,23 +275,15 @@ bool find_wrongly_sorted_example(NeuralNetwork* nn, double* input, double* outpu
     return false;
 }
 
-// --- NEW SVG UTILITY FUNCTIONS ---
+// --- SVG Utility Functions ---
 
-// Checks if an SvgString is safe to use
 bool validate_svg_string(const SvgString* s) {
-    // Check if the pointer is not NULL, the validity flag is true, 
-    // the internal pointer is not NULL, and the recorded length matches strlen.
     return s != NULL && s->is_valid && s->str != NULL && s->length == strlen(s->str);
 }
-
-// Dynamically appends a string to the global SVG array
 void append_svg_string(const char* new_str) {
     if (new_str == NULL) return;
-
     size_t len = strlen(new_str);
     if (len == 0) return;
-
-    // Resize array if capacity is reached
     if (svg_count >= svg_capacity) {
         svg_capacity = (svg_capacity == 0) ? INITIAL_SVG_CAPACITY : svg_capacity * 2;
         SvgString* temp = (SvgString*)realloc(svg_strings, svg_capacity * sizeof(SvgString));
@@ -302,26 +294,18 @@ void append_svg_string(const char* new_str) {
         }
         svg_strings = temp;
     }
-
-    // Allocate memory for the new string content
     char* str_copy = (char*)malloc(len + 1);
     if (str_copy == NULL) {
         fprintf(stderr, "Error: Failed to allocate memory for SVG string copy.\n");
         svg_strings[svg_count].is_valid = false;
         return;
     }
-
-    // Copy and populate the struct
     strcpy(str_copy, new_str);
-
     svg_strings[svg_count].str = str_copy;
     svg_strings[svg_count].length = len;
     svg_strings[svg_count].is_valid = true;
-
     svg_count++;
 }
-
-// Frees all memory used by the global SVG array
 void free_svg_strings() {
     for (size_t i = 0; i < svg_count; i++) {
         if (svg_strings[i].str != NULL) {
@@ -345,7 +329,7 @@ const char* SVG_CONNECTION_TEMPLATE = "<line x1=\"%d\" y1=\"%.2f\" x2=\"%d\" y2=
 
 // Function to generate and collect ALL SVG parts
 void generate_network_svg(NeuralNetwork* nn) {
-    char buffer[512]; // Increased buffer size to handle detailed connection strings
+    char buffer[512];
 
     // 1. SVG Header
     snprintf(buffer, sizeof(buffer), SVG_HEADER_TEMPLATE, SVG_WIDTH, SVG_HEIGHT, SVG_WIDTH, SVG_HEIGHT);
@@ -358,7 +342,6 @@ void generate_network_svg(NeuralNetwork* nn) {
 
     const double Y_TOTAL_SPACE = (double)(Y_END - Y_START);
 
-    // Spacing needs to cover the 64 neurons in the full vertical space
     const double Y_SPACING_IN = Y_TOTAL_SPACE / NN_INPUT_SIZE;
     const double Y_SPACING_HIDDEN = Y_TOTAL_SPACE / NN_HIDDEN_SIZE;
     const double Y_SPACING_OUT = Y_TOTAL_SPACE / NN_OUTPUT_SIZE;
@@ -396,41 +379,34 @@ void generate_network_svg(NeuralNetwork* nn) {
     }
 
     // --- B. Draw ALL Connections (Input -> Hidden) ---
-    // 16 * 64 = 1024 connections
     for (int h = 0; h < NN_HIDDEN_SIZE; h++) {
         for (int i = 0; i < NN_INPUT_SIZE; i++) {
             double weight = nn->weights_ih.data[h][i];
-            // Use line color/thickness to represent weight value
             const char* class = (weight >= 0) ? "pos" : "neg";
             double abs_weight = fabs(weight);
-            // Limit width to 2.5px and opacity to 1.0
             double width = fmin(2.5, abs_weight * 5.0);
             double opacity = fmin(1.0, abs_weight * 3.0);
 
-            // X_IN (y_in[i]) to X_HIDDEN (y_hidden[h])
             snprintf(buffer, sizeof(buffer), SVG_CONNECTION_TEMPLATE, 
-                     X_IN + 10, y_in[i], // Start slightly to the right of input neuron center
-                     X_HIDDEN - 10, y_hidden[h], // End slightly to the left of hidden neuron center
+                     X_IN + 10, y_in[i],
+                     X_HIDDEN - 10, y_hidden[h],
                      class, width, opacity);
             append_svg_string(buffer);
         }
     }
 
     // --- C. Draw ALL Connections (Hidden -> Output) ---
-    // 64 * 16 = 1024 connections
     for (int o = 0; o < NN_OUTPUT_SIZE; o++) {
         for (int h = 0; h < NN_HIDDEN_SIZE; h++) {
             double weight = nn->weights_ho.data[o][h];
-            // Use line color/thickness to represent weight value
             const char* class = (weight >= 0) ? "pos" : "neg";
             double abs_weight = fabs(weight);
             double width = fmin(2.5, abs_weight * 5.0);
             double opacity = fmin(1.0, abs_weight * 3.0);
 
-            // X_HIDDEN (y_hidden[h]) to X_OUT (y_out[o])
             snprintf(buffer, sizeof(buffer), SVG_CONNECTION_TEMPLATE, 
-                     X_HIDDEN + 10, y_hidden[h], // Start slightly to the right of hidden neuron center
-                     X_OUT - 10, y_out[o], // End slightly to the left of output neuron center
+                     X_HIDDEN + 10, y_hidden[h],
+                     X_OUT - 10, y_out[o],
                      class, width, opacity);
             append_svg_string(buffer);
         }
@@ -446,14 +422,11 @@ void print_network_as_svg(NeuralNetwork* nn) {
     printf("## NEURAL NETWORK SVG REPRESENTATION (Complete Graph) ##\n");
     printf("#####################################################\n\n");
 
-    // Generate all SVG parts into the dynamic array
     generate_network_svg(nn);
 
-    printf("<!-- SVG Output Start (Copy this section and view in a browser) -->\n");
+    printf("\n");
 
-    // Print all validated strings
     for (size_t i = 0; i < svg_count; i++) {
-        // Validation check is mandatory before using the string
         if (validate_svg_string(&svg_strings[i])) {
             printf("%s", svg_strings[i].str);
         } else {
@@ -461,9 +434,8 @@ void print_network_as_svg(NeuralNetwork* nn) {
         }
     }
 
-    printf("<!-- SVG Output End -->\n");
+    printf("\n");
 
-    // Clean up memory
     free_svg_strings();
 }
 
@@ -471,84 +443,95 @@ void print_network_as_svg(NeuralNetwork* nn) {
 // --- Main Execution ---
 
 int main() {
-    // Initialize random number generator
     srand((unsigned int)time(NULL));
 
     NeuralNetwork nn;
     nn_init(&nn);
 
     printf("Neural Network Sort Trainer Initialized.\n");
+    printf("Goal: Achieve %.2f%% sorting correctness.\n", TRAINING_GOAL_PERCENT);
     printf("Architecture: Input=%d, Hidden=%d, Output=%d\n",
            NN_INPUT_SIZE, NN_HIDDEN_SIZE, NN_OUTPUT_SIZE);
     fflush(stdout);
 
     time_t start_time = time(NULL);
-    time_t last_test_time = start_time;
     time_t last_log_time = start_time;
     int batch_count = 0;
     int batches_since_last_log = 0;
-
-    // Force a 2-minute training limit
-    time_t max_end_time = start_time + 120; // 120 seconds = 2 minutes
-
-    // Main Training Loop
-    while (batch_count < EPOCHS && time(NULL) < max_end_time) {
+    double current_success_rate = 0.0;
+    int next_milestone_percent = 10;
+    
+    // Safety limit, but the primary exit is the success rate
+    while (batch_count < MAX_EPOCHS && current_success_rate < TRAINING_GOAL_PERCENT) {
 
         double avg_mse = train_batch(&nn);
         batch_count++;
         batches_since_last_log++;
 
+        // --- Timed Performance Log ---
         time_t current_time = time(NULL);
         if (current_time - last_log_time >= LOG_INTERVAL_SECONDS) {
             double elapsed_log = difftime(current_time, last_log_time);
             double batches_per_sec = (double)batches_since_last_log / elapsed_log;
-            int batches_per_interval = (int)round(batches_per_sec * LOG_INTERVAL_SECONDS);
-
-            printf("[Perf Log] Batch %d | MSE: %.8f | Batches/2s (Est): %d\n",
-                   batch_count, avg_mse, batches_per_interval);
+            
+            printf("[Perf Log] Batch %d | MSE: %.8f | Rate: %.0f batches/sec\n",
+                   batch_count, avg_mse, batches_per_sec);
             fflush(stdout);
 
             last_log_time = current_time;
             batches_since_last_log = 0;
         }
 
-        if (current_time - last_test_time >= TEST_INTERVAL_SECONDS) {
+        // --- Milestone/Goal Check (More frequent than general log) ---
+        if (batch_count % TEST_INTERVAL_BATCHES == 0) {
+            current_success_rate = test_network(&nn);
 
-            double success_rate = test_network(&nn);
+            // Log milestones (10%, 20%, ..., 90%, 99%)
+            while (current_success_rate >= next_milestone_percent) {
+                printf("--- MILESTONE REACHED --- Batch: %d | Time: %.0f sec | Correctness: %.2f%%\n",
+                       batch_count, difftime(current_time, start_time), current_success_rate);
+                fflush(stdout);
+                
+                // Set next milestone. Handle the jump from 90% to 99%.
+                if (next_milestone_percent == 90) {
+                    next_milestone_percent = 99;
+                } else if (next_milestone_percent == 99) {
+                    // Stop training if 99% is met
+                    break;
+                } else {
+                    next_milestone_percent += 10;
+                }
+            }
 
-            printf("[Test Result] Batch %d | Success Rate (Monotonic Pairs): %.2f%%\n",
-                   batch_count, success_rate);
-            fflush(stdout);
-
-            last_test_time = current_time;
-        }
-
-        if (batch_count % 500 == 0 && current_time - last_test_time < TEST_INTERVAL_SECONDS && current_time - last_log_time < LOG_INTERVAL_SECONDS) {
-            printf("[Batch %d] MSE: %.8f\n", batch_count, avg_mse);
-            fflush(stdout);
+            // Display current test result if not a milestone
+            if (current_success_rate < next_milestone_percent) {
+                 printf("[Test Result] Batch %d | Correctness: %.2f%%\n", batch_count, current_success_rate);
+                 fflush(stdout);
+            }
         }
     }
 
-    printf("\nTraining complete after %d batches or 2-minute limit reached.\n", batch_count);
+    printf("\n#####################################################\n");
+    printf("## TRAINING TERMINATED ##\n");
+    if (current_success_rate >= TRAINING_GOAL_PERCENT) {
+        printf("GOAL ACHIEVED: Correctness %.2f%% reached.\n", current_success_rate);
+    } else {
+        printf("MAX EPOCHS reached. Final correctness: %.2f%%\n", current_success_rate);
+    }
+    printf("Total Batches Run: %d\n", batch_count);
+    printf("Total Training Time: %.0f seconds.\n", difftime(time(NULL), start_time));
+    printf("#####################################################\n");
     fflush(stdout);
 
     // --- POST-TRAINING ANALYSIS ---
 
-    // 1. Final Evaluation
-    double final_success_rate = test_network(&nn);
-    printf("\n--- FINAL EVALUATION ---\n");
-    printf("Total Batches Run: %d\n", batch_count);
-    printf("Success Rate (Monotonic Pairs on %d test arrays): %.2f%%\n",
-           TEST_BATCH_SIZE, final_success_rate);
-    fflush(stdout);
-
-    // 2. Find and Print a Wrongly Sorted Example
+    // 1. Find and Print a Wrongly Sorted Example
     double bad_input[ARRAY_SIZE];
     double bad_output[ARRAY_SIZE];
 
     printf("\n--- FINDING WRONGLY SORTED EXAMPLE ---\n");
     if (find_wrongly_sorted_example(&nn, bad_input, bad_output)) {
-        printf("FOUND a wrongly sorted example:\n");
+        printf("FOUND an example that is NOT perfectly sorted:\n");
         printf("  Input Array (Unsorted):\n    [");
         for (int i = 0; i < ARRAY_SIZE; i++) {
             printf("%.4f%s", bad_input[i], (i == ARRAY_SIZE - 1) ? "" : ", ");
@@ -563,11 +546,11 @@ int main() {
         fflush(stdout);
 
     } else {
-        printf("Did NOT find a wrongly sorted example in %d attempts. (Network may be performing near-perfectly.)\n", MAX_TEST_ATTEMPTS);
+        printf("Did NOT find a wrongly sorted example in %d attempts.\n", MAX_TEST_ATTEMPTS);
         fflush(stdout);
     }
 
-    // 3. Print Network as SVG (Complete)
+    // 2. Print Network as SVG (Complete)
     print_network_as_svg(&nn);
     fflush(stdout);
 
