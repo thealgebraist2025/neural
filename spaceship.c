@@ -1,5 +1,4 @@
-This C99 program simulates the spacecraft and neural network logic without a graphical user interface. It performs the full physics simulation and training logic, and prints the requested state information every 2 simulated seconds.
-It includes the mandatory check_nan_and_stop function that wraps every critical floating-point calculation.
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
