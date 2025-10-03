@@ -147,6 +147,12 @@ typedef struct {
     Matrix h_errors_cache;     // Error propagated to hidden layer (512x1)
     Matrix h_d_m_cache;        // ReLU derivative mask for hidden layer (512x1)
     Matrix W_grad_ih;          // Gradient of IH weights (512x270)
+    
+    // --- NEW: TRANSPOSE SCRATCHPAD MATRICES (Optimized for performance) ---
+    Matrix h_out_t_cache;      // hidden_outputs^T (1x512)
+    Matrix weights_ho_t_cache; // weights_ho^T (512x270)
+    Matrix inputs_t_cache;     // inputs^T (1x270)
+    // ----------------------------------------------------------------------
 } NeuralNetwork;
 
 // --- Matrix Utility Functions (Modified to store result) ---
@@ -419,6 +425,11 @@ void nn_init(NeuralNetwork* nn) {
     nn->h_errors_cache = matrix_create(h, 1, 0);
     nn->h_d_m_cache = matrix_create(h, 1, 0);
     nn->W_grad_ih = matrix_create(h, input_size, 0);
+    
+    // 4. NEW: Initialize Transpose Scratchpads
+    nn->h_out_t_cache = matrix_create(1, h, 0); 
+    nn->weights_ho_t_cache = matrix_create(h, output_size, 0); 
+    nn->inputs_t_cache = matrix_create(1, input_size, 0); 
 }
 
 void nn_free(NeuralNetwork* nn) {
@@ -443,6 +454,11 @@ void nn_free(NeuralNetwork* nn) {
     matrix_free(nn->h_errors_cache);
     matrix_free(nn->h_d_m_cache);
     matrix_free(nn->W_grad_ih);
+
+    // 4. NEW: Free Transpose Scratchpads
+    matrix_free(nn->h_out_t_cache);
+    matrix_free(nn->weights_ho_t_cache);
+    matrix_free(nn->inputs_t_cache);
 }
 
 void nn_forward(NeuralNetwork* nn, const double* input_array, double* output_array) {
@@ -482,12 +498,6 @@ void nn_forward(NeuralNetwork* nn, const double* input_array, double* output_arr
     for (int i = 0; i < output_size; i++) { output_array[i] = nn->output_outputs.data[i][0]; }
 }
 
-// Temporary 1xH matrix for transpose of hidden_outputs
-Matrix h_out_t_cache; 
-// Temporary HxO matrix for transpose of weights_ho
-Matrix weights_ho_t_cache;
-// Temporary 1xI matrix for transpose of inputs
-Matrix inputs_t_cache;
 
 double nn_backward(NeuralNetwork* nn, const double* target_array) {
     double total_cce_loss = 0.0;
@@ -512,11 +522,10 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     }
     
     // **Update Weights HO**
-    // 1. Transpose hidden_outputs for W_grad calculation: h_out_t_cache = hidden_outputs^T (1x512)
-    Matrix h_out_t_m = matrix_transpose(nn->hidden_outputs); // NOTE: Still needs one dynamic alloc for transpose
+    // 1. Transpose hidden_outputs into h_out_t_cache (1x512)
+    matrix_transpose_store(nn->hidden_outputs, nn->h_out_t_cache); 
     // W_grad_ho = output_errors * h_out_t_cache (270x512)
-    matrix_dot_store(nn->output_errors, h_out_t_m, nn->W_grad_ho);
-    matrix_free(h_out_t_m); // Free the transpose temp
+    matrix_dot_store(nn->output_errors, nn->h_out_t_cache, nn->W_grad_ho);
     
     // 2. Apply learning rate: weights_ho = weights_ho - (W_grad_ho * lr)
     for (int i = 0; i < output_size; i++) {
@@ -530,10 +539,9 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
 
     // --- 2. Hidden Layer Gradients (ReLU) ---
     // 1. Backpropagate error: weights_ho_t_cache = weights_ho^T (512x270)
-    Matrix weights_ho_t_m = matrix_transpose(nn->weights_ho); // NOTE: Still needs one dynamic alloc for transpose
+    matrix_transpose_store(nn->weights_ho, nn->weights_ho_t_cache); 
     // h_errors_cache = weights_ho_t_cache * output_errors (512x1)
-    matrix_dot_store(weights_ho_t_m, nn->output_errors, nn->h_errors_cache);
-    matrix_free(weights_ho_t_m); // Free the transpose temp
+    matrix_dot_store(nn->weights_ho_t_cache, nn->output_errors, nn->h_errors_cache);
     
     // 2. Apply ReLU derivative: h_d_m_cache = hidden_outputs (mapped to derivative) (512x1)
     matrix_map_store(nn->hidden_outputs, nn->h_d_m_cache, relu_derivative); 
@@ -541,11 +549,10 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     matrix_multiply_elem_store(nn->h_errors_cache, nn->h_d_m_cache, nn->h_errors_cache);
     
     // **Update Weights IH**
-    // 1. Transpose input: inputs_t_cache = inputs^T (1x270)
-    Matrix inputs_t_m = matrix_transpose(nn->inputs); // NOTE: Still needs one dynamic alloc for transpose
+    // 1. Transpose input into inputs_t_cache (1x270)
+    matrix_transpose_store(nn->inputs, nn->inputs_t_cache); 
     // W_grad_ih = h_errors_cache * inputs_t_cache (512x270)
-    matrix_dot_store(nn->h_errors_cache, inputs_t_m, nn->W_grad_ih);
-    matrix_free(inputs_t_m); // Free the transpose temp
+    matrix_dot_store(nn->h_errors_cache, nn->inputs_t_cache, nn->W_grad_ih);
 
     // 2. Apply learning rate: weights_ih = weights_ih - (W_grad_ih * lr)
     for (int i = 0; i < h; i++) {
