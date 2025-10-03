@@ -14,11 +14,18 @@
 #define V_SIZE (NUM_INPUT_INTS * BITS_PER_INT) // Visible Layer Size (128)
 #define H_SIZE 256                            // Hidden Layer Size
 #define TRAINING_SET_SIZE 256
-#define EVAL_SET_SIZE 50                      // New: Size of the evaluation set
+#define EVAL_SET_SIZE 50                      // Size of the evaluation set
 #define MAX_EPOCHS 1000
 #define LEARNING_RATE 0.01f
 #define INITIAL_WEIGHT_SCALE 0.01f
 #define REPORT_INTERVAL_SECONDS 10
+
+// --- EVALUATION STRUCTURE ---
+typedef struct {
+    float avg_mse;
+    // Indices: [0 errors, 1 error, 2 errors, >2 errors]
+    int error_counts[4]; 
+} EvalResult;
 
 // --- GLOBAL RBM PARAMETERS ---
 float W[V_SIZE * H_SIZE]; // Weights (V_SIZE x H_SIZE)
@@ -84,6 +91,7 @@ void encode_int_to_bits(uint16_t num, float* bits) {
 uint16_t decode_bits_to_int(const float* bits) {
     uint16_t num = 0;
     for (int i = 0; i < BITS_PER_INT; i++) {
+        // Round to nearest integer before bit shift
         if (bits[i] > 0.5f) {
             num |= (1 << i);
         }
@@ -167,9 +175,6 @@ void h_to_v(const float* h_prob, float* v_prob) {
 
 /**
  * @brief Samples a binary vector from a probability vector.
- * @param prob Input probability vector.
- * @param sample Output binary vector (0.0 or 1.0).
- * @param size Vector size.
  */
 void sample_bernoulli(const float* prob, float* sample, int size) {
     for (int i = 0; i < size; i++) {
@@ -179,10 +184,6 @@ void sample_bernoulli(const float* prob, float* sample, int size) {
 
 /**
  * @brief Performs one step of Contrastive Divergence (CD-1) update.
- * @param v0 The input data (V_SIZE).
- * @param h0_prob The hidden probabilities derived from v0 (H_SIZE).
- * @param v1 The reconstructed visible state after one Gibbs step (V_SIZE).
- * @param h1_prob The hidden probabilities derived from v1 (H_SIZE).
  */
 void update_weights(const float* v0, const float* h0_prob, const float* v1, const float* h1_prob) {
     // 1. Update Weights
@@ -289,16 +290,18 @@ void generate_training_data() {
 }
 
 /**
- * @brief Runs an evaluation on 50 new random sorted lists and reports the average MSE.
- * @return float The average reconstruction MSE over the evaluation set.
+ * @brief Runs an evaluation on 50 new random sorted lists and reports MSE and sorting errors.
+ * @return EvalResult The evaluation metrics structure.
  */
-float run_evaluation() {
+EvalResult run_evaluation() {
+    EvalResult result = {0.0f, {0, 0, 0, 0}};
     float total_mse = 0.0f;
 
     // Local buffers for evaluation
     float eval_v[V_SIZE];
     float h0_prob[H_SIZE];
     float v1_prob[V_SIZE];
+    uint16_t decoded_ints[NUM_INPUT_INTS]; // To hold the 8 decoded integers
 
     for (int i = 0; i < EVAL_SET_SIZE; i++) {
         uint16_t unsorted_list[NUM_INPUT_INTS];
@@ -317,16 +320,42 @@ float run_evaluation() {
         // Backward Pass: Hidden -> Reconstruction (v1_prob)
         h_to_v(h0_prob, v1_prob);
 
-        // Calculate Mean Squared Error (MSE)
+        // 1. Calculate Mean Squared Error (MSE)
         float mse = 0.0f;
         for (int k = 0; k < V_SIZE; k++) {
             float diff = eval_v[k] - v1_prob[k];
             mse += diff * diff;
         }
         total_mse += (mse / V_SIZE);
+
+        // 2. Decode the reconstruction and count sorting errors
+        for (int j = 0; j < NUM_INPUT_INTS; j++) {
+            decoded_ints[j] = decode_bits_to_int(&v1_prob[j * BITS_PER_INT]);
+        }
+
+        int sorting_errors = 0;
+        // Check 7 adjacent pairs for order
+        for (int j = 1; j < NUM_INPUT_INTS; j++) {
+            // An error occurs if the current element is smaller than the preceding one
+            if (decoded_ints[j] < decoded_ints[j - 1]) {
+                sorting_errors++;
+            }
+        }
+
+        // 3. Aggregate error counts
+        if (sorting_errors == 0) {
+            result.error_counts[0]++;
+        } else if (sorting_errors == 1) {
+            result.error_counts[1]++;
+        } else if (sorting_errors == 2) {
+            result.error_counts[2]++;
+        } else {
+            result.error_counts[3]++; // > 2 errors
+        }
     }
 
-    return total_mse / EVAL_SET_SIZE;
+    result.avg_mse = total_mse / EVAL_SET_SIZE;
+    return result;
 }
 
 int main() {
@@ -336,9 +365,10 @@ int main() {
 
     printf("Starting RBM Training (CD-1) on Sorted Data...\n");
     printf("V_SIZE: %d, H_SIZE: %d, Training Set: %d, Eval Set: %d\n", V_SIZE, H_SIZE, TRAINING_SET_SIZE, EVAL_SET_SIZE);
-    printf("----------------------------------------------------------------------------------\n");
-    printf("Epoch | Time | Train Rec. MSE | Eval Rec. MSE (Avg 50 lists)\n");
-    printf("----------------------------------------------------------------------------------\n");
+    printf("------------------------------------------------------------------------------------------------\n");
+    printf("Epoch | Time | Train Rec. MSE | Eval Rec. MSE | Eval Error Distribution (Total Lists: %d)\n", EVAL_SET_SIZE);
+    printf("      |      |                |               | 0 Err | 1 Err | 2 Err | >2 Err \n");
+    printf("------------------------------------------------------------------------------------------------\n");
 
 
     // CD-1 Temporary Variables
@@ -349,12 +379,16 @@ int main() {
     float h1_prob[H_SIZE];
 
     time_t start_time = time(NULL);
-    time_t last_report_time = start_time;
+    time_t last_report_time = start_time - REPORT_INTERVAL_SECONDS; // Force immediate initial report
     int epoch = 0;
     
     // Initial evaluation for a baseline
-    float avg_eval_mse = run_evaluation();
-    printf("Baseline | %4.1fs | N/A            | %.8f\n", (float)(time(NULL) - start_time), avg_eval_mse);
+    EvalResult eval_result = run_evaluation();
+    
+    printf("Baseline| %4.1fs | N/A            | %.8f | %5d | %5d | %5d | %5d\n", 
+           (float)(time(NULL) - start_time), eval_result.avg_mse,
+           eval_result.error_counts[0], eval_result.error_counts[1],
+           eval_result.error_counts[2], eval_result.error_counts[3]);
 
 
     while (epoch < MAX_EPOCHS) {
@@ -395,10 +429,12 @@ int main() {
             float elapsed = (float)(current_time - start_time);
             
             // Run evaluation on 50 fresh samples
-            avg_eval_mse = run_evaluation();
+            eval_result = run_evaluation();
 
-            printf("%5d | %4.1fs | %.8f | %.8f\n", 
-                   epoch + 1, elapsed, epoch_mse, avg_eval_mse);
+            printf("%5d | %4.1fs | %.8f | %.8f | %5d | %5d | %5d | %5d\n", 
+                   epoch + 1, elapsed, epoch_mse, eval_result.avg_mse,
+                   eval_result.error_counts[0], eval_result.error_counts[1],
+                   eval_result.error_counts[2], eval_result.error_counts[3]);
                    
             last_report_time = current_time;
         }
@@ -406,7 +442,7 @@ int main() {
         epoch++;
     }
 
-    printf("----------------------------------------------------------------------------------\n");
-    printf("Training complete after %d epochs. Final Eval MSE: %.8f\n", MAX_EPOCHS, avg_eval_mse);
+    printf("------------------------------------------------------------------------------------------------\n");
+    printf("Training complete after %d epochs. Final Eval MSE: %.8f\n", MAX_EPOCHS, eval_result.avg_mse);
     return 0;
 }
