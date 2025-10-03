@@ -6,16 +6,17 @@
 #include <ctype.h>
 
 // --- INN PARAMETERS AND CONSTANTS ---
-#define D 8                   // Increased Dimension of the sentence feature vector
-#define NUM_LEGAL_SENTENCES 2048 // Increased Training Size
-#define NUM_ILLEGAL_SENTENCES 2048 // Increased Test Size
+#define D 8                   // Dimension of the sentence feature vector
+#define NUM_LEGAL_SENTENCES 2048 // Training Size
+#define NUM_ILLEGAL_SENTENCES 2048 // Test Size
 #define LEARNING_RATE 0.00005  // Adjusted for larger network/data
 #define MAX_EPOCHS 200
-#define TRAINING_TIME_LIMIT_SEC 240.0 // New time limit of 4 minutes
+#define TRAINING_TIME_LIMIT_SEC 240.0 // Time limit of 4 minutes
 #define GAUSSIAN_SIGMA 1.0    // Variance of the target base distribution N(0, I)
 #define GAUSSIAN_MU 0.0       // Mean of the target base distribution N(0, I)
 #define MAX_SENTENCE_LEN 512
-#define MAX_ALICE_FILE_SIZE 10000 // Max size for simulated file content
+#define MAX_FILE_READ_SIZE 100000 // Max size to read from alice.txt
+#define MAX_SENTENCES_FROM_FILE 1000 // Upper limit for distinct sentences loaded from file
 
 // --- DATA STRUCTURES ---
 
@@ -47,9 +48,8 @@ typedef struct {
     int is_legal;
 } Sentence;
 
-// --- VOCABULARY AND FEATURE MAPPING (Expanded for D=8) ---
+// --- VOCABULARY AND FEATURE MAPPING ---
 
-// Nouns/Verbs/Adjectives expanded and updated.
 const char *const Nouns[] = {"car", "bike", "dog", "lawyer", "judge", "contract", "witness", "defendant", "alice", "way", "side", "door", "middle", "table", "glass", "key", "thought", "locks", "curtain", "sister", "rabbit", "garden", "pool", "mock", "turtle"};
 const double NounValues[] = {1.0, 1.5, 2.0, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0, 10.5, 11.0, 11.5, 12.0, 12.5, 13.0, 13.5};
 #define NUM_NOUNS (sizeof(Nouns) / sizeof(Nouns[0]))
@@ -62,23 +62,14 @@ const char *const Adjectives[] = {"red", "fast", "legal", "binding", "corrupt", 
 const double AdjectiveValues[] = {1.0, 1.5, 2.0, 3.0, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 1.5, 10.0, 10.5, 11.0, 11.5};
 #define NUM_ADJECTIVES (sizeof(Adjectives) / sizeof(Adjectives[0]))
 
-// New: Nonsensical/Out-of-Distribution words for creating illegal sentences
+// Nonsensical/Out-of-Distribution words for creating illegal sentences
 const char *const NonsenseNouns[] = {"glork", "zorp", "fleep", "wubba", "snerd", "crungle", "chork"};
 const char *const NonsenseVerbs[] = {"bleem", "floof", "skree", "quonk", "smashle", "zooble"};
 #define NUM_NONSENSE_NOUNS (sizeof(NonsenseNouns) / sizeof(NonsenseNouns[0]))
 #define NUM_NONSENSE_VERBS (sizeof(NonsenseVerbs) / sizeof(NonsenseVerbs[0]))
 
-// --- SIMULATED FILE CONTENT ---
-// In a real environment, this content would be read from alice.txt
-const char *SIMULATED_ALICE_CONTENT = 
-"Alice had been all the way down one side and up the other, trying every door, she walked sadly down the middle, wondering how she was ever to get out again. Suddenly she came upon a little three-legged table, all made of solid glass; there was nothing on it except a tiny golden key, and Alice’s first thought was that it might belong to one of the doors of the hall; but, alas! either the locks were too large, or the key was too small, but at any rate it would not open any of them. However, on the second time round, she came upon a low curtain she had not noticed before, and behind it was a little door about fifteen inches high: she tried the little golden key in the lock, and to her great delight it fitted! 'Curiouser and curiouser!' cried Alice (she was so much surprised, that for the moment she quite forgot how to speak good English). Down, down, down. Would the fall never come to an end? 'I wonder how many miles I’ve fallen by this time?' she said aloud. 'I must be getting somewhere near the centre of the earth. Let me see: that would be four thousand miles down, I think.' 'I shall be late!' (when she thought of this, it was just possible it had happened a few minutes before, and she was in a great hurry) 'My sister will think I’m mad! She will think I'm mad!'";
-#define MAX_SENTENCES_FROM_FILE 100 // Limit for loading distinct sentences
+// --- UTILITY FUNCTIONS (Same as before) ---
 
-// --- UTILITY FUNCTIONS FOR MATRIX AND VECTOR OPERATIONS ---
-
-/**
- * @brief Initializes a matrix with small random values, enforcing lower triangular structure.
- */
 void init_matrix(Matrix *M, int rows, int cols, int triangular) {
     if (rows != D || cols != D) { fprintf(stderr, "Error: Matrix dimensions must be %dx%d.\n", D, D); return; }
     M->rows = rows; M->cols = cols;
@@ -87,7 +78,7 @@ void init_matrix(Matrix *M, int rows, int cols, int triangular) {
             if (triangular && j > i) {
                 M->data[i][j] = 0.0;
             } else {
-                M->data[i][j] = ((double)rand() / RAND_MAX) * 0.01; // Smaller initialization
+                M->data[i][j] = ((double)rand() / RAND_MAX) * 0.01;
             }
         }
     }
@@ -95,9 +86,6 @@ void init_matrix(Matrix *M, int rows, int cols, int triangular) {
     M->initialized = 1;
 }
 
-/**
- * @brief Initializes a vector with zeros.
- */
 void init_vector(Vector *V, int size) {
     if (size != D) { fprintf(stderr, "Error: Vector dimension must be %d.\n", D); return; }
     V->size = size;
@@ -105,26 +93,16 @@ void init_vector(Vector *V, int size) {
     V->initialized = 1;
 }
 
-/**
- * @brief Checks if a matrix is initialized (simplified).
- */
 int check_init(const Matrix *const M) {
     if (!M->initialized) { return 0; }
     return 1;
 }
 
-/**
- * @brief Checks if a vector is initialized (simplified).
- */
 int check_vector_init(const Vector *const V) {
     if (!V->initialized) { return 0; }
     return 1;
 }
 
-
-/**
- * @brief Performs matrix-vector multiplication: y = A * x.
- */
 void multiply_matrix_vector(const Matrix *const A, const Vector *const x, Vector *y) {
     if (!check_init(A) || !check_vector_init(x) || A->cols != x->size) { return; }
     init_vector(y, D);
@@ -137,9 +115,6 @@ void multiply_matrix_vector(const Matrix *const A, const Vector *const x, Vector
     }
 }
 
-/**
- * @brief Computes the determinant of the triangular INN matrix.
- */
 double get_determinant_triangular(const Matrix *const A) {
     if (!check_init(A)) return 0.0;
     double det = 1.0;
@@ -149,26 +124,14 @@ double get_determinant_triangular(const Matrix *const A) {
     return det;
 }
 
-// --- INN FLOW FUNCTIONS ---
-
-/**
- * @brief The forward pass of the INN (transformation x -> z).
- * @param params The INN parameters (A, b).
- * @param x The input vector (sentence features).
- * @param z The output latent vector.
- */
 void inn_forward(const INN_Parameters *const params, const Vector *const x, Vector *z) {
     if (!check_init(&params->A) || !check_vector_init(&params->b)) return;
-    // z = A*x + b
     multiply_matrix_vector(&params->A, x, z);
     for (int i = 0; i < D; i++) {
         z->data[i] += params->b.data[i];
     }
 }
 
-/**
- * @brief Calculates the Negative Log-Likelihood (NLL) loss.
- */
 double calculate_nll_loss(const INN_Parameters *const params, const Vector *const z) {
     double z_norm_sq = 0.0;
     for (int i = 0; i < D; i++) {
@@ -183,12 +146,6 @@ double calculate_nll_loss(const INN_Parameters *const params, const Vector *cons
     return nll;
 }
 
-// --- DATASET PARSING & FEATURE MAPPING ---
-
-/**
- * @brief Attempts to find a word in the vocabulary lists and return its feature value and type.
- * @return The feature value, or 0.0 if not found.
- */
 double find_word_value(const char *word, int *word_type) {
     char lower_word[32];
     strncpy(lower_word, word, 31);
@@ -197,26 +154,19 @@ double find_word_value(const char *word, int *word_type) {
       if(lower_word[i] >= 'A' && lower_word[i] <= 'Z') lower_word[i] += 'a' - 'A';
     }
 
-    // Check Nouns
     for (int i = 0; i < NUM_NOUNS; i++) {
         if (strcmp(lower_word, Nouns[i]) == 0) { *word_type = 0; return NounValues[i]; }
     }
-    // Check Verbs
     for (int i = 0; i < NUM_VERBS; i++) {
         if (strcmp(lower_word, Verbs[i]) == 0) { *word_type = 1; return VerbValues[i]; }
     }
-    // Check Adjectives
     for (int i = 0; i < NUM_ADJECTIVES; i++) {
         if (strcmp(lower_word, Adjectives[i]) == 0) { *word_type = 2; return AdjectiveValues[i]; }
     }
-    *word_type = -1; // Not a relevant word type
+    *word_type = -1;
     return 0.0;
 }
 
-/**
- * @brief Maps a complex sentence string to its feature vector (D=8).
- * Features: [N1, V1, Adj1, N2, V2, Adj2, V3, N3] (First 3 of each, or 0.0 if not found)
- */
 void parse_sentence_to_features(const char *const text, Vector *V) {
     init_vector(V, D);
 
@@ -224,17 +174,15 @@ void parse_sentence_to_features(const char *const text, Vector *V) {
     strncpy(temp_text, text, MAX_SENTENCE_LEN - 1);
     temp_text[MAX_SENTENCE_LEN - 1] = '\0';
 
-    // Remove punctuation from the end to aid strtok
     char *end = temp_text + strlen(temp_text) - 1;
     while(end > temp_text && (ispunct(*end) || isspace(*end))) { *end-- = '\0'; }
 
-
     char *token = strtok(temp_text, " ,.;:!?");
 
-    // Feature indices to fill: [N1, V1, Adj1, N2, V2, Adj2, V3, N3]
-    int noun_count = 0; // V[0], V[3], V[7]
-    int verb_count = 0; // V[1], V[4], V[6]
-    int adj_count = 0;  // V[2], V[5]
+    // Features: [N1, V1, Adj1, N2, V2, Adj2, V3, N3]
+    int noun_count = 0; 
+    int verb_count = 0; 
+    int adj_count = 0;  
     
     while (token != NULL) {
         int word_type = -1;
@@ -258,7 +206,6 @@ void parse_sentence_to_features(const char *const text, Vector *V) {
             }
         }
 
-        // Optimization: stop if all D=8 core features are filled
         if (noun_count >= 3 && verb_count >= 3 && adj_count >= 2) {
             break;
         }
@@ -271,42 +218,55 @@ void parse_sentence_to_features(const char *const text, Vector *V) {
 // --- DATASET GENERATION FUNCTIONS ---
 
 /**
- * @brief Reads sentences from the simulated file content.
+ * @brief Reads sentences from the actual alice.txt file.
  * @return The number of distinct sentences loaded.
  */
 int load_sentences_from_file(char legal_templates[MAX_SENTENCES_FROM_FILE][MAX_SENTENCE_LEN]) {
-    char temp_content[MAX_ALICE_FILE_SIZE];
-    strncpy(temp_content, SIMULATED_ALICE_CONTENT, MAX_ALICE_FILE_SIZE - 1);
-    temp_content[MAX_ALICE_FILE_SIZE - 1] = '\0';
-    
-    // Split the content into sentences (using a period followed by a space)
-    char *sentence_start = temp_content;
+    FILE *file = fopen("alice.txt", "r");
+    if (file == NULL) {
+        fprintf(stderr, "FATAL ERROR: Could not open alice.txt. Make sure the file is in the same directory.\n");
+        return 0;
+    }
+
+    // Read entire file content into a buffer
+    char *buffer = (char *)malloc(MAX_FILE_READ_SIZE);
+    if (buffer == NULL) {
+        fprintf(stderr, "FATAL ERROR: Memory allocation failed for file buffer.\n");
+        fclose(file);
+        return 0;
+    }
+
+    size_t bytes_read = fread(buffer, 1, MAX_FILE_READ_SIZE - 1, file);
+    buffer[bytes_read] = '\0'; // Null-terminate the buffer
+    fclose(file);
+
+    // Split the content into sentences (using a period, exclamation, or question mark followed by a space)
+    char *sentence_start = buffer;
     int count = 0;
+    
+    // Use strtok to split by common sentence-ending punctuation.
+    // NOTE: This is a robust approach, but relies on a copy since strtok modifies the string.
+    char sentence_split_buffer[MAX_FILE_READ_SIZE];
+    strncpy(sentence_split_buffer, buffer, bytes_read);
+    sentence_split_buffer[bytes_read] = '\0';
+    free(buffer);
 
-    while (sentence_start != NULL && count < MAX_SENTENCES_FROM_FILE) {
-        char *sentence_end = strstr(sentence_start, ". ");
-        if (sentence_end == NULL) {
-            // Check for the very last sentence without a trailing space
-            size_t len = strlen(sentence_start);
-            if (len > 0) {
-                 if (sentence_start[len-1] == '.' || sentence_start[len-1] == '!' || sentence_start[len-1] == '?') {
-                    strncpy(legal_templates[count], sentence_start, MAX_SENTENCE_LEN - 1);
-                    legal_templates[count][MAX_SENTENCE_LEN - 1] = '\0';
-                    count++;
-                 }
-            }
-            break; 
+    char *token = strtok(sentence_split_buffer, ".!?");
+    while (token != NULL && count < MAX_SENTENCES_FROM_FILE) {
+        // Trim leading whitespace from the sentence fragment
+        while (isspace(*token)) {
+            token++;
         }
-
-        // Copy and null-terminate the sentence
-        size_t len = sentence_end - sentence_start + 1;
-        if (len < MAX_SENTENCE_LEN) {
-            strncpy(legal_templates[count], sentence_start, len);
-            legal_templates[count][len] = '\0';
+        
+        // Ensure the sentence is not empty and fits the max length
+        size_t len = strlen(token);
+        if (len > 5 && len < MAX_SENTENCE_LEN) {
+            strncpy(legal_templates[count], token, MAX_SENTENCE_LEN - 1);
+            legal_templates[count][MAX_SENTENCE_LEN - 1] = '\0';
             count++;
         }
         
-        sentence_start = sentence_end + 2; // Move past ". "
+        token = strtok(NULL, ".!?");
     }
 
     return count;
@@ -315,27 +275,35 @@ int load_sentences_from_file(char legal_templates[MAX_SENTENCES_FROM_FILE][MAX_S
 
 /**
  * @brief Generates an illegal sentence by substituting a word in a legal template.
- * Attempts to replace 1 or 2 words (Noun/Verb) with a nonsensical word.
  */
 void generate_illegal_sentence(const char *legal_template, Sentence *illegal_s) {
     char temp_text[MAX_SENTENCE_LEN];
     strncpy(temp_text, legal_template, MAX_SENTENCE_LEN - 1);
     temp_text[MAX_SENTENCE_LEN - 1] = '\0';
 
-    char working_text[MAX_SENTENCE_LEN * 2]; // Increased size for safety
+    char working_text[MAX_SENTENCE_LEN * 2]; 
     working_text[0] = '\0';
 
-    char *token = strtok(temp_text, " ,.;:!?");
+    // We must use a copy of the string for strtok to work
+    char *temp_copy = strdup(temp_text);
+    if (temp_copy == NULL) return; // Handle allocation failure
+
+    char *token = strtok(temp_copy, " ,.;:!?");
     int replace_count = 0;
     int num_to_replace = (rand() % 2) + 1; // 1 or 2 words
 
     while (token != NULL) {
         int word_type = -1;
-        find_word_value(token, &word_type); // Check if it's a known word
+        // Find the word value without modifying the token
+        char temp_token[32];
+        strncpy(temp_token, token, 31);
+        temp_token[31] = '\0';
+        find_word_value(temp_token, &word_type); 
 
         int do_replace = 0;
+        // Target nouns and verbs (type 0 or 1)
         if (replace_count < num_to_replace && (word_type == 0 || word_type == 1)) {
-            // 15% chance to replace this specific word
+            // 15% chance to replace the first few target words
             if (rand() % 100 < 15) {
                 do_replace = 1;
                 replace_count++;
@@ -351,14 +319,18 @@ void generate_illegal_sentence(const char *legal_template, Sentence *illegal_s) 
             strcat(working_text, token);
         }
         
-        strcat(working_text, " "); // Re-add space/delimiter (simple)
+        strcat(working_text, " ");
         token = strtok(NULL, " ,.;:!?");
     }
     
-    // Simple cleanup: remove trailing space
+    free(temp_copy);
+
+    // Simple cleanup: remove trailing space and append an ellipsis for clarity
     if (working_text[0] != '\0' && working_text[strlen(working_text) - 1] == ' ') {
         working_text[strlen(working_text) - 1] = '\0';
     }
+    strcat(working_text, "...");
+
 
     // Copy to struct and parse features
     strncpy(illegal_s->text, working_text, MAX_SENTENCE_LEN - 1);
@@ -376,11 +348,11 @@ void generate_datasets(Sentence *legal_sentences, Sentence *illegal_sentences) {
     const int num_templates = load_sentences_from_file(legal_templates);
 
     if (num_templates == 0) {
-        fprintf(stderr, "FATAL ERROR: Could not load any sentences from simulated alice.txt content.\n");
-        return;
+        fprintf(stderr, "FATAL: Cannot continue without loaded sentences. Exiting.\n");
+        exit(1);
     }
 
-    printf("Loaded %d distinct Alice sentence templates from file content.\n", num_templates);
+    printf("Loaded %d distinct Alice sentence templates from alice.txt.\n", num_templates);
 
     // 1. Legal Sentences (Training data)
     for (int i = 0; i < NUM_LEGAL_SENTENCES; i++) {
@@ -399,12 +371,9 @@ void generate_datasets(Sentence *legal_sentences, Sentence *illegal_sentences) {
     printf("Dataset generated: %d legal (Alice text), %d illegal (Word-Substituted) sentences.\n", NUM_LEGAL_SENTENCES, NUM_ILLEGAL_SENTENCES);
 }
 
-// --- MAIN EXECUTION ---
+// --- MAIN EXECUTION (Same as before) ---
 
 int main(void) {
-    // Note: No unit tests are included in this final version to reduce bulk, 
-    // but they should be used in a development environment.
-
     srand((unsigned int)time(NULL));
     INN_Parameters params;
     init_matrix(&params.A, D, D, 1);
@@ -415,13 +384,21 @@ int main(void) {
         return 1;
     }
 
-    Sentence legal_sentences[NUM_LEGAL_SENTENCES];
-    Sentence illegal_sentences[NUM_ILLEGAL_SENTENCES];
+    // Allocate memory dynamically for large datasets
+    Sentence *legal_sentences = (Sentence *)malloc(NUM_LEGAL_SENTENCES * sizeof(Sentence));
+    Sentence *illegal_sentences = (Sentence *)malloc(NUM_ILLEGAL_SENTENCES * sizeof(Sentence));
+    
+    if (legal_sentences == NULL || illegal_sentences == NULL) {
+        fprintf(stderr, "Fatal Error: Failed to allocate memory for sentence datasets.\n");
+        free(legal_sentences); free(illegal_sentences);
+        return 1;
+    }
+
     generate_datasets(legal_sentences, illegal_sentences);
 
     const clock_t start_time = clock();
     double last_print_time_sec = 0.0;
-    const double print_interval_sec = 10.0; // Print every 10 seconds
+    const double print_interval_sec = 10.0; 
     int training_stopped_early = 0;
 
     printf("\n--- Starting INN Training (MLE via SGD) ---\n");
@@ -429,7 +406,7 @@ int main(void) {
     printf("Total Elapsed (s) | Epoch | Iteration | Avg NLL (Loss) | Det(A)\n");
     printf("----------------------------------------------------------------\n");
 
-    // 3. Training Loop (SGD - Maximum Likelihood Estimation)
+    // 3. Training Loop 
     for (int epoch = 0; epoch < MAX_EPOCHS; epoch++) {
         double epoch_nll_sum = 0.0;
         const int num_batches = NUM_LEGAL_SENTENCES;
@@ -440,7 +417,7 @@ int main(void) {
             if (total_elapsed_sec >= TRAINING_TIME_LIMIT_SEC) {
                 printf("--- Stopping training after %.2f seconds (Time Limit Reached) ---\n", total_elapsed_sec);
                 training_stopped_early = 1;
-                break; // Break batch loop
+                break;
             }
 
             const int idx = rand() % NUM_LEGAL_SENTENCES;
@@ -451,28 +428,20 @@ int main(void) {
             const double nll_loss = calculate_nll_loss(&params, &z);
             epoch_nll_sum += nll_loss;
 
-            // --- Backpropagation (Calculating Gradients) ---
-
-            Vector dL_dz;
-            init_vector(&dL_dz, D);
+            // --- Backpropagation (Gradients) ---
+            Vector dL_dz; init_vector(&dL_dz, D);
             const double scale = 1.0 / (GAUSSIAN_SIGMA * GAUSSIAN_SIGMA);
-            for (int k = 0; k < D; k++) {
-                dL_dz.data[k] = z.data[k] * scale;
-            }
+            for (int k = 0; k < D; k++) dL_dz.data[k] = z.data[k] * scale;
 
-            // Update bias b
-            for (int k = 0; k < D; k++) {
-                params.b.data[k] -= LEARNING_RATE * dL_dz.data[k];
-            }
+            for (int k = 0; k < D; k++) params.b.data[k] -= LEARNING_RATE * dL_dz.data[k];
 
-            // Update Matrix A
             for (int r = 0; r < D; r++) {
                 for (int c = 0; c < D; c++) {
-                    if (c <= r) { // Lower triangular part
+                    if (c <= r) {
                         const double grad_A_r_c = dL_dz.data[r] * x.data[c];
                         params.A.data[r][c] -= LEARNING_RATE * grad_A_r_c;
 
-                        if (r == c) { // Diagonal term
+                        if (r == c) {
                              params.A.data[r][c] -= LEARNING_RATE * (1.0 / params.A.data[r][c]);
                         }
                     }
@@ -487,7 +456,7 @@ int main(void) {
             }
 
         } // End batch loop
-        if (training_stopped_early) break; // Break epoch loop if time limit hit
+        if (training_stopped_early) break; 
     } // End epoch loop
 
     // 4. Detection / Evaluation
@@ -497,7 +466,6 @@ int main(void) {
     int legal_count = 0;
     int illegal_count = 0;
 
-    // Test Legal Sentences
     for (int i = 0; i < NUM_LEGAL_SENTENCES; i++) {
         Vector z;
         inn_forward(&params, &legal_sentences[i].features, &z);
@@ -505,7 +473,6 @@ int main(void) {
         legal_count++;
     }
 
-    // Test Illegal Sentences
     for (int i = 0; i < NUM_ILLEGAL_SENTENCES; i++) {
         Vector z;
         inn_forward(&params, &illegal_sentences[i].features, &z);
@@ -519,10 +486,8 @@ int main(void) {
     printf("Average NLL for Legal Sentences (Alice Text): %.4f\n", avg_legal_nll);
     printf("Average NLL for Illegal Sentences (Nonsense Words): %.4f\n", avg_illegal_nll);
     
-    // --- Detailed Sample Output ---
     printf("\n--- Detailed NLL Analysis (First 5 of each) ---\n");
     
-    // Print 5 Legal Sentences
     printf("\nLegal Sentences (IN-DISTRIBUTION - Low NLL expected):\n");
     for (int i = 0; i < 5 && i < NUM_LEGAL_SENTENCES; i++) {
         Vector z;
@@ -531,7 +496,6 @@ int main(void) {
         printf("NLL: %.4f | Text: %s\n", nll, legal_sentences[i].text);
     }
 
-    // Print 5 Illegal Sentences
     printf("\nIllegal Sentences (OUT-OF-DISTRIBUTION - High NLL expected):\n");
     for (int i = 0; i < 5 && i < NUM_ILLEGAL_SENTENCES; i++) {
         Vector z;
@@ -539,7 +503,6 @@ int main(void) {
         const double nll = calculate_nll_loss(&params, &z);
         printf("NLL: %.4f | Text: %s\n", nll, illegal_sentences[i].text);
     }
-    // --- End Detailed Sample Output ---
 
     printf("\nDetection Conclusion:\n");
 
@@ -552,6 +515,9 @@ int main(void) {
                avg_illegal_nll, avg_legal_nll);
         printf("The INN failed to clearly distinguish between the original and modified feature patterns.\n");
     }
+    
+    free(legal_sentences);
+    free(illegal_sentences);
 
     return 0;
 }
