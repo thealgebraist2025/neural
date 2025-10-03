@@ -14,9 +14,11 @@
 #define V_SIZE (NUM_INPUT_INTS * BITS_PER_INT) // Visible Layer Size (128)
 #define H_SIZE 256                            // Hidden Layer Size
 #define TRAINING_SET_SIZE 256
+#define EVAL_SET_SIZE 50                      // New: Size of the evaluation set
 #define MAX_EPOCHS 1000
 #define LEARNING_RATE 0.01f
 #define INITIAL_WEIGHT_SCALE 0.01f
+#define REPORT_INTERVAL_SECONDS 10
 
 // --- GLOBAL RBM PARAMETERS ---
 float W[V_SIZE * H_SIZE]; // Weights (V_SIZE x H_SIZE)
@@ -43,7 +45,6 @@ float sigmoid(float x) {
  * @return float Random float with mean 0, variance INITIAL_WEIGHT_SCALE^2.
  */
 float rand_normal() {
-    // FIX: Restructure to ensure explicit return paths for all cases.
     static int has_spare = 0;
     static float spare;
     
@@ -56,7 +57,7 @@ float rand_normal() {
     do {
         u1 = (float)rand() / RAND_MAX;
         u2 = (float)rand() / RAND_MAX;
-    } while (u1 <= 1e-6f); // Avoid log(0)
+    } while (u1 <= 1e-6f); 
 
     float mag = INITIAL_WEIGHT_SCALE * sqrtf(-2.0f * logf(u1));
     spare = mag * sinf(2.0f * M_PI * u2);
@@ -83,7 +84,6 @@ void encode_int_to_bits(uint16_t num, float* bits) {
 uint16_t decode_bits_to_int(const float* bits) {
     uint16_t num = 0;
     for (int i = 0; i < BITS_PER_INT; i++) {
-        // Round to nearest integer before bit shift
         if (bits[i] > 0.5f) {
             num |= (1 << i);
         }
@@ -92,7 +92,7 @@ uint16_t decode_bits_to_int(const float* bits) {
 }
 
 /**
- * @brief Creates the training target: sorts the input array and encodes it.
+ * @brief Sorts the input array and encodes it into a single binary vector.
  * @param unsorted Array of 8 unsorted 16-bit integers.
  * @param sorted_bits Output array of size V_SIZE (128).
  */
@@ -100,7 +100,7 @@ void sort_and_encode(uint16_t* unsorted, float* sorted_bits) {
     uint16_t temp_arr[NUM_INPUT_INTS];
     memcpy(temp_arr, unsorted, NUM_INPUT_INTS * sizeof(uint16_t));
 
-    // Simple Bubble Sort (sufficient for 8 elements)
+    // Simple Bubble Sort
     for (int i = 0; i < NUM_INPUT_INTS - 1; i++) {
         for (int j = 0; j < NUM_INPUT_INTS - i - 1; j++) {
             if (temp_arr[j] > temp_arr[j + 1]) {
@@ -128,7 +128,7 @@ void init_rbm() {
         W[i] = rand_normal();
     }
     for (int i = 0; i < V_SIZE; i++) {
-        b[i] = 0.0f; // Biases often start at zero
+        b[i] = 0.0f;
     }
     for (int i = 0; i < H_SIZE; i++) {
         c[i] = 0.0f;
@@ -144,7 +144,6 @@ void v_to_h(const float* v, float* h_prob) {
     for (int j = 0; j < H_SIZE; j++) {
         float activation = c[j]; // Start with bias
         for (int i = 0; i < V_SIZE; i++) {
-            // W[i*H_SIZE + j] is W_{i,j}
             activation += v[i] * W[i * H_SIZE + j];
         }
         h_prob[j] = sigmoid(activation);
@@ -160,7 +159,6 @@ void h_to_v(const float* h_prob, float* v_prob) {
     for (int i = 0; i < V_SIZE; i++) {
         float activation = b[i]; // Start with bias
         for (int j = 0; j < H_SIZE; j++) {
-            // W[i*H_SIZE + j] is W_{i,j}
             activation += h_prob[j] * W[i * H_SIZE + j];
         }
         v_prob[i] = sigmoid(activation);
@@ -191,8 +189,6 @@ void update_weights(const float* v0, const float* h0_prob, const float* v1, cons
     for (int i = 0; i < V_SIZE; i++) {
         for (int j = 0; j < H_SIZE; j++) {
             int idx = i * H_SIZE + j;
-            // CD-1: Delta W = eta * (v0*h0_prob - v1*h1_prob)
-            // Note: Using probabilities for gradient calculation is standard for RBMs to reduce variance.
             float positive_grad = v0[i] * h0_prob[j];
             float negative_grad = v1[i] * h1_prob[j];
             W[idx] += LEARNING_RATE * (positive_grad - negative_grad);
@@ -206,7 +202,7 @@ void update_weights(const float* v0, const float* h0_prob, const float* v1, cons
 
     // 3. Update Hidden Biases
     for (int j = 0; j < H_SIZE; j++) {
-        b[j] += LEARNING_RATE * (h0_prob[j] - h1_prob[j]);
+        c[j] += LEARNING_RATE * (h0_prob[j] - h1_prob[j]);
     }
 }
 
@@ -244,7 +240,6 @@ void run_sanity_tests() {
         decoded_sorted[i] = decode_bits_to_int(&sorted_bits_out[i * BITS_PER_INT]);
     }
 
-    // Check if the output is 1, 5, 10, 20, 100, 500, 800, 900
     if (decoded_sorted[0] == 1 && decoded_sorted[1] == 5 && decoded_sorted[7] == 900) {
         printf("[PASS] Sorting and Encoding.\n");
     } else {
@@ -252,16 +247,15 @@ void run_sanity_tests() {
     }
 
     // 4. Matrix Multiplication Sanity (Positive Phase)
-    init_rbm(); // RBM initialized with small random weights
+    init_rbm(); 
     float test_v[V_SIZE];
     float test_h_prob[H_SIZE];
-    for (int i = 0; i < V_SIZE; i++) test_v[i] = 1.0f; // Input all 1s
+    for (int i = 0; i < V_SIZE; i++) test_v[i] = 1.0f;
     
-    // Set first hidden bias very high (known result)
     c[0] = 5.0f; 
     v_to_h(test_v, test_h_prob);
 
-    if (test_h_prob[0] > 0.99f) { // If c[0] is high, h_prob[0] should be near 1 (regardless of small random W)
+    if (test_h_prob[0] > 0.99f) {
         printf("[PASS] V-to-H (Positive Phase) sanity.\n");
     } else {
         printf("[FAIL] V-to-H (Positive Phase) sanity. Prob[0] = %f\n", test_h_prob[0]);
@@ -278,23 +272,61 @@ void run_sanity_tests() {
  */
 void generate_training_data() {
     printf("Generating %d sorted lists for training...\n", TRAINING_SET_SIZE);
-    // Use fixed seed for reproducible data
-    srand(12345);
+    srand(12345); // Fixed seed for reproducible training data
 
     for (int i = 0; i < TRAINING_SET_SIZE; i++) {
         uint16_t unsorted_list[NUM_INPUT_INTS];
         // Generate 8 random 16-bit positive integers
         for (int j = 0; j < NUM_INPUT_INTS; j++) {
             // Generate full 16-bit range (0 to 65535)
-            unsorted_list[j] = (uint16_t)((rand() * (RAND_MAX + 1ULL) + rand()) % 65536);
+            unsorted_list[j] = (uint16_t)(((uint32_t)rand() << 15) | rand());
         }
         
-        // The TARGET DATA is the SORTED, ENCODED version of the random list.
         sort_and_encode(unsorted_list, training_data_v[i]);
     }
     printf("Training data generation complete.\n\n");
-    // Reset seed for RBM initialization/sampling
-    srand(time(NULL));
+    srand(time(NULL)); // Reset seed for RBM sampling
+}
+
+/**
+ * @brief Runs an evaluation on 50 new random sorted lists and reports the average MSE.
+ * @return float The average reconstruction MSE over the evaluation set.
+ */
+float run_evaluation() {
+    float total_mse = 0.0f;
+
+    // Local buffers for evaluation
+    float eval_v[V_SIZE];
+    float h0_prob[H_SIZE];
+    float v1_prob[V_SIZE];
+
+    for (int i = 0; i < EVAL_SET_SIZE; i++) {
+        uint16_t unsorted_list[NUM_INPUT_INTS];
+        
+        // Generate new random data for evaluation (ensures unseen data)
+        for (int j = 0; j < NUM_INPUT_INTS; j++) {
+            unsorted_list[j] = (uint16_t)(((uint32_t)rand() << 15) | rand());
+        }
+        
+        // Target is the sorted, encoded version of the random list
+        sort_and_encode(unsorted_list, eval_v);
+
+        // Forward Pass: Target -> Hidden
+        v_to_h(eval_v, h0_prob);
+        
+        // Backward Pass: Hidden -> Reconstruction (v1_prob)
+        h_to_v(h0_prob, v1_prob);
+
+        // Calculate Mean Squared Error (MSE)
+        float mse = 0.0f;
+        for (int k = 0; k < V_SIZE; k++) {
+            float diff = eval_v[k] - v1_prob[k];
+            mse += diff * diff;
+        }
+        total_mse += (mse / V_SIZE);
+    }
+
+    return total_mse / EVAL_SET_SIZE;
 }
 
 int main() {
@@ -303,13 +335,15 @@ int main() {
     init_rbm();
 
     printf("Starting RBM Training (CD-1) on Sorted Data...\n");
-    printf("V_SIZE: %d, H_SIZE: %d, Training Set: %d\n", V_SIZE, H_SIZE, TRAINING_SET_SIZE);
+    printf("V_SIZE: %d, H_SIZE: %d, Training Set: %d, Eval Set: %d\n", V_SIZE, H_SIZE, TRAINING_SET_SIZE, EVAL_SET_SIZE);
     printf("----------------------------------------------------------------------------------\n");
+    printf("Epoch | Time | Train Rec. MSE | Eval Rec. MSE (Avg 50 lists)\n");
+    printf("----------------------------------------------------------------------------------\n");
+
 
     // CD-1 Temporary Variables
     float v0[V_SIZE];
     float h0_prob[H_SIZE];
-    // float h0_sample[H_SIZE]; // Removed unused variable
     float v1_prob[V_SIZE];
     float v1_sample[V_SIZE];
     float h1_prob[H_SIZE];
@@ -317,6 +351,11 @@ int main() {
     time_t start_time = time(NULL);
     time_t last_report_time = start_time;
     int epoch = 0;
+    
+    // Initial evaluation for a baseline
+    float avg_eval_mse = run_evaluation();
+    printf("Baseline | %4.1fs | N/A            | %.8f\n", (float)(time(NULL) - start_time), avg_eval_mse);
+
 
     while (epoch < MAX_EPOCHS) {
         float epoch_mse = 0.0f;
@@ -336,7 +375,7 @@ int main() {
             // 3. Get hidden state probabilities from reconstructed visible state (h1)
             v_to_h(v1_sample, h1_prob);
 
-            // 4. Update Weights using probabilities
+            // 4. Update Weights
             update_weights(v0, h0_prob, v1_sample, h1_prob);
             
             // 5. Calculate reconstruction error for stats (v0 vs v1_prob)
@@ -350,37 +389,24 @@ int main() {
 
         epoch_mse /= TRAINING_SET_SIZE;
 
-        // --- 5-SECOND REPORTING ---
+        // --- 10-SECOND REPORTING AND EVALUATION ---
         time_t current_time = time(NULL);
-        if (current_time - last_report_time >= 5 || epoch == MAX_EPOCHS - 1) {
+        if (current_time - last_report_time >= REPORT_INTERVAL_SECONDS || epoch == MAX_EPOCHS - 1) {
             float elapsed = (float)(current_time - start_time);
-            printf("Epoch %5d | Time: %5.1fs | Avg. Rec. MSE: %.8f\n", 
-                   epoch + 1, elapsed, epoch_mse);
+            
+            // Run evaluation on 50 fresh samples
+            avg_eval_mse = run_evaluation();
+
+            printf("%5d | %4.1fs | %.8f | %.8f\n", 
+                   epoch + 1, elapsed, epoch_mse, avg_eval_mse);
+                   
             last_report_time = current_time;
-
-            // Simple Evaluation Check: Check reconstruction of a known sorted list
-            if (epoch % 50 == 0) {
-                 float eval_v[V_SIZE];
-                 uint16_t input_ints[] = {10, 20, 30, 40, 50, 60, 70, 80}; // Already sorted list
-                 sort_and_encode(input_ints, eval_v); // Encode the known sorted list
-
-                 v_to_h(eval_v, h0_prob);
-                 h_to_v(h0_prob, v1_prob);
-
-                 float rec_mse = 0.0f;
-                 for(int k = 0; k < V_SIZE; k++) {
-                     float diff = eval_v[k] - v1_prob[k];
-                     rec_mse += diff * diff;
-                 }
-                 rec_mse /= V_SIZE;
-
-                 printf("          -> Known Sorted List Rec. MSE: %.8f\n", rec_mse);
-            }
         }
 
         epoch++;
     }
 
-    printf("\nTraining complete after %d epochs.\n", MAX_EPOCHS);
+    printf("----------------------------------------------------------------------------------\n");
+    printf("Training complete after %d epochs. Final Eval MSE: %.8f\n", MAX_EPOCHS, avg_eval_mse);
     return 0;
 }
