@@ -47,15 +47,15 @@ typedef struct {
 
 // Word lists are simplified to map to a continuous feature space.
 // The index (or a derived value) serves as the embedding.
-const char *Nouns[] = {"car", "bike", "dog", "lawyer", "judge", "contract", "witness", "defendant"};
+const char *const Nouns[] = {"car", "bike", "dog", "lawyer", "judge", "contract", "witness", "defendant"};
 const double NounValues[] = {1.0, 1.5, 2.0, 3.0, 3.5, 4.0, 4.5, 5.0};
 #define NUM_NOUNS 8
 
-const char *Verbs[] = {"drives", "reads", "signs", "runs"};
+const char *const Verbs[] = {"drives", "reads", "signs", "runs"};
 const double VerbValues[] = {1.0, 2.0, 3.0, 4.0};
 #define NUM_VERBS 4
 
-const char *Adjectives[] = {"red", "fast", "legal", "binding", "corrupt"};
+const char *const Adjectives[] = {"red", "fast", "legal", "binding", "corrupt"};
 const double AdjectiveValues[] = {1.0, 1.5, 2.0, 3.0, 4.0};
 #define NUM_ADJECTIVES 5
 
@@ -100,6 +100,8 @@ void init_matrix(Matrix *M, int rows, int cols, int triangular) {
 
 /**
  * @brief Initializes a vector with zeros.
+ * @param V The vector struct pointer.
+ * @param size Number of elements (must be D).
  */
 void init_vector(Vector *V, int size) {
     if (size != D) {
@@ -119,7 +121,7 @@ void init_vector(Vector *V, int size) {
  * @param name The name of the matrix for error printing.
  * @return 1 if initialized, 0 otherwise.
  */
-int check_init(const Matrix *M, const char *name) {
+int check_init(const Matrix *M, const char *const name) {
     if (!M->initialized) {
         fprintf(stderr, "Initialization Error: Matrix '%s' not initialized.\n", name);
         return 0;
@@ -128,15 +130,32 @@ int check_init(const Matrix *M, const char *name) {
 }
 
 /**
+ * @brief Checks if a vector is initialized. (Fix for Test 4)
+ * @param V The vector struct pointer.
+ * @param name The name of the vector for error printing.
+ * @return 1 if initialized, 0 otherwise.
+ */
+int check_vector_init(const Vector *V, const char *const name) {
+    if (!V->initialized) {
+        fprintf(stderr, "Initialization Error: Vector '%s' not initialized.\n", name);
+        return 0;
+    }
+    return 1;
+}
+
+
+/**
  * @brief Performs matrix-vector multiplication: y = A * x.
  * @param A The Matrix (DxD).
  * @param x The input Vector (D).
  * @param y The output Vector (D).
  */
-void multiply_matrix_vector(const Matrix *A, const Vector *x, Vector *y) {
-    if (!check_init(A, "A") || !check_init((Matrix *)x, "x") || A->cols != x->size) {
+void multiply_matrix_vector(const Matrix *const A, const Vector *const x, Vector *y) {
+    // Corrected to use check_vector_init for x
+    if (!check_init(A, "A") || !check_vector_init(x, "x") || A->cols != x->size) {
         return;
     }
+    // Initialize output vector y (important for dimension check)
     init_vector(y, D);
 
     for (int i = 0; i < A->rows; i++) {
@@ -153,7 +172,7 @@ void multiply_matrix_vector(const Matrix *A, const Vector *x, Vector *y) {
  * @param A The Lower Triangular Matrix.
  * @return The determinant value.
  */
-double get_determinant_triangular(const Matrix *A) {
+double get_determinant_triangular(const Matrix *const A) {
     if (!check_init(A, "A")) return 0.0;
 
     // For a triangular matrix (decomposable), the determinant is the product of diagonal elements.
@@ -166,18 +185,15 @@ double get_determinant_triangular(const Matrix *A) {
 
 /**
  * @brief Calculates the gradient of the log-likelihood w.r.t the input vector.
- * For z = A*x + b, the gradient dL/dx is simply A^T * (z - mu) / sigma^2
- * This is used for backpropagation and training.
+ * This function is included primarily for completeness but not directly used in SGD on parameters.
  * @param A The INN Weight Matrix.
  * @param z The transformed vector z = A*x + b.
  * @param gradient The output gradient vector.
  */
-void calculate_nll_gradient(const Matrix *A, const Vector *z, Vector *gradient) {
-    // The Jacobian is A. Since the target is N(0, I), the log-likelihood gradient w.r.t z is (z - mu) / sigma^2
-    // The gradient w.r.t x (dL/dx) is J^T * dL/dz.
-    // Here, J = A, and dL/dz = z / sigma^2 (since mu=0)
+void calculate_nll_gradient(const Matrix *const A, const Vector *const z, Vector *gradient) {
+    // dL/dx = A^T * dL/dz. We assume mu=0 and use dL/dz = z / sigma^2
 
-    if (!check_init(A, "A") || !check_init((Matrix *)z, "z")) return;
+    if (!check_init(A, "A") || !check_vector_init(z, "z")) return;
 
     // dL/dz = z / sigma^2
     double scale = 1.0 / (GAUSSIAN_SIGMA * GAUSSIAN_SIGMA);
@@ -206,7 +222,10 @@ void calculate_nll_gradient(const Matrix *A, const Vector *z, Vector *gradient) 
  * @param x The input vector (sentence features).
  * @param z The output latent vector.
  */
-void inn_forward(const INN_Parameters *params, const Vector *x, Vector *z) {
+void inn_forward(const INN_Parameters *const params, const Vector *const x, Vector *z) {
+    // Sanity check before multiplication
+    if (!check_init(&params->A, "A (params)") || !check_vector_init(&params->b, "b (params)")) return;
+
     // z = A*x + b
     multiply_matrix_vector(&params->A, x, z);
     for (int i = 0; i < D; i++) {
@@ -217,12 +236,11 @@ void inn_forward(const INN_Parameters *params, const Vector *x, Vector *z) {
 /**
  * @brief Calculates the Negative Log-Likelihood (NLL) loss.
  * NLL = 0.5 * ||z||^2 / sigma^2 - log|det(A)| + C
- * We ignore the constant C (log(2*pi*sigma^2)) for optimization.
  * @param params The INN parameters (A, b).
  * @param z The latent vector (output of inn_forward).
  * @return The NLL value.
  */
-double calculate_nll_loss(const INN_Parameters *params, const Vector *z) {
+double calculate_nll_loss(const INN_Parameters *const params, const Vector *const z) {
     // Term 1: 0.5 * ||z||^2 / sigma^2
     double z_norm_sq = 0.0;
     for (int i = 0; i < D; i++) {
@@ -231,8 +249,7 @@ double calculate_nll_loss(const INN_Parameters *params, const Vector *z) {
 
     double log_prob_z = 0.5 * z_norm_sq / (GAUSSIAN_SIGMA * GAUSSIAN_SIGMA);
 
-    // Term 2: -log|det(A)|
-    // This is the efficient, symbolic calculation based on the triangular structure.
+    // Term 2: -log|det(A)| (using symbolic calculation)
     double det_A = get_determinant_triangular(&params->A);
     double log_det_A = log(fabs(det_A));
 
@@ -247,7 +264,7 @@ double calculate_nll_loss(const INN_Parameters *params, const Vector *z) {
 /**
  * @brief Maps a word to its pre-defined continuous feature value.
  */
-double get_word_value(const char *word, const char **word_list, const double *value_list, int count) {
+double get_word_value(const char *const word, const char *const *const word_list, const double *const value_list, int count) {
     for (int i = 0; i < count; i++) {
         if (strcmp(word, word_list[i]) == 0) {
             return value_list[i];
@@ -269,7 +286,8 @@ Sentence generate_sentence(int type, int is_legal) {
 
     // Type 1: the NOUN VERB the ADJECTIVE NOUN
     if (type == 1) {
-        int n1_idx = is_legal ? (rand() % 3) : (3 + rand() % (NUM_NOUNS - 3)); // Legal: car, bike, dog. Illegal: lawyer, contract...
+        // Legal words have lower indices, illegal words have higher indices.
+        int n1_idx = is_legal ? (rand() % 3) : (3 + rand() % (NUM_NOUNS - 3));
         int v_idx = rand() % NUM_VERBS;
         int adj_idx = rand() % NUM_ADJECTIVES;
         int n2_idx = is_legal ? (rand() % 3) : (3 + rand() % (NUM_NOUNS - 3));
@@ -287,7 +305,7 @@ Sentence generate_sentence(int type, int is_legal) {
     }
     // Type 2: the NOUN has NOUN
     else if (type == 2) {
-        int n1_idx = is_legal ? (rand() % 4) : (4 + rand() % (NUM_NOUNS - 4)); // Legal: car, bike, dog, lawyer. Illegal: contract, witness...
+        int n1_idx = is_legal ? (rand() % 4) : (4 + rand() % (NUM_NOUNS - 4));
         int n2_idx = is_legal ? (rand() % 4) : (4 + rand() % (NUM_NOUNS - 4));
 
         // Construct text
@@ -309,7 +327,7 @@ Sentence generate_sentence(int type, int is_legal) {
  * @brief Generates the training and testing datasets.
  */
 void generate_datasets(Sentence *legal_sentences, Sentence *illegal_sentences) {
-    srand(time(NULL));
+    srand((unsigned int)time(NULL));
 
     // Generate Legal Sentences
     for (int i = 0; i < NUM_LEGAL_SENTENCES; i++) {
@@ -329,21 +347,33 @@ void generate_datasets(Sentence *legal_sentences, Sentence *illegal_sentences) {
 // --- UNIT TESTING FRAMEWORK ---
 
 /**
- * @brief Runs all unit tests for the utility functions.
+ * @brief Runs all unit tests for the utility functions and core INN logic.
+ * @return 1 if all tests pass, 0 otherwise.
  */
 int run_tests() {
     printf("--- Running Unit Tests ---\n");
     int failed = 0;
 
-    // Test 1: Initialization Check
+    // Test 1: Initialization Check (Matrix and its error message)
     Matrix M_uninit;
     M_uninit.initialized = 0;
     if (check_init(&M_uninit, "M_uninit")) {
-        printf("Test 1 (Init Check): FAILED (Should not be initialized)\n");
+        printf("Test 1 (Init Check Matrix): FAILED (Should not be initialized)\n");
         failed++;
     } else {
-        printf("Test 1 (Init Check): PASSED\n");
+        printf("Test 1 (Init Check Matrix): PASSED\n");
     }
+
+    // Test 1b: Initialization Check (Vector and its error message)
+    Vector V_uninit;
+    V_uninit.initialized = 0;
+    if (check_vector_init(&V_uninit, "V_uninit")) {
+        printf("Test 1b (Init Check Vector): FAILED (Should not be initialized)\n");
+        failed++;
+    } else {
+        printf("Test 1b (Init Check Vector): PASSED\n");
+    }
+
 
     // Test 2: Matrix Initialization and Triangular Check
     Matrix A;
@@ -376,9 +406,9 @@ int run_tests() {
         failed++;
     }
 
-    // Test 4: Matrix-Vector Multiplication (INN Forward Pass Check)
+    // Test 4: Matrix-Vector Multiplication (INN Forward Pass Check) - FIXED
     Vector x, y_expected, z;
-    init_vector(&x, D);
+    init_vector(&x, D); // Input vector x is initialized
     init_vector(&y_expected, D);
     // Set x to [1, 1, 1, 1, 1]
     for (int i = 0; i < D; i++) x.data[i] = 1.0;
@@ -411,6 +441,7 @@ int run_tests() {
     // Ideal case: A=I, b=0, x=0. Then z=0. NLL should be 0.
     for (int i = 0; i < D; i++) {
         test_params.A.data[i][i] = 1.0;
+        test_params.A.data[i][i == 0 ? 1 : i-1] = 0.0; // Ensure off-diagonal is reset
         test_params.b.data[i] = 0.0;
         x.data[i] = 0.0;
     }
@@ -430,7 +461,7 @@ int run_tests() {
 
 // --- MAIN EXECUTION ---
 
-int main() {
+int main(void) {
     // 1. Run Unit Tests
     if (!run_tests()) {
         printf("Exiting due to Unit Test failures.\n");
@@ -441,6 +472,17 @@ int main() {
     INN_Parameters params;
     init_matrix(&params.A, D, D, 1); // Lower Triangular Matrix enforced for symbolic determinant
     init_vector(&params.b, D);
+
+    // SANITY CHECK: Ensure parameters are ready before attempting training
+    if (!params.A.initialized) {
+        fprintf(stderr, "Fatal Error: INN Weight Matrix (A) failed to initialize.\n");
+        return 1;
+    }
+    if (!params.b.initialized) {
+        fprintf(stderr, "Fatal Error: INN Bias Vector (b) failed to initialize.\n");
+        return 1;
+    }
+
 
     Sentence legal_sentences[NUM_LEGAL_SENTENCES];
     Sentence illegal_sentences[NUM_ILLEGAL_SENTENCES];
@@ -463,7 +505,7 @@ int main() {
         for (int i = 0; i < num_batches; i++) {
             // Select a random sentence
             int idx = rand() % NUM_LEGAL_SENTENCES;
-            Vector x = legal_sentences[idx].features;
+            const Vector x = legal_sentences[idx].features;
 
             Vector z;
             inn_forward(&params, &x, &z);
@@ -482,20 +524,13 @@ int main() {
             }
 
             // 2. Gradient of Loss w.r.t Bias b (dL/db)
-            // dL/db = dL/dz (since z = A*x + b)
-            // Update b
+            // dL/db = dL/dz. Update b
             for (int k = 0; k < D; k++) {
                 params.b.data[k] -= LEARNING_RATE * dL_dz.data[k];
             }
 
             // 3. Gradient of Loss w.r.t Matrix A (dL/dA)
-            // dL/dA = (dL/dz) * x^T - A^{-T} * dlog|det(A)|/dA
-            // Since dlog|det(A)|/dA = A^{-T}, the gradient from the log-det term is A^{-T}
-            // For triangular A, A^{-T} is triangular, but the full calculation is complex.
-            // Simplified Gradient Update based on triangular structure:
-            // dL/dA_ij = (dL/dz_i * x_j) - A_ij^{-1}
-            // We use the full form of the NLL gradient dNLL/dA to avoid inverting A
-            // Simplified update: dL/dA = dL/dz * x^T - A^{-T}
+            // dNLL/dA = (dL/dz) * x^T - A^{-T}
             for (int r = 0; r < D; r++) {
                 for (int c = 0; c < D; c++) {
                     if (c <= r) { // Only update lower triangular part
