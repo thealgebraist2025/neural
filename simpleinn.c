@@ -6,16 +6,16 @@
 #include <ctype.h>
 
 // --- INN PARAMETERS AND CONSTANTS ---
-#define D 16                  // Dimension of the sentence feature vector (Increased from 8 to 16)
-#define NUM_LEGAL_SENTENCES 8192 // Training Size (Increased from 2048 to 8192)
-#define NUM_ILLEGAL_SENTENCES 8192 // Test Size (Increased from 2048 to 8192)
-#define LEARNING_RATE 0.00005  
+#define D 16                  // Dimension of the sentence feature vector
+#define NUM_LEGAL_SENTENCES 8192 // Training Size
+#define NUM_ILLEGAL_SENTENCES 8192 // Test Size
+#define LEARNING_RATE 0.000005 // REDUCED from 0.00005 to 0.000005 for stability
 #define MAX_EPOCHS 200
-#define TRAINING_TIME_LIMIT_SEC 120.0 // 2 minutes
+#define TRAINING_TIME_LIMIT_SEC 300.0 // INCREASED to 5 minutes (300 seconds)
 #define GAUSSIAN_SIGMA 1.0    
 #define MAX_WORD_LEN 64
 #define MAX_FILE_READ_SIZE 100000 
-#define MAX_SENTENCES_FROM_FILE 5000 // Increased to allow more templates
+#define MAX_SENTENCES_FROM_FILE 5000 
 #define MAX_WORDS_PER_SENTENCE 50 
 
 // --- NEW DATA STRUCTURES ---
@@ -32,7 +32,6 @@ typedef struct {
 } SentenceText;
 
 // Matrix, Vector, INN_Parameters
-// NOTE: Matrix/Vector structures are flexible enough to handle the change in D
 typedef struct { double data[D][D]; int rows; int cols; int initialized; } Matrix;
 typedef struct { double data[D]; int size; int initialized; } Vector;
 typedef struct { Matrix A; Vector b; } INN_Parameters;
@@ -186,7 +185,9 @@ double calculate_nll_loss(const INN_Parameters *const params, const Vector *cons
     }
     const double log_prob_z = 0.5 * z_norm_sq / (GAUSSIAN_SIGMA * GAUSSIAN_SIGMA);
     const double det_A = get_determinant_triangular(&params->A);
-    const double log_det_A = log(fabs(det_A) > 1e-9 ? fabs(det_A) : 1e-9);
+    // Ensure log is taken of a positive value, clipping the absolute determinant
+    const double abs_det_A = fabs(det_A);
+    const double log_det_A = log(abs_det_A > 1e-9 ? abs_det_A : 1e-9); 
     return log_prob_z - log_det_A;
 }
 
@@ -344,7 +345,6 @@ int load_sentence_templates(SentenceText *legal_templates_st, int max_templates)
     return count;
 }
 
-// FIX: Modified to guarantee at least one Noun/Verb replacement if available.
 SentenceText generate_illegal_sentence_text(const SentenceText *legal_template) {
     SentenceText illegal_st = {NULL, 0};
     if (legal_template->count == 0) return illegal_st;
@@ -470,7 +470,7 @@ int run_sanity_checks(SentenceText *templates, int num_templates) {
         Vector V;
         map_sentence_to_features(&templates[i], &V);
         int feature_count = 0;
-        if (V.data[0] > 0.0) feature_count++; // Check only the first feature slot
+        if (V.data[0] > 0.0) feature_count++; 
         
         if (feature_count >= REQUIRED_FEATURES) { 
             robust_template_idx = i;
@@ -493,7 +493,7 @@ int run_sanity_checks(SentenceText *templates, int num_templates) {
            robust_template_idx, V.data[0]);
     passed++;
 
-    // 3. Check Illegal Sentence Generation (Nonsense word found) - FIX VALIDATION
+    // 3. Check Illegal Sentence Generation (Nonsense word found)
     SentenceText illegal_st = generate_illegal_sentence_text(test_template);
     int found_nonsense = 0;
     int word_count_match = (illegal_st.count == test_template->count);
@@ -615,6 +615,7 @@ int main(void) {
                         params.A.data[r][c] -= LEARNING_RATE * grad_A_r_c;
 
                         if (r == c) {
+                             // This term comes from the determinant derivative log(|det(A)|)
                              params.A.data[r][c] -= LEARNING_RATE * (1.0 / params.A.data[r][c]);
                         }
                     }
@@ -623,7 +624,7 @@ int main(void) {
 
             // Print progress every 10 seconds
             if (total_elapsed_sec - last_print_time_sec >= print_interval_sec) {
-                 printf("%19.2f | %5d | %9d | %14.4f | %6.4f\n",
+                 printf("%19.2f | %5d | %9d | %14.4f | %6.4e\n", // Changed Det(A) format to scientific for large numbers
                        total_elapsed_sec, epoch, i + 1, epoch_nll_sum / sentences_processed_in_epoch, get_determinant_triangular(&params.A));
                 last_print_time_sec = total_elapsed_sec;
             }
