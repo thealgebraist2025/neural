@@ -5,6 +5,9 @@
 #include <stdint.h>
 #include <string.h>
 
+// --- FIX: Define M_PI for C99 compliance with -lm ---
+#define M_PI 3.14159265358979323846f
+
 // --- RBM CONFIGURATION CONSTANTS ---
 #define NUM_INPUT_INTS 8
 #define BITS_PER_INT 16
@@ -36,19 +39,19 @@ float sigmoid(float x) {
 }
 
 /**
- * @brief Generates a pseudo-Gaussian random float.
- * @return float Random float with mean 0, variance 1.
+ * @brief Generates a pseudo-Gaussian random float (Box-Muller).
+ * @return float Random float with mean 0, variance INITIAL_WEIGHT_SCALE^2.
  */
 float rand_normal() {
-    // Simple Box-Muller approximation for speed and C99 compatibility
+    // FIX: Restructure to ensure explicit return paths for all cases.
     static int has_spare = 0;
     static float spare;
+    
     if (has_spare) {
         has_spare = 0;
         return spare;
     }
 
-    has_spare = 1;
     float u1, u2;
     do {
         u1 = (float)rand() / RAND_MAX;
@@ -57,6 +60,7 @@ float rand_normal() {
 
     float mag = INITIAL_WEIGHT_SCALE * sqrtf(-2.0f * logf(u1));
     spare = mag * sinf(2.0f * M_PI * u2);
+    has_spare = 1;
     return mag * cosf(2.0f * M_PI * u2);
 }
 
@@ -187,7 +191,8 @@ void update_weights(const float* v0, const float* h0_prob, const float* v1, cons
     for (int i = 0; i < V_SIZE; i++) {
         for (int j = 0; j < H_SIZE; j++) {
             int idx = i * H_SIZE + j;
-            // CD-1: Delta W = eta * (v0*h0 - v1*h1)
+            // CD-1: Delta W = eta * (v0*h0_prob - v1*h1_prob)
+            // Note: Using probabilities for gradient calculation is standard for RBMs to reduce variance.
             float positive_grad = v0[i] * h0_prob[j];
             float negative_grad = v1[i] * h1_prob[j];
             W[idx] += LEARNING_RATE * (positive_grad - negative_grad);
@@ -201,35 +206,8 @@ void update_weights(const float* v0, const float* h0_prob, const float* v1, cons
 
     // 3. Update Hidden Biases
     for (int j = 0; j < H_SIZE; j++) {
-        c[j] += LEARNING_RATE * (h0_prob[j] - h1_prob[j]);
+        b[j] += LEARNING_RATE * (h0_prob[j] - h1_prob[j]);
     }
-}
-
-/**
- * @brief Calculates the Mean Squared Error (MSE) reconstruction loss.
- */
-float calculate_reconstruction_error(int data_index) {
-    float v0[V_SIZE];
-    float h0_prob[H_SIZE];
-    float h0_sample[H_SIZE];
-    float v1_prob[V_SIZE];
-
-    memcpy(v0, training_data_v[data_index], V_SIZE * sizeof(float));
-
-    // Positive Phase
-    v_to_h(v0, h0_prob);
-    sample_bernoulli(h0_prob, h0_sample, H_SIZE);
-
-    // Negative Phase (Reconstruction)
-    h_to_v(h0_sample, v1_prob);
-
-    // Calculate MSE
-    float mse = 0.0f;
-    for (int i = 0; i < V_SIZE; i++) {
-        float diff = v0[i] - v1_prob[i];
-        mse += diff * diff;
-    }
-    return mse / V_SIZE;
 }
 
 
@@ -266,10 +244,11 @@ void run_sanity_tests() {
         decoded_sorted[i] = decode_bits_to_int(&sorted_bits_out[i * BITS_PER_INT]);
     }
 
-    if (decoded_sorted[0] == 1 && decoded_sorted[7] == 900 && decoded_sorted[3] == 100) {
+    // Check if the output is 1, 5, 10, 20, 100, 500, 800, 900
+    if (decoded_sorted[0] == 1 && decoded_sorted[1] == 5 && decoded_sorted[7] == 900) {
         printf("[PASS] Sorting and Encoding.\n");
     } else {
-        printf("[FAIL] Sorting and Encoding. First element: %u, Last element: %u.\n", decoded_sorted[0], decoded_sorted[7]);
+        printf("[FAIL] Sorting and Encoding. Expected {1, ..., 900}, Got {%u, ..., %u}.\n", decoded_sorted[0], decoded_sorted[7]);
     }
 
     // 4. Matrix Multiplication Sanity (Positive Phase)
@@ -306,7 +285,7 @@ void generate_training_data() {
         uint16_t unsorted_list[NUM_INPUT_INTS];
         // Generate 8 random 16-bit positive integers
         for (int j = 0; j < NUM_INPUT_INTS; j++) {
-            // rand() only provides up to 32767 usually, so we combine two calls
+            // Generate full 16-bit range (0 to 65535)
             unsorted_list[j] = (uint16_t)((rand() * (RAND_MAX + 1ULL) + rand()) % 65536);
         }
         
@@ -330,7 +309,7 @@ int main() {
     // CD-1 Temporary Variables
     float v0[V_SIZE];
     float h0_prob[H_SIZE];
-    float h0_sample[H_SIZE];
+    // float h0_sample[H_SIZE]; // Removed unused variable
     float v1_prob[V_SIZE];
     float v1_sample[V_SIZE];
     float h1_prob[H_SIZE];
@@ -348,17 +327,16 @@ int main() {
 
             // --- POSITIVE PHASE (v0 -> h0) ---
             v_to_h(v0, h0_prob);
-            // Sampling h0 is not strictly necessary for CD-1, using h0_prob is standard
 
             // --- NEGATIVE PHASE (h0 -> v1 -> h1) ---
             // 2. Reconstruct visible state (v1)
             h_to_v(h0_prob, v1_prob);
             sample_bernoulli(v1_prob, v1_sample, V_SIZE); // Sample v1
 
-            // 3. Get hidden state from reconstructed visible state (h1)
+            // 3. Get hidden state probabilities from reconstructed visible state (h1)
             v_to_h(v1_sample, h1_prob);
 
-            // 4. Update Weights
+            // 4. Update Weights using probabilities
             update_weights(v0, h0_prob, v1_sample, h1_prob);
             
             // 5. Calculate reconstruction error for stats (v0 vs v1_prob)
