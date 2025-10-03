@@ -6,16 +6,16 @@
 #include <ctype.h>
 
 // --- INN PARAMETERS AND CONSTANTS ---
-#define D 8                   // Dimension of the sentence feature vector
-#define NUM_LEGAL_SENTENCES 2048 // Training Size
-#define NUM_ILLEGAL_SENTENCES 2048 // Test Size
+#define D 16                  // Dimension of the sentence feature vector (Increased from 8 to 16)
+#define NUM_LEGAL_SENTENCES 8192 // Training Size (Increased from 2048 to 8192)
+#define NUM_ILLEGAL_SENTENCES 8192 // Test Size (Increased from 2048 to 8192)
 #define LEARNING_RATE 0.00005  
 #define MAX_EPOCHS 200
-#define TRAINING_TIME_LIMIT_SEC 120.0 // 2 minutes (Guaranteed target time)
+#define TRAINING_TIME_LIMIT_SEC 120.0 // 2 minutes
 #define GAUSSIAN_SIGMA 1.0    
 #define MAX_WORD_LEN 64
 #define MAX_FILE_READ_SIZE 100000 
-#define MAX_SENTENCES_FROM_FILE 1000 
+#define MAX_SENTENCES_FROM_FILE 5000 // Increased to allow more templates
 #define MAX_WORDS_PER_SENTENCE 50 
 
 // --- NEW DATA STRUCTURES ---
@@ -32,6 +32,7 @@ typedef struct {
 } SentenceText;
 
 // Matrix, Vector, INN_Parameters
+// NOTE: Matrix/Vector structures are flexible enough to handle the change in D
 typedef struct { double data[D][D]; int rows; int cols; int initialized; } Matrix;
 typedef struct { double data[D]; int size; int initialized; } Vector;
 typedef struct { Matrix A; Vector b; } INN_Parameters;
@@ -314,8 +315,23 @@ int load_sentence_templates(SentenceText *legal_templates_st, int max_templates)
         if (len > 10) { 
             SentenceText st = convert_raw_to_sentence_text(trimmed_token);
             if (st.count > 0 && st.count < MAX_WORDS_PER_SENTENCE) {
-                legal_templates_st[count] = st;
-                count++;
+                // Only keep templates that have at least one replaceable word (Noun/Verb)
+                int has_replaceable = 0;
+                for (size_t i = 0; i < st.count; i++) {
+                    int word_type = -1;
+                    find_word_value(&st.words[i], &word_type);
+                    if (word_type == 0 || word_type == 1) {
+                        has_replaceable = 1;
+                        break;
+                    }
+                }
+                
+                if (has_replaceable) {
+                    legal_templates_st[count] = st;
+                    count++;
+                } else {
+                    free_sentence_text(&st);
+                }
             } else {
                 free_sentence_text(&st);
             }
@@ -328,6 +344,7 @@ int load_sentence_templates(SentenceText *legal_templates_st, int max_templates)
     return count;
 }
 
+// FIX: Modified to guarantee at least one Noun/Verb replacement if available.
 SentenceText generate_illegal_sentence_text(const SentenceText *legal_template) {
     SentenceText illegal_st = {NULL, 0};
     if (legal_template->count == 0) return illegal_st;
@@ -336,29 +353,54 @@ SentenceText generate_illegal_sentence_text(const SentenceText *legal_template) 
     if (illegal_st.words == NULL) return illegal_st;
     illegal_st.count = legal_template->count;
 
-    int replace_count = 0;
-    int num_to_replace = (rand() % 2) + 1; // Try to replace 1 or 2 words
-
+    // First, find all indices that are Nouns or Verbs
+    int replaceable_indices[MAX_WORDS_PER_SENTENCE];
+    int replaceable_count = 0;
     for (size_t i = 0; i < legal_template->count; i++) {
         const Word *original_word = &legal_template->words[i];
         int word_type = -1;
-        find_word_value(original_word, &word_type); 
+        find_word_value(original_word, &word_type);
+        if (original_word->valid && (word_type == 0 || word_type == 1)) {
+            replaceable_indices[replaceable_count++] = i;
+        }
+    }
 
-        int do_replace = 0;
-        // Target Noun (0) or Verb (1) for replacement
-        if (replace_count < num_to_replace && original_word->valid && (word_type == 0 || word_type == 1)) {
-            if (rand() % 100 < 20) { // 20% chance to replace a suitable word
-                do_replace = 1;
-                replace_count++;
+    // Determine the indices to replace (guaranteeing at least 1 if available)
+    int indices_to_replace[2] = {-1, -1};
+    int num_to_replace = (replaceable_count > 0) ? ((rand() % 2) + 1) : 0; // 1 or 2 replacements if possible
+    num_to_replace = (num_to_replace > replaceable_count) ? replaceable_count : num_to_replace;
+    
+    if (num_to_replace > 0) {
+        indices_to_replace[0] = replaceable_indices[rand() % replaceable_count];
+        if (num_to_replace == 2 && replaceable_count > 1) {
+            int second_idx;
+            do {
+                second_idx = replaceable_indices[rand() % replaceable_count];
+            } while (second_idx == indices_to_replace[0]);
+            indices_to_replace[1] = second_idx;
+        }
+    }
+
+    // Perform the copy/replacement
+    for (size_t i = 0; i < legal_template->count; i++) {
+        const Word *original_word = &legal_template->words[i];
+        int replaced = 0;
+        
+        for (int k = 0; k < num_to_replace; k++) {
+            if ((int)i == indices_to_replace[k]) {
+                int word_type = -1;
+                find_word_value(original_word, &word_type); 
+
+                const char *nonsense_str = (word_type == 0) 
+                                            ? NonsenseNouns[rand() % NUM_NONSENSE_NOUNS]
+                                            : NonsenseVerbs[rand() % NUM_NONSENSE_VERBS];
+                illegal_st.words[i] = create_word(nonsense_str, strlen(nonsense_str));
+                replaced = 1;
+                break;
             }
         }
 
-        if (do_replace) {
-            const char *nonsense_str = (word_type == 0) 
-                                        ? NonsenseNouns[rand() % NUM_NONSENSE_NOUNS]
-                                        : NonsenseVerbs[rand() % NUM_NONSENSE_VERBS];
-            illegal_st.words[i] = create_word(nonsense_str, strlen(nonsense_str));
-        } else {
+        if (!replaced) {
             // Deep copy the original word
             if (original_word->valid) {
                  illegal_st.words[i] = create_word(original_word->str, original_word->len);
@@ -451,13 +493,14 @@ int run_sanity_checks(SentenceText *templates, int num_templates) {
            robust_template_idx, V.data[0]);
     passed++;
 
-    // 3. Check Illegal Sentence Generation (Nonsense word found)
+    // 3. Check Illegal Sentence Generation (Nonsense word found) - FIX VALIDATION
     SentenceText illegal_st = generate_illegal_sentence_text(test_template);
     int found_nonsense = 0;
     int word_count_match = (illegal_st.count == test_template->count);
     
     for (size_t i = 0; i < illegal_st.count; i++) {
         if (illegal_st.words[i].valid && illegal_st.words[i].len > 0) {
+            // Check if the word is a known nonsense word
             for (int j = 0; j < NUM_NONSENSE_NOUNS; j++) {
                 if (strcmp(illegal_st.words[i].str, NonsenseNouns[j]) == 0) { found_nonsense = 1; break; }
             }
@@ -534,7 +577,7 @@ int main(void) {
 
     for (int epoch = 0; epoch < MAX_EPOCHS; epoch++) {
         double epoch_nll_sum = 0.0;
-        int sentences_processed_in_epoch = 0; // Track sentences processed in the current epoch
+        int sentences_processed_in_epoch = 0; 
 
         // The inner loop selects random legal sentences (stochastic gradient descent)
         for (int i = 0; i < NUM_LEGAL_SENTENCES; i++) {
