@@ -1,24 +1,46 @@
-name: INN sentences 
-
-on:
-  push:
-  pull_request:
-
 jobs:
-  build:
+  build_and_test:
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v2
+      # 1. Install gdb and ensure core dumps are possible
+      - name: Install gdb and configure core dumps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdb
+          # Set unlimited core file size
+          ulimit -c unlimited
 
-    - name: Build with gcc
-      run: gcc -O3 -Wall -g -std=c99 simpleinn.c -lm -o simpleinn
+      # 2. Checkout code and Compile with -g
+      - uses: actions/checkout@v4
+      - name: Compile C code with debug symbols
+        run: gcc -g simpleinn.c -o simpleinn -Wall -lm
 
-    - name: Run the inn program
-      run: ./simpleinn
+      # 3. Run the executable and capture the core file
+      # Note: We use || true to prevent the step from failing immediately on exit code 139
+      - name: Run code and expect crash
+        id: run_app
+        run: |
+          ./simpleinn
+        shell: /usr/bin/bash {0}
+        # If the run step exits with 139 (Seg Fault), it will automatically continue
 
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v4 # Use the latest version
-      with:
-        name: innnetwork-diagram
-        path: innsort.svg
+      # 4. Find the core file and analyze it with gdb
+      - name: Analyze Core Dump
+        if: always()  # Always run this step, even if the previous one failed
+        run: |
+          CORE_FILE=$(find . -maxdepth 1 -type f -name 'core.*' -print -quit)
+          
+          if [ -f "$CORE_FILE" ]; then
+            echo "Found core dump: $CORE_FILE. Running gdb analysis..."
+            
+            # Run gdb commands to get the backtrace
+            gdb -q ./simpleinn $CORE_FILE <<EOF
+            # Get the backtrace (the function call stack)
+            bt
+            # Quit gdb
+            q
+            EOF
+          else
+            echo "No core dump file found (expected after exit code 139). Crash may have occurred before main."
+            # Optionally, re-run ./simpleinn to force a crash check
+          fi
