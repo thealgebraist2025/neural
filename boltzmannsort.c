@@ -15,10 +15,10 @@
 #define H_SIZE 256                            // Hidden Layer Size
 #define TRAINING_SET_SIZE 256
 #define EVAL_SET_SIZE 50                      // Size of the evaluation set
-#define MAX_EPOCHS 1000
+#define MAX_EPOCHS 10000
 #define LEARNING_RATE 0.01f
 #define INITIAL_WEIGHT_SCALE 0.01f
-#define REPORT_INTERVAL_SECONDS 10
+#define REPORT_INTERVAL_SECONDS 4
 
 // --- EVALUATION STRUCTURE ---
 typedef struct {
