@@ -12,9 +12,9 @@
 #define NUM_INPUT_INTS 8
 #define BITS_PER_INT 16
 #define V_SIZE (NUM_INPUT_INTS * BITS_PER_INT) // Visible Layer Size (128)
-#define H_SIZE 256                            // Hidden Layer Size
+#define H_SIZE 64                           // Hidden Layer Size
 #define TRAINING_SET_SIZE 10000               // Increased training size for better generalization
-#define EVAL_SET_SIZE 50                      // Size of the evaluation set
+#define EVAL_SET_SIZE 100                      // Size of the evaluation set
 #define MAX_EPOCHS 1000
 #define LEARNING_RATE 0.01f
 #define INITIAL_WEIGHT_SCALE 0.01f
