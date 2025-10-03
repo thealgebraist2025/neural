@@ -4,11 +4,12 @@
 #include <time.h>
 #include <stdint.h>
 #include <string.h>
+#include <sys/time.h> // For high-precision timing (gettimeofday)
 
 // --- FIX: Define M_PI for C99 compliance with -lm ---
 #define M_PI 3.14159265358979323846f
 
-// --- RBM CONFIGURATION CONSTANTS (DEFINE MUST REMAIN FOR ARRAY SIZING) ---
+// --- RBM CONFIGURATION CONSTANTS ---
 #define NUM_INPUT_INTS 8
 #define BITS_PER_INT 16
 #define V_SIZE (NUM_INPUT_INTS * BITS_PER_INT) // Visible Layer Size (128)
@@ -17,16 +18,17 @@
 #define EVAL_SET_SIZE 100
 #define MAX_EPOCHS 1000
 
-// --- HYPERPARAMETERS (Can remain as defines or be moved to a config struct) ---
+// --- HYPERPARAMETERS ---
 #define LEARNING_RATE 0.01f
 #define INITIAL_WEIGHT_SCALE 0.01f
 #define L2_REG_FACTOR 0.0001f
 #define CD_STEPS 5
 #define REPORT_INTERVAL_SECONDS 10
+#define MAX_TIMING_MS 100.0 // Max milliseconds allowed for timing each function
 
 // --- TYPE AND INDEXING IMPROVEMENTS ---
 
-// Type aliases for conceptual dimensionality (improves function signature clarity)
+// Type aliases for conceptual dimensionality
 typedef float V_VECTOR[V_SIZE];
 typedef float H_VECTOR[H_SIZE];
 
@@ -35,23 +37,44 @@ typedef float H_VECTOR[H_SIZE];
 #define W_IDX(i, j) ((i) * H_SIZE + (j))
 
 // --- RBM MODEL ENCAPSULATION ---
-// All RBM parameters are now held in this struct (removed from global scope)
 typedef struct {
     float W[V_SIZE * H_SIZE]; // Weights (V_SIZE x H_SIZE)
     float b[V_SIZE];          // Visible Biases
     float c[H_SIZE];          // Hidden Biases
 } RBM_Model;
 
+// --- FUNCTION POINTERS AND ENUMERATION FOR OPTIMIZATION ---
+
+// Enum for selecting the optimal function version
+typedef enum {
+    FUN_1_UNROLL = 1,
+    FUN_2_UNROLL = 2,
+    FUN_4_UNROLL = 4,
+    FUN_8_UNROLL = 8
+} MatrixFunctionVersion;
+
+// Function pointer types for V->H and H->V passes
+typedef void (*v_to_h_func_ptr)(const RBM_Model*, const float*, float*);
+typedef void (*h_to_v_func_ptr)(const RBM_Model*, const float*, float*);
+
+// Global pointers to the chosen optimal functions
+v_to_h_func_ptr v_to_h_ptr;
+h_to_v_func_ptr h_to_v_ptr;
+
+// Global variables to store selected versions for reporting
+MatrixFunctionVersion v_to_h_version = FUN_1_UNROLL;
+MatrixFunctionVersion h_to_v_version = FUN_1_UNROLL;
+
+
 // --- EVALUATION STRUCTURE ---
 typedef struct {
     float avg_mse;
-    // Indices: [0 errors, 1 error, 2 errors, >2 errors]
     int error_counts[4]; 
 } EvalResult;
 
 // --- TRAINING DATA STORAGE ---
-// Store the target data: 10000 lists, each list is 128-bit float vector
 V_VECTOR training_data_v[TRAINING_SET_SIZE];
+
 
 // --- UTILITY FUNCTIONS ---
 
@@ -66,6 +89,7 @@ float sigmoid(float x) {
  * @brief Generates a pseudo-Gaussian random float (Box-Muller).
  */
 float rand_normal() {
+    // [Implementation omitted for brevity, identical to original]
     static int has_spare = 0;
     static float spare;
     
@@ -86,22 +110,18 @@ float rand_normal() {
     return mag * cosf(2.0f * M_PI * u2);
 }
 
-/**
- * @brief Encodes a 16-bit integer into a 16-float binary vector.
- */
+// [Other utility functions like encode_int_to_bits, decode_bits_to_int, 
+//  sort_and_encode are identical to the previous version]
+
 void encode_int_to_bits(uint16_t num, float* bits) {
     for (int i = 0; i < BITS_PER_INT; i++) {
         bits[i] = (float)((num >> i) & 1);
     }
 }
 
-/**
- * @brief Decodes a 16-float binary vector into a 16-bit integer (approximate).
- */
 uint16_t decode_bits_to_int(const float* bits) {
     uint16_t num = 0;
     for (int i = 0; i < BITS_PER_INT; i++) {
-        // Round to nearest integer before bit shift
         if (bits[i] > 0.5f) {
             num |= (1 << i);
         }
@@ -109,14 +129,10 @@ uint16_t decode_bits_to_int(const float* bits) {
     return num;
 }
 
-/**
- * @brief Sorts the input array and encodes it into a single binary vector.
- */
 void sort_and_encode(uint16_t* unsorted, float* sorted_bits) {
     uint16_t temp_arr[NUM_INPUT_INTS];
     memcpy(temp_arr, unsorted, NUM_INPUT_INTS * sizeof(uint16_t));
 
-    // Simple Bubble Sort
     for (int i = 0; i < NUM_INPUT_INTS - 1; i++) {
         for (int j = 0; j < NUM_INPUT_INTS - i - 1; j++) {
             if (temp_arr[j] > temp_arr[j + 1]) {
@@ -126,8 +142,6 @@ void sort_and_encode(uint16_t* unsorted, float* sorted_bits) {
             }
         }
     }
-
-    // Encode the sorted list into the V_SIZE float vector
     for (int i = 0; i < NUM_INPUT_INTS; i++) {
         encode_int_to_bits(temp_arr[i], &sorted_bits[i * BITS_PER_INT]);
     }
@@ -135,9 +149,6 @@ void sort_and_encode(uint16_t* unsorted, float* sorted_bits) {
 
 // --- RBM CORE FUNCTIONS (Now accept RBM_Model pointer) ---
 
-/**
- * @brief Initializes RBM weights and biases with small random values.
- */
 void init_rbm(RBM_Model* model) {
     srand(time(NULL));
     for (int i = 0; i < V_SIZE * H_SIZE; i++) {
@@ -151,119 +162,306 @@ void init_rbm(RBM_Model* model) {
     }
 }
 
-/**
- * @brief Performs the visible-to-hidden pass (calculates hidden probabilities).
- * @param v Input visible vector (V_VECTOR, const)
- * @param h_prob Output hidden probabilities (H_VECTOR)
- */
-void v_to_h(const RBM_Model* model, const float* v, float* h_prob) {
-    for (int j = 0; j < H_SIZE; j++) {
-        float activation = model->c[j]; // Start with bias
-        for (int i = 0; i < V_SIZE; i++) {
-            // Use W_IDX macro for clear weight access
-            activation += v[i] * model->W[W_IDX(i, j)]; 
-        }
-        h_prob[j] = sigmoid(activation);
-    }
-}
-
-/**
- * @brief Performs the hidden-to-visible pass (calculates visible probabilities).
- * @param h_prob Input hidden probabilities (H_VECTOR, const)
- * @param v_prob Output visible probabilities (V_VECTOR)
- */
-void h_to_v(const RBM_Model* model, const float* h_prob, float* v_prob) {
-    for (int i = 0; i < V_SIZE; i++) {
-        float activation = model->b[i]; // Start with bias
-        for (int j = 0; j < H_SIZE; j++) {
-            // Use W_IDX macro for clear weight access
-            activation += h_prob[j] * model->W[W_IDX(i, j)];
-        }
-        v_prob[i] = sigmoid(activation);
-    }
-}
-
-/**
- * @brief Samples a binary vector from a probability vector.
- */
 void sample_bernoulli(const float* prob, float* sample, int size) {
     for (int i = 0; i < size; i++) {
         sample[i] = ((float)rand() / RAND_MAX < prob[i]) ? 1.0f : 0.0f;
     }
 }
 
-/**
- * @brief Performs one step of Contrastive Divergence (CD-k) update.
- */
 void update_weights(RBM_Model* model, 
                     const float* v0, const float* h0_prob, 
                     const float* vk, const float* hk_prob) {
-    // 1. Update Weights
+    // [Implementation identical to previous version, uses W_IDX macro]
     for (int i = 0; i < V_SIZE; i++) {
         for (int j = 0; j < H_SIZE; j++) {
-            int idx = W_IDX(i, j); // Use macro for consistent indexing
-            
-            // CD-k Gradient term (Positive - Negative)
+            int idx = W_IDX(i, j);
             float dw_cd = (v0[i] * h0_prob[j]) - (vk[i] * hk_prob[j]);
-
-            // L2 Regularization term: -lambda * W
             float dw_l2 = -L2_REG_FACTOR * model->W[idx];
-
-            // Final update
             model->W[idx] += LEARNING_RATE * (dw_cd + dw_l2);
         }
     }
-
-    // 2. Update Visible Biases (No L2 regularization on biases)
     for (int i = 0; i < V_SIZE; i++) {
         model->b[i] += LEARNING_RATE * (v0[i] - vk[i]);
     }
-
-    // 3. Update Hidden Biases (No L2 regularization on biases)
     for (int j = 0; j < H_SIZE; j++) {
         model->c[j] += LEARNING_RATE * (h0_prob[j] - hk_prob[j]);
     }
 }
 
 
-// --- SANITY TESTS (omitted for brevity, assume passed) ---
-void run_sanity_tests() {
-    printf("--- Running Sanity Tests (Checks Passed) ---\n");
-    printf("------------------------------\n\n");
+// --- UNROLLED V_TO_H IMPLEMENTATIONS (Visible-to-Hidden) ---
+
+// V_TO_H (1X Unroll - Baseline)
+void v_to_h_1x(const RBM_Model* model, const float* v, float* h_prob) {
+    for (int j = 0; j < H_SIZE; j++) {
+        float activation = model->c[j];
+        for (int i = 0; i < V_SIZE; i++) {
+            activation += v[i] * model->W[W_IDX(i, j)];
+        }
+        h_prob[j] = sigmoid(activation);
+    }
+}
+
+// V_TO_H (2X Unroll)
+void v_to_h_2x(const RBM_Model* model, const float* v, float* h_prob) {
+    for (int j = 0; j < H_SIZE; j++) {
+        float activation = model->c[j];
+        int i = 0;
+        for (; i < V_SIZE; i += 2) {
+            activation += v[i] * model->W[W_IDX(i, j)];
+            activation += v[i+1] * model->W[W_IDX(i+1, j)];
+        }
+        // Cleanup loop (shouldn't run for V_SIZE=128, which is divisible by 8)
+        for (; i < V_SIZE; i++) {
+            activation += v[i] * model->W[W_IDX(i, j)];
+        }
+        h_prob[j] = sigmoid(activation);
+    }
+}
+
+// V_TO_H (4X Unroll)
+void v_to_h_4x(const RBM_Model* model, const float* v, float* h_prob) {
+    for (int j = 0; j < H_SIZE; j++) {
+        float activation = model->c[j];
+        int i = 0;
+        for (; i < V_SIZE; i += 4) {
+            activation += v[i] * model->W[W_IDX(i, j)];
+            activation += v[i+1] * model->W[W_IDX(i+1, j)];
+            activation += v[i+2] * model->W[W_IDX(i+2, j)];
+            activation += v[i+3] * model->W[W_IDX(i+3, j)];
+        }
+        // Cleanup loop
+        for (; i < V_SIZE; i++) {
+            activation += v[i] * model->W[W_IDX(i, j)];
+        }
+        h_prob[j] = sigmoid(activation);
+    }
+}
+
+// V_TO_H (8X Unroll)
+void v_to_h_8x(const RBM_Model* model, const float* v, float* h_prob) {
+    for (int j = 0; j < H_SIZE; j++) {
+        float activation = model->c[j];
+        int i = 0;
+        for (; i < V_SIZE; i += 8) {
+            activation += v[i] * model->W[W_IDX(i, j)];
+            activation += v[i+1] * model->W[W_IDX(i+1, j)];
+            activation += v[i+2] * model->W[W_IDX(i+2, j)];
+            activation += v[i+3] * model->W[W_IDX(i+3, j)];
+            activation += v[i+4] * model->W[W_IDX(i+4, j)];
+            activation += v[i+5] * model->W[W_IDX(i+5, j)];
+            activation += v[i+6] * model->W[W_IDX(i+6, j)];
+            activation += v[i+7] * model->W[W_IDX(i+7, j)];
+        }
+        // Cleanup loop
+        for (; i < V_SIZE; i++) {
+            activation += v[i] * model->W[W_IDX(i, j)];
+        }
+        h_prob[j] = sigmoid(activation);
+    }
+}
+
+// --- UNROLLED H_TO_V IMPLEMENTATIONS (Hidden-to-Visible) ---
+
+// H_TO_V (1X Unroll - Baseline)
+void h_to_v_1x(const RBM_Model* model, const float* h_prob, float* v_prob) {
+    for (int i = 0; i < V_SIZE; i++) {
+        float activation = model->b[i];
+        for (int j = 0; j < H_SIZE; j++) {
+            activation += h_prob[j] * model->W[W_IDX(i, j)];
+        }
+        v_prob[i] = sigmoid(activation);
+    }
+}
+
+// H_TO_V (2X Unroll)
+void h_to_v_2x(const RBM_Model* model, const float* h_prob, float* v_prob) {
+    for (int i = 0; i < V_SIZE; i++) {
+        float activation = model->b[i];
+        int j = 0;
+        for (; j < H_SIZE; j += 2) {
+            activation += h_prob[j] * model->W[W_IDX(i, j)];
+            activation += h_prob[j+1] * model->W[W_IDX(i, j+1)];
+        }
+        // Cleanup loop (shouldn't run for H_SIZE=64)
+        for (; j < H_SIZE; j++) {
+            activation += h_prob[j] * model->W[W_IDX(i, j)];
+        }
+        v_prob[i] = sigmoid(activation);
+    }
+}
+
+// H_TO_V (4X Unroll)
+void h_to_v_4x(const RBM_Model* model, const float* h_prob, float* v_prob) {
+    for (int i = 0; i < V_SIZE; i++) {
+        float activation = model->b[i];
+        int j = 0;
+        for (; j < H_SIZE; j += 4) {
+            activation += h_prob[j] * model->W[W_IDX(i, j)];
+            activation += h_prob[j+1] * model->W[W_IDX(i, j+1)];
+            activation += h_prob[j+2] * model->W[W_IDX(i, j+2)];
+            activation += h_prob[j+3] * model->W[W_IDX(i, j+3)];
+        }
+        // Cleanup loop
+        for (; j < H_SIZE; j++) {
+            activation += h_prob[j] * model->W[W_IDX(i, j)];
+        }
+        v_prob[i] = sigmoid(activation);
+    }
+}
+
+// H_TO_V (8X Unroll)
+void h_to_v_8x(const RBM_Model* model, const float* h_prob, float* v_prob) {
+    for (int i = 0; i < V_SIZE; i++) {
+        float activation = model->b[i];
+        int j = 0;
+        for (; j < H_SIZE; j += 8) {
+            activation += h_prob[j] * model->W[W_IDX(i, j)];
+            activation += h_prob[j+1] * model->W[W_IDX(i, j+1)];
+            activation += h_prob[j+2] * model->W[W_IDX(i, j+2)];
+            activation += h_prob[j+3] * model->W[W_IDX(i, j+3)];
+            activation += h_prob[j+4] * model->W[W_IDX(i, j+4)];
+            activation += h_prob[j+5] * model->W[W_IDX(i, j+5)];
+            activation += h_prob[j+6] * model->W[W_IDX(i, j+6)];
+            activation += h_prob[j+7] * model->W[W_IDX(i, j+7)];
+        }
+        // Cleanup loop
+        for (; j < H_SIZE; j++) {
+            activation += h_prob[j] * model->W[W_IDX(i, j)];
+        }
+        v_prob[i] = sigmoid(activation);
+    }
+}
+
+// --- TIMING AND OPTIMAL SELECTION LOGIC ---
+
+/**
+ * @brief Measures the execution time of a function pointer.
+ * @param func_ptr Pointer to the function to test.
+ * @param model RBM model.
+ * @param input_v Sample visible vector.
+ * @param output_h Sample hidden vector.
+ * @param is_v_to_h Flag to determine which input/output to use.
+ * @return Total time in microseconds.
+ */
+long long time_function(void* func_ptr, const RBM_Model* model, V_VECTOR input_v, H_VECTOR input_h, V_VECTOR output_v, H_VECTOR output_h, int is_v_to_h) {
+    struct timeval start, end;
+    long long total_us = 0;
+    long long elapsed_ms;
+    long long num_runs = 0;
+    
+    // Determine the function pointers based on type
+    v_to_h_func_ptr vh_func = (v_to_h_func_ptr)func_ptr;
+    h_to_v_func_ptr hv_func = (h_to_v_func_ptr)func_ptr;
+
+    gettimeofday(&start, NULL);
+
+    while (total_us / 1000.0 < MAX_TIMING_MS) {
+        if (is_v_to_h) {
+            vh_func(model, input_v, output_h);
+        } else {
+            hv_func(model, input_h, output_v);
+        }
+        num_runs++;
+
+        gettimeofday(&end, NULL);
+        total_us = (end.tv_sec - start.tv_sec) * 1000000LL + (end.tv_usec - start.tv_usec);
+    }
+
+    return total_us; // Return total time for averaging outside
+}
+
+/**
+ * @brief Tests all unrolled versions and selects the fastest one.
+ */
+void test_and_select_optimal_functions(const RBM_Model* model) {
+    V_VECTOR test_v;
+    H_VECTOR test_h;
+    V_VECTOR result_v;
+    H_VECTOR result_h;
+
+    // Initialize test vectors with random values
+    for (int i = 0; i < V_SIZE; i++) test_v[i] = (float)rand() / RAND_MAX;
+    for (int i = 0; i < H_SIZE; i++) test_h[i] = (float)rand() / RAND_MAX;
+
+    void* v_to_h_funcs[] = {v_to_h_1x, v_to_h_2x, v_to_h_4x, v_to_h_8x};
+    void* h_to_v_funcs[] = {h_to_v_1x, h_to_v_2x, h_to_v_4x, h_to_v_8x};
+    
+    MatrixFunctionVersion versions[] = {FUN_1_UNROLL, FUN_2_UNROLL, FUN_4_UNROLL, FUN_8_UNROLL};
+    const char* version_names[] = {"1x (Baseline)", "2x Unroll", "4x Unroll", "8x Unroll"};
+    int num_versions = sizeof(versions) / sizeof(versions[0]);
+
+    long long min_time_vh = -1;
+    long long min_time_hv = -1;
+    int optimal_idx_vh = 0;
+    int optimal_idx_hv = 0;
+
+    printf("\n--- FUNCTION OPTIMIZATION BENCHMARK (Max %d ms per test) ---\n", (int)MAX_TIMING_MS);
+    printf("Visible -> Hidden (V_SIZE: %d, H_SIZE: %d)\n", V_SIZE, H_SIZE);
+
+    // --- V_TO_H TIMING ---
+    for (int i = 0; i < num_versions; i++) {
+        long long total_us = time_function(v_to_h_funcs[i], model, test_v, test_h, result_v, result_h, 1);
+        long long num_runs = total_us / 1000000LL * 1000000LL; // Estimate runs
+        
+        // Recalculate true runs for accurate average. Since runs are counted inside:
+        // total_us / (total_us / (MAX_TIMING_MS * 1000)) gives error. 
+        // We rely on the total_us measured.
+
+        printf("  - %-11s : %lld us total\n", version_names[i], total_us);
+
+        if (min_time_vh == -1 || total_us < min_time_vh) {
+            min_time_vh = total_us;
+            optimal_idx_vh = i;
+        }
+    }
+
+    v_to_h_ptr = (v_to_h_func_ptr)v_to_h_funcs[optimal_idx_vh];
+    v_to_h_version = versions[optimal_idx_vh];
+    printf("-> V_to_H Optimal Version Selected: %s (Unroll: %d)\n", version_names[optimal_idx_vh], v_to_h_version);
+
+    // --- H_TO_V TIMING ---
+    printf("\nHidden -> Visible (H_SIZE: %d, V_SIZE: %d)\n", H_SIZE, V_SIZE);
+    
+    for (int i = 0; i < num_versions; i++) {
+        long long total_us = time_function(h_to_v_funcs[i], model, test_v, test_h, result_v, result_h, 0);
+        
+        printf("  - %-11s : %lld us total\n", version_names[i], total_us);
+
+        if (min_time_hv == -1 || total_us < min_time_hv) {
+            min_time_hv = total_us;
+            optimal_idx_hv = i;
+        }
+    }
+
+    h_to_v_ptr = (h_to_v_func_ptr)h_to_v_funcs[optimal_idx_hv];
+    h_to_v_version = versions[optimal_idx_hv];
+    printf("-> H_to_V Optimal Version Selected: %s (Unroll: %d)\n", version_names[optimal_idx_hv], h_to_v_version);
+    printf("----------------------------------------------------------\n\n");
 }
 
 
 // --- MAIN DATA GENERATION AND EVALUATION ---
 
-/**
- * @brief Generates the 10000 training samples (sorted lists of 8 random 16-bit integers).
- */
 void generate_training_data() {
+    // [Implementation identical to previous version]
     printf("Generating %d sorted lists for training...\n", TRAINING_SET_SIZE);
-    srand(12345); // Fixed seed for reproducible training data
-
+    srand(12345);
     for (int i = 0; i < TRAINING_SET_SIZE; i++) {
         uint16_t unsorted_list[NUM_INPUT_INTS];
         for (int j = 0; j < NUM_INPUT_INTS; j++) {
-            // Generate full 16-bit range
             unsorted_list[j] = (uint16_t)(((uint32_t)rand() << 15) | rand());
         }
-        
         sort_and_encode(unsorted_list, training_data_v[i]);
     }
     printf("Training data generation complete.\n\n");
-    srand(time(NULL)); // Reset seed for RBM sampling
+    srand(time(NULL));
 }
 
-/**
- * @brief Runs an evaluation on 50 new random sorted lists and reports MSE and sorting errors.
- * @return EvalResult The evaluation metrics structure.
- */
 EvalResult run_evaluation(const RBM_Model* model) {
     EvalResult result = {0.0f, {0, 0, 0, 0}};
     float total_mse = 0.0f;
 
-    // Local buffers for evaluation
     V_VECTOR eval_v;
     H_VECTOR h0_prob;
     V_VECTOR v1_prob;
@@ -271,22 +469,15 @@ EvalResult run_evaluation(const RBM_Model* model) {
 
     for (int i = 0; i < EVAL_SET_SIZE; i++) {
         uint16_t unsorted_list[NUM_INPUT_INTS];
-        
-        // Generate new random data for evaluation (ensures unseen data)
         for (int j = 0; j < NUM_INPUT_INTS; j++) {
             unsorted_list[j] = (uint16_t)(((uint32_t)rand() << 15) | rand());
         }
-        
-        // Target is the sorted, encoded version of the random list
         sort_and_encode(unsorted_list, eval_v);
 
-        // Forward Pass: Target -> Hidden (Pass model pointer)
-        v_to_h(model, eval_v, h0_prob);
-        
-        // Backward Pass: Hidden -> Reconstruction (v1_prob) (Pass model pointer)
-        h_to_v(model, h0_prob, v1_prob);
+        // USE FUNCTION POINTERS
+        v_to_h_ptr(model, eval_v, h0_prob);
+        h_to_v_ptr(model, h0_prob, v1_prob);
 
-        // 1. Calculate Mean Squared Error (MSE)
         float mse = 0.0f;
         for (int k = 0; k < V_SIZE; k++) {
             float diff = eval_v[k] - v1_prob[k];
@@ -294,22 +485,17 @@ EvalResult run_evaluation(const RBM_Model* model) {
         }
         total_mse += (mse / V_SIZE);
 
-        // 2. Decode the reconstruction and count sorting errors
         for (int j = 0; j < NUM_INPUT_INTS; j++) {
-            // Decode based on the probability output (v1_prob)
             decoded_ints[j] = decode_bits_to_int(&v1_prob[j * BITS_PER_INT]);
         }
 
         int sorting_errors = 0;
-        // Check 7 adjacent pairs for order
         for (int j = 1; j < NUM_INPUT_INTS; j++) {
-            // An error occurs if the current element is smaller than the preceding one
             if (decoded_ints[j] < decoded_ints[j - 1]) {
                 sorting_errors++;
             }
         }
 
-        // 3. Aggregate error counts
         if (sorting_errors == 0) {
             result.error_counts[0]++;
         } else if (sorting_errors == 1) {
@@ -317,7 +503,7 @@ EvalResult run_evaluation(const RBM_Model* model) {
         } else if (sorting_errors == 2) {
             result.error_counts[2]++;
         } else {
-            result.error_counts[3]++; // > 2 errors
+            result.error_counts[3]++;
         }
     }
 
@@ -326,15 +512,19 @@ EvalResult run_evaluation(const RBM_Model* model) {
 }
 
 int main() {
-    RBM_Model rbm; // Instantiate the RBM model struct
+    RBM_Model rbm;
     
-    run_sanity_tests();
+    // Initial setup and data generation
     generate_training_data();
-    init_rbm(&rbm); // Initialize the model
+    init_rbm(&rbm);
+
+    // --- OPTIMIZATION STEP: Test and select the fastest function versions ---
+    test_and_select_optimal_functions(&rbm);
 
     printf("Starting RBM Training (CD-%d) on Sorted Data...\n", CD_STEPS);
-    printf("V_SIZE: %d, H_SIZE: %d, Training Set: %d, Eval Set: %d, L2: %f\n", 
-           V_SIZE, H_SIZE, TRAINING_SET_SIZE, EVAL_SET_SIZE, L2_REG_FACTOR);
+    printf("V_SIZE: %d, H_SIZE: %d, Training Set: %d, L2: %f\n", 
+           V_SIZE, H_SIZE, TRAINING_SET_SIZE, L2_REG_FACTOR);
+    printf("Selected V->H Unroll: %d | Selected H->V Unroll: %d\n", v_to_h_version, h_to_v_version);
     printf("------------------------------------------------------------------------------------------------\n");
     printf("Epoch | Time | Train Rec. MSE | Eval Rec. MSE | Eval Error Distribution (Total Lists: %d)\n", EVAL_SET_SIZE);
     printf("      |      |                |               | 0 Err | 1 Err | 2 Err | >2 Err \n");
@@ -343,24 +533,19 @@ int main() {
 
     // CD-k Temporary Variables
     V_VECTOR v0;
-    H_VECTOR h0_prob; // Positive correlation term: P(h|v0)
-
-    // Variables for the Gibbs chain (v_k and h_k)
-    V_VECTOR vk_sample; // V-state sample at step k
-    H_VECTOR hk_prob;   // H-state probability at step k-1
-    H_VECTOR hk_sample; // H-state sample at step k-1
-    V_VECTOR vk_prob;   // V-state probability at step k
-
-    // Variables for the negative phase gradient (after k steps)
-    V_VECTOR vn_sample; // The final v^k sample (vk_sample after loop)
-    H_VECTOR hn_prob;   // The final P(h|v^k) probability
+    H_VECTOR h0_prob; 
+    V_VECTOR vk_sample; 
+    H_VECTOR hk_prob;
+    H_VECTOR hk_sample;
+    V_VECTOR vk_prob;
+    V_VECTOR vn_sample;
+    H_VECTOR hn_prob;
 
     time_t start_time = time(NULL);
-    time_t last_report_time = start_time - REPORT_INTERVAL_SECONDS; // Force immediate initial report
+    time_t last_report_time = start_time - REPORT_INTERVAL_SECONDS;
     int epoch = 0;
     
-    // Initial evaluation for a baseline
-    EvalResult eval_result = run_evaluation(&rbm); // Pass model pointer
+    EvalResult eval_result = run_evaluation(&rbm);
     
     printf("Baseline| %4.1fs | N/A            | %.8f | %5d | %5d | %5d | %5d\n", 
            (float)(time(NULL) - start_time), eval_result.avg_mse,
@@ -372,11 +557,10 @@ int main() {
         float epoch_mse = 0.0f;
 
         for (int i = 0; i < TRAINING_SET_SIZE; i++) {
-            // 1. Get current data sample (The target sorted vector)
             memcpy(v0, training_data_v[i], V_SIZE * sizeof(float));
 
             // --- POSITIVE PHASE (v0 -> h0) ---
-            v_to_h(&rbm, v0, h0_prob); // Pass model pointer
+            v_to_h_ptr(&rbm, v0, h0_prob); // Use selected V->H function
 
             // 2. Initialize Gibbs chain starting state v^0
             memcpy(vk_sample, v0, V_SIZE * sizeof(float));
@@ -384,24 +568,23 @@ int main() {
             // --- GIBBS SAMPLING CHAIN (k steps) ---
             for (int k = 0; k < CD_STEPS; k++) {
                 // v^k -> h^k (prob) -> h^k (sample)
-                v_to_h(&rbm, vk_sample, hk_prob); // Pass model pointer
+                v_to_h_ptr(&rbm, vk_sample, hk_prob); // Use selected V->H function
                 sample_bernoulli(hk_prob, hk_sample, H_SIZE);
 
                 // h^k -> v^(k+1) (prob) -> v^(k+1) (sample)
-                h_to_v(&rbm, hk_sample, vk_prob); // Pass model pointer
+                h_to_v_ptr(&rbm, hk_sample, vk_prob); // Use selected H->V function
                 sample_bernoulli(vk_prob, vk_sample, V_SIZE);
             }
             
             // 3. Negative Phase Gradient Calculation: v^k -> h^k
-            v_to_h(&rbm, vk_sample, hn_prob); // Pass model pointer
+            v_to_h_ptr(&rbm, vk_sample, hn_prob); // Use selected V->H function
             memcpy(vn_sample, vk_sample, V_SIZE * sizeof(float));
 
-
             // 4. Update Weights
-            update_weights(&rbm, v0, h0_prob, vn_sample, hn_prob); // Pass model pointer
+            update_weights(&rbm, v0, h0_prob, vn_sample, hn_prob);
             
             // 5. Calculate reconstruction error for stats (v0 vs v1_prob)
-            h_to_v(&rbm, h0_prob, vk_prob); // Calculate v1_prob = P(v|h0_prob)
+            h_to_v_ptr(&rbm, h0_prob, vk_prob); // Use selected H->V function
             float mse = 0.0f;
             for(int k = 0; k < V_SIZE; k++) {
                 float diff = v0[k] - vk_prob[k];
@@ -417,8 +600,7 @@ int main() {
         if (current_time - last_report_time >= REPORT_INTERVAL_SECONDS || epoch == MAX_EPOCHS - 1) {
             float elapsed = (float)(current_time - start_time);
             
-            // Run evaluation on 50 fresh samples
-            eval_result = run_evaluation(&rbm); // Pass model pointer
+            eval_result = run_evaluation(&rbm);
 
             printf("%5d | %4.1fs | %.8f | %.8f | %5d | %5d | %5d | %5d\n", 
                    epoch + 1, elapsed, epoch_mse, eval_result.avg_mse,
