@@ -121,7 +121,7 @@ void init_vector(Vector *V, int size) {
  * @param name The name of the matrix for error printing.
  * @return 1 if initialized, 0 otherwise.
  */
-int check_init(const Matrix *M, const char *const name) {
+int check_init(const Matrix *const M, const char *const name) {
     if (!M->initialized) {
         fprintf(stderr, "Initialization Error: Matrix '%s' not initialized.\n", name);
         return 0;
@@ -130,12 +130,12 @@ int check_init(const Matrix *M, const char *const name) {
 }
 
 /**
- * @brief Checks if a vector is initialized. (Fix for Test 4)
+ * @brief Checks if a vector is initialized.
  * @param V The vector struct pointer.
  * @param name The name of the vector for error printing.
  * @return 1 if initialized, 0 otherwise.
  */
-int check_vector_init(const Vector *V, const char *const name) {
+int check_vector_init(const Vector *const V, const char *const name) {
     if (!V->initialized) {
         fprintf(stderr, "Initialization Error: Vector '%s' not initialized.\n", name);
         return 0;
@@ -151,7 +151,7 @@ int check_vector_init(const Vector *V, const char *const name) {
  * @param y The output Vector (D).
  */
 void multiply_matrix_vector(const Matrix *const A, const Vector *const x, Vector *y) {
-    // Corrected to use check_vector_init for x
+    // Sanity checks
     if (!check_init(A, "A") || !check_vector_init(x, "x") || A->cols != x->size) {
         return;
     }
@@ -196,7 +196,7 @@ void calculate_nll_gradient(const Matrix *const A, const Vector *const z, Vector
     if (!check_init(A, "A") || !check_vector_init(z, "z")) return;
 
     // dL/dz = z / sigma^2
-    double scale = 1.0 / (GAUSSIAN_SIGMA * GAUSSIAN_SIGMA);
+    const double scale = 1.0 / (GAUSSIAN_SIGMA * GAUSSIAN_SIGMA);
     Vector dL_dz;
     init_vector(&dL_dz, D);
     for (int i = 0; i < D; i++) {
@@ -247,14 +247,14 @@ double calculate_nll_loss(const INN_Parameters *const params, const Vector *cons
         z_norm_sq += z->data[i] * z->data[i];
     }
 
-    double log_prob_z = 0.5 * z_norm_sq / (GAUSSIAN_SIGMA * GAUSSIAN_SIGMA);
+    const double log_prob_z = 0.5 * z_norm_sq / (GAUSSIAN_SIGMA * GAUSSIAN_SIGMA);
 
     // Term 2: -log|det(A)| (using symbolic calculation)
-    double det_A = get_determinant_triangular(&params->A);
-    double log_det_A = log(fabs(det_A));
+    const double det_A = get_determinant_triangular(&params->A);
+    const double log_det_A = log(fabs(det_A));
 
     // NLL = log_prob_z - log_det_A
-    double nll = log_prob_z - log_det_A;
+    const double nll = log_prob_z - log_det_A;
 
     return nll;
 }
@@ -278,7 +278,7 @@ double get_word_value(const char *const word, const char *const *const word_list
  * @param type 1 for "the NOUN VERB the ADJECTIVE NOUN", 2 for "the NOUN has NOUN".
  * @param is_legal 1 for sensible words, 0 for nonsense words (same structure, illegal semantics).
  */
-Sentence generate_sentence(int type, int is_legal) {
+Sentence generate_sentence(const int type, const int is_legal) {
     Sentence s;
     init_vector(&s.features, D);
     s.is_legal = is_legal;
@@ -287,10 +287,10 @@ Sentence generate_sentence(int type, int is_legal) {
     // Type 1: the NOUN VERB the ADJECTIVE NOUN
     if (type == 1) {
         // Legal words have lower indices, illegal words have higher indices.
-        int n1_idx = is_legal ? (rand() % 3) : (3 + rand() % (NUM_NOUNS - 3));
-        int v_idx = rand() % NUM_VERBS;
-        int adj_idx = rand() % NUM_ADJECTIVES;
-        int n2_idx = is_legal ? (rand() % 3) : (3 + rand() % (NUM_NOUNS - 3));
+        const int n1_idx = is_legal ? (rand() % 3) : (3 + rand() % (NUM_NOUNS - 3));
+        const int v_idx = rand() % NUM_VERBS;
+        const int adj_idx = rand() % NUM_ADJECTIVES;
+        const int n2_idx = is_legal ? (rand() % 3) : (3 + rand() % (NUM_NOUNS - 3));
 
         // Construct text
         sprintf(s.text, "the %s %s the %s %s",
@@ -305,8 +305,8 @@ Sentence generate_sentence(int type, int is_legal) {
     }
     // Type 2: the NOUN has NOUN
     else if (type == 2) {
-        int n1_idx = is_legal ? (rand() % 4) : (4 + rand() % (NUM_NOUNS - 4));
-        int n2_idx = is_legal ? (rand() % 4) : (4 + rand() % (NUM_NOUNS - 4));
+        const int n1_idx = is_legal ? (rand() % 4) : (4 + rand() % (NUM_NOUNS - 4));
+        const int n2_idx = is_legal ? (rand() % 4) : (4 + rand() % (NUM_NOUNS - 4));
 
         // Construct text
         sprintf(s.text, "the %s has %s",
@@ -331,13 +331,13 @@ void generate_datasets(Sentence *legal_sentences, Sentence *illegal_sentences) {
 
     // Generate Legal Sentences
     for (int i = 0; i < NUM_LEGAL_SENTENCES; i++) {
-        int type = (i % 2) + 1; // Alternate between Type 1 and Type 2
+        const int type = (i % 2) + 1; // Alternate between Type 1 and Type 2
         legal_sentences[i] = generate_sentence(type, 1);
     }
 
     // Generate Illegal Sentences (Nonsense)
     for (int i = 0; i < NUM_ILLEGAL_SENTENCES; i++) {
-        int type = (i % 2) + 1; // Alternate between Type 1 and Type 2
+        const int type = (i % 2) + 1; // Alternate between Type 1 and Type 2
         illegal_sentences[i] = generate_sentence(type, 0);
     }
 
@@ -398,7 +398,7 @@ int run_tests() {
     // Test 3: Determinant of Triangular Matrix (Symbolic Check)
     // Set a known diagonal: 1, 2, 3, 4, 5. Determinant should be 1*2*3*4*5 = 120.0
     for (int i = 0; i < D; i++) A.data[i][i] = (double)(i + 1);
-    double det = get_determinant_triangular(&A);
+    const double det = get_determinant_triangular(&A);
     if (fabs(det - 120.0) < 1e-6) {
         printf("Test 3 (Determinant): PASSED (Value: %.1f)\n", det);
     } else {
@@ -406,10 +406,15 @@ int run_tests() {
         failed++;
     }
 
-    // Test 4: Matrix-Vector Multiplication (INN Forward Pass Check) - FIXED
+    // Test 4: Matrix-Vector Multiplication (INN Forward Pass Check) - FIXED FOR ROBUSTNESS
     Vector x, y_expected, z;
     init_vector(&x, D); // Input vector x is initialized
     init_vector(&y_expected, D);
+    init_vector(&z, D); // Explicitly initialize z
+
+    // Re-initialize A to clear potential junk and ensure a clean start for the test case
+    init_matrix(&A, D, D, 1);
+
     // Set x to [1, 1, 1, 1, 1]
     for (int i = 0; i < D; i++) x.data[i] = 1.0;
     // Set A to lower triangular, all ones below/on diagonal. y[i] = i+1
@@ -441,12 +446,15 @@ int run_tests() {
     // Ideal case: A=I, b=0, x=0. Then z=0. NLL should be 0.
     for (int i = 0; i < D; i++) {
         test_params.A.data[i][i] = 1.0;
-        test_params.A.data[i][i == 0 ? 1 : i-1] = 0.0; // Ensure off-diagonal is reset
+        // Ensure off-diagonal is zeroed (even though init_matrix did this, explicit is safer)
+        for(int j = 0; j < D; j++) {
+            if (i != j) test_params.A.data[i][j] = 0.0;
+        }
         test_params.b.data[i] = 0.0;
         x.data[i] = 0.0;
     }
     inn_forward(&test_params, &x, &z);
-    double nll_ideal = calculate_nll_loss(&test_params, &z);
+    const double nll_ideal = calculate_nll_loss(&test_params, &z);
     if (fabs(nll_ideal - 0.0) < 1e-6) {
         printf("Test 5 (NLL Ideal): PASSED (NLL=%.2f)\n", nll_ideal);
     } else {
@@ -488,10 +496,10 @@ int main(void) {
     Sentence illegal_sentences[NUM_ILLEGAL_SENTENCES];
     generate_datasets(legal_sentences, illegal_sentences);
 
-    clock_t start_time = clock();
+    const clock_t start_time = clock();
     clock_t last_print_time = start_time;
-    double time_step_sec = 5.0;
-    int print_interval_iterations = 100; // Print every 100 iterations
+    const double time_step_sec = 5.0;
+    const int print_interval_iterations = 100; // Print every 100 iterations
 
     printf("--- Starting INN Training (MLE via SGD) ---\n");
     printf("Epoch | Iteration | Avg NLL (Loss) | Det(A)\n");
@@ -500,16 +508,16 @@ int main(void) {
     // 3. Training Loop (SGD - Maximum Likelihood Estimation)
     for (int epoch = 0; epoch < MAX_EPOCHS; epoch++) {
         double epoch_nll_sum = 0.0;
-        int num_batches = NUM_LEGAL_SENTENCES; // Treat each sentence as a batch for simplicity
+        const int num_batches = NUM_LEGAL_SENTENCES; // Treat each sentence as a batch for simplicity
 
         for (int i = 0; i < num_batches; i++) {
             // Select a random sentence
-            int idx = rand() % NUM_LEGAL_SENTENCES;
+            const int idx = rand() % NUM_LEGAL_SENTENCES;
             const Vector x = legal_sentences[idx].features;
 
             Vector z;
             inn_forward(&params, &x, &z);
-            double nll_loss = calculate_nll_loss(&params, &z);
+            const double nll_loss = calculate_nll_loss(&params, &z);
             epoch_nll_sum += nll_loss;
 
             // --- Backpropagation (Calculating Gradients) ---
@@ -518,7 +526,7 @@ int main(void) {
             Vector dL_dz;
             init_vector(&dL_dz, D);
             // dL/dz = z / sigma^2
-            double scale = 1.0 / (GAUSSIAN_SIGMA * GAUSSIAN_SIGMA);
+            const double scale = 1.0 / (GAUSSIAN_SIGMA * GAUSSIAN_SIGMA);
             for (int k = 0; k < D; k++) {
                 dL_dz.data[k] = z.data[k] * scale;
             }
@@ -534,7 +542,7 @@ int main(void) {
             for (int r = 0; r < D; r++) {
                 for (int c = 0; c < D; c++) {
                     if (c <= r) { // Only update lower triangular part
-                        double grad_A_r_c = dL_dz.data[r] * x.data[c];
+                        const double grad_A_r_c = dL_dz.data[r] * x.data[c];
                         params.A.data[r][c] -= LEARNING_RATE * grad_A_r_c;
 
                         // Additional term from log-determinant (dL/d(A_ii) = 1/A_ii)
@@ -546,8 +554,8 @@ int main(void) {
             }
 
             // --- STATS PRINTING ---
-            clock_t current_time = clock();
-            double elapsed_sec = (double)(current_time - last_print_time) / CLOCKS_PER_SEC;
+            const clock_t current_time = clock();
+            const double elapsed_sec = (double)(current_time - last_print_time) / CLOCKS_PER_SEC;
 
             if (elapsed_sec >= time_step_sec) {
                 printf("%5d | %9d | %14.4f | %6.4f\n",
@@ -586,8 +594,8 @@ int main(void) {
         illegal_count++;
     }
 
-    double avg_legal_nll = legal_nll_sum / legal_count;
-    double avg_illegal_nll = illegal_nll_sum / illegal_count;
+    const double avg_legal_nll = legal_nll_sum / legal_count;
+    const double avg_illegal_nll = illegal_nll_sum / illegal_count;
 
     printf("Average NLL for Legal Sentences (IN-DISTRIBUTION): %.4f\n", avg_legal_nll);
     printf("Average NLL for Illegal Sentences (OUT-OF-DISTRIBUTION): %.4f\n", avg_illegal_nll);
