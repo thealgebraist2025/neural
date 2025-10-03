@@ -119,46 +119,36 @@ void init_char_mapping() {
 }
 
 // --- Data Structures ---
-typedef struct { int rows; int cols; double** data; } Matrix;
+typedef struct { 
+    int rows; 
+    int cols; 
+    double** data; 
+    bool is_initialized; // NEW: Sanity check flag
+} Matrix;
 
-typedef struct {
-    // Weights and Biases
-    Matrix weights_ih;         // Input -> Hidden 
-    Matrix weights_ho;         // Hidden -> Output
-    double* bias_h;
-    double* bias_o;
-
-    double lr;
-
-    // FORWARD-PASS CACHES (Intermediates)
-    Matrix inputs;             // Input vector (270x1)
-    Matrix hidden_outputs;     // Activated hidden layer (512x1)
-    Matrix output_outputs;     // Activated output layer (270x1)
-    
-    // SCRATCHPAD MATRICES (Pre-allocated for temporary calculations)
-    Matrix h_in_cache;         // Un-activated hidden input (512x1)
-    Matrix output_in_cache;    // Un-activated output input (270x1)
-    
-    Matrix targets_cache;      // Target vector (270x1)
-    Matrix output_errors;      // Output error (270x1)
-    
-    // BACKWARD-PASS CACHES (Gradients/Deltas)
-    Matrix W_grad_ho;          // Gradient of HO weights (270x512)
-    Matrix h_errors_cache;     // Error propagated to hidden layer (512x1)
-    Matrix h_d_m_cache;        // ReLU derivative mask for hidden layer (512x1)
-    Matrix W_grad_ih;          // Gradient of IH weights (512x270)
-    
-    // --- NEW: TRANSPOSE SCRATCHPAD MATRICES (Optimized for performance) ---
-    Matrix h_out_t_cache;      // hidden_outputs^T (1x512)
-    Matrix weights_ho_t_cache; // weights_ho^T (512x270)
-    Matrix inputs_t_cache;     // inputs^T (1x270)
-    // ----------------------------------------------------------------------
-} NeuralNetwork;
+// --- Helper Macro for Matrix Sanity Check ---
+#define CHECK_MATRIX(M, func_name) \
+    do { \
+        if (!(M).is_initialized || (M).data == NULL) { \
+            fprintf(stderr, "FATAL ERROR [spell.c:%d]: Matrix %s in %s is uninitialized or null.\n", \
+                    __LINE__, #M, func_name); \
+            exit(EXIT_FAILURE); \
+        } \
+    } while(0)
 
 // --- Matrix Utility Functions (Modified to store result) ---
 Matrix matrix_create(int rows, int cols, int input_size) {
     printf("[spell.c:%d] matrix_create(%d, %d, %d)\n", __LINE__, rows, cols, input_size);
-    Matrix m; m.rows = rows; m.cols = cols;
+    Matrix m; 
+    m.rows = rows; 
+    m.cols = cols;
+    m.is_initialized = false; // Initialize to false
+
+    if (rows <= 0 || cols <= 0) {
+        fprintf(stderr, "FATAL ERROR [spell.c:%d]: Cannot create matrix with non-positive dimensions (%dx%d).\n", __LINE__, rows, cols);
+        exit(EXIT_FAILURE);
+    }
+
     m.data = (double**)calloc(rows, sizeof(double*));
     if (m.data == NULL) { fprintf(stderr, "FATAL ERROR: Memory allocation failed for matrix rows.\n"); exit(EXIT_FAILURE); }
 
@@ -166,28 +156,41 @@ Matrix matrix_create(int rows, int cols, int input_size) {
     for (int i = 0; i < rows; i++) {
         m.data[i] = (double*)calloc(cols, sizeof(double));
         if (m.data[i] == NULL) { fprintf(stderr, "FATAL ERROR: Memory allocation failed for matrix cols.\n"); exit(EXIT_FAILURE); }
-        // Initialize weights if input_size is provided (Xavier/He initialization)
+        
+        // Initialize weights if input_size is provided
         if (input_size > 0) {
             for (int j = 0; j < cols; j++) {
                 m.data[i][j] = (((double)rand() / RAND_MAX) * 2.0 - 1.0) * scale;
             }
         }
     }
+    m.is_initialized = true; // Set to true after successful allocation
     return m;
 }
 
 void matrix_free(Matrix m) {
     printf("[spell.c:%d] matrix_free(%dx%d)\n", __LINE__, m.rows, m.cols);
+    if (!m.is_initialized) return; // Do nothing if uninitialized
+    
     if (m.data == NULL) return;
     for (int i = 0; i < m.rows; i++) free(m.data[i]);
     free(m.data);
+    
+    // Reset fields for safety
+    m.rows = 0;
+    m.cols = 0;
+    m.data = NULL;
+    m.is_initialized = false;
 }
 
 void matrix_copy_in(Matrix A, const Matrix B) {
     printf("[spell.c:%d] matrix_copy_in(%dx%d <- %dx%d)\n", __LINE__, A.rows, A.cols, B.rows, B.cols);
+    CHECK_MATRIX(A, "matrix_copy_in");
+    CHECK_MATRIX(B, "matrix_copy_in");
+    
     if (A.rows != B.rows || A.cols != B.cols) {
-        fprintf(stderr, "FATAL ERROR: matrix_copy_in dimensions mismatch (%dx%d vs %dx%d).\n", 
-                A.rows, A.cols, B.rows, B.cols);
+        fprintf(stderr, "FATAL ERROR [spell.c:%d]: matrix_copy_in dimensions mismatch (%dx%d vs %dx%d).\n", 
+                __LINE__, A.rows, A.cols, B.rows, B.cols);
         exit(EXIT_FAILURE);
     }
     for (int i = 0; i < A.rows; i++) {
@@ -199,8 +202,11 @@ void matrix_copy_in(Matrix A, const Matrix B) {
 
 void array_to_matrix_store(const double* arr, int size, Matrix result) {
     printf("[spell.c:%d] array_to_matrix_store(size %d -> %dx%d)\n", __LINE__, size, result.rows, result.cols);
+    CHECK_MATRIX(result, "array_to_matrix_store");
+    
     if (result.rows != size || result.cols != 1) {
-        fprintf(stderr, "FATAL ERROR: array_to_matrix_store dimensions mismatch.\n");
+        fprintf(stderr, "FATAL ERROR [spell.c:%d]: array_to_matrix_store dimensions mismatch. Expected %dx1, got %dx%d.\n", 
+                __LINE__, size, result.rows, result.cols);
         exit(EXIT_FAILURE);
     }
     for (int i = 0; i < size; i++) { result.data[i][0] = arr[i]; }
@@ -209,8 +215,12 @@ void array_to_matrix_store(const double* arr, int size, Matrix result) {
 // Stores result of A * B into the pre-allocated Matrix C
 void matrix_dot_store(Matrix A, Matrix B, Matrix C) {
     printf("[spell.c:%d] matrix_dot_store(%dx%d * %dx%d -> %dx%d)\n", __LINE__, A.rows, A.cols, B.rows, B.cols, C.rows, C.cols);
+    CHECK_MATRIX(A, "matrix_dot_store");
+    CHECK_MATRIX(B, "matrix_dot_store");
+    CHECK_MATRIX(C, "matrix_dot_store");
+    
     if (A.cols != B.rows || A.rows != C.rows || B.cols != C.cols) {
-        fprintf(stderr, "FATAL ERROR: matrix_dot_store dimensions mismatch.\n");
+        fprintf(stderr, "FATAL ERROR [spell.c:%d]: matrix_dot_store dimensions mismatch.\n", __LINE__);
         fprintf(stderr, "Requested: %dx%d * %dx%d -> %dx%d. Actual C: %dx%d\n", 
                 A.rows, A.cols, B.rows, B.cols, A.rows, B.cols, C.rows, C.cols);
         exit(EXIT_FAILURE);
@@ -227,8 +237,12 @@ void matrix_dot_store(Matrix A, Matrix B, Matrix C) {
 // Stores result of A^T into the pre-allocated Matrix C
 void matrix_transpose_store(Matrix m, Matrix result) {
     printf("[spell.c:%d] matrix_transpose_store(%dx%d -> %dx%d)\n", __LINE__, m.rows, m.cols, result.rows, result.cols);
+    CHECK_MATRIX(m, "matrix_transpose_store");
+    CHECK_MATRIX(result, "matrix_transpose_store");
+
     if (m.rows != result.cols || m.cols != result.rows) {
-        fprintf(stderr, "FATAL ERROR: matrix_transpose_store dimensions mismatch.\n");
+        fprintf(stderr, "FATAL ERROR [spell.c:%d]: matrix_transpose_store dimensions mismatch. Expected %dx%d result, got %dx%d.\n", 
+                __LINE__, m.cols, m.rows, result.rows, result.cols);
         exit(EXIT_FAILURE);
     }
     for (int i = 0; i < m.rows; i++) {
@@ -240,8 +254,12 @@ void matrix_transpose_store(Matrix m, Matrix result) {
 void matrix_add_subtract_store(Matrix A, Matrix B, Matrix C, bool is_add) {
     printf("[spell.c:%d] matrix_add_subtract_store(%dx%d %s %dx%d -> %dx%d)\n", 
            __LINE__, A.rows, A.cols, is_add ? "+" : "-", B.rows, B.cols, C.rows, C.cols);
+    CHECK_MATRIX(A, "matrix_add_subtract_store");
+    CHECK_MATRIX(B, "matrix_add_subtract_store");
+    CHECK_MATRIX(C, "matrix_add_subtract_store");
+    
     if (A.rows != B.rows || A.rows != C.rows || A.cols != B.cols || A.cols != C.cols) {
-        fprintf(stderr, "FATAL ERROR: matrix_add_subtract_store dimensions mismatch.\n");
+        fprintf(stderr, "FATAL ERROR [spell.c:%d]: matrix_add_subtract_store dimensions mismatch.\n", __LINE__);
         exit(EXIT_FAILURE);
     }
     for (int i = 0; i < A.rows; i++) {
@@ -255,8 +273,12 @@ void matrix_add_subtract_store(Matrix A, Matrix B, Matrix C, bool is_add) {
 // Stores result of A * B (element-wise) into the pre-allocated Matrix C
 void matrix_multiply_elem_store(Matrix A, Matrix B, Matrix C) {
     printf("[spell.c:%d] matrix_multiply_elem_store(%dx%d * %dx%d -> %dx%d)\n", __LINE__, A.rows, A.cols, B.rows, B.cols, C.rows, C.cols);
+    CHECK_MATRIX(A, "matrix_multiply_elem_store");
+    CHECK_MATRIX(B, "matrix_multiply_elem_store");
+    CHECK_MATRIX(C, "matrix_multiply_elem_store");
+    
     if (A.rows != B.rows || A.rows != C.rows || A.cols != B.cols || A.cols != C.cols) {
-        fprintf(stderr, "FATAL ERROR: matrix_multiply_elem_store dimensions mismatch.\n");
+        fprintf(stderr, "FATAL ERROR [spell.c:%d]: matrix_multiply_elem_store dimensions mismatch.\n", __LINE__);
         exit(EXIT_FAILURE);
     }
     for (int i = 0; i < A.rows; i++) {
@@ -267,8 +289,11 @@ void matrix_multiply_elem_store(Matrix A, Matrix B, Matrix C) {
 // Stores result of A * scalar into the pre-allocated Matrix C
 void matrix_multiply_scalar_store(Matrix A, double scalar, Matrix C) {
     printf("[spell.c:%d] matrix_multiply_scalar_store(%dx%d * %.2f -> %dx%d)\n", __LINE__, A.rows, A.cols, scalar, C.rows, C.cols);
+    CHECK_MATRIX(A, "matrix_multiply_scalar_store");
+    CHECK_MATRIX(C, "matrix_multiply_scalar_store");
+
     if (A.rows != C.rows || A.cols != C.cols) {
-        fprintf(stderr, "FATAL ERROR: matrix_multiply_scalar_store dimensions mismatch.\n");
+        fprintf(stderr, "FATAL ERROR [spell.c:%d]: matrix_multiply_scalar_store dimensions mismatch.\n", __LINE__);
         exit(EXIT_FAILURE);
     }
     for (int i = 0; i < A.rows; i++) {
@@ -279,8 +304,11 @@ void matrix_multiply_scalar_store(Matrix A, double scalar, Matrix C) {
 // Maps A into the pre-allocated Matrix C
 void matrix_map_store(Matrix m, Matrix result, double (*func)(double)) {
     printf("[spell.c:%d] matrix_map_store(%dx%d -> %dx%d)\n", __LINE__, m.rows, m.cols, result.rows, result.cols);
+    CHECK_MATRIX(m, "matrix_map_store");
+    CHECK_MATRIX(result, "matrix_map_store");
+
     if (m.rows != result.rows || m.cols != result.cols) {
-        fprintf(stderr, "FATAL ERROR: matrix_map_store dimensions mismatch.\n");
+        fprintf(stderr, "FATAL ERROR [spell.c:%d]: matrix_map_store dimensions mismatch.\n", __LINE__);
         exit(EXIT_FAILURE);
     }
     for (int i = 0; i < m.rows; i++) {
