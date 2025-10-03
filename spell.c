@@ -104,17 +104,7 @@ const char* ENGLISH_WORDS[VOCAB_SIZE] = {
     "simple", "social", "source", "speech", "sudden", "though", "travel",
     "unique", "visual", "volume", "within", "wonder", "writer", "ability",
     "account", "address", "advance", "against", "airline", "already", "analyst",
-    "ancient", "another", "anxiety", "article", "attempt", "average", "balance",
-    "billion", "brother", "capital", "century", "channel", "company", "compare",
-    "concern", "culture", "current", "develop", "digital", "disease", "economy",
-    "element", "evening", "example", "excited", "failure", "feeling", "finance",
-    "freedom", "general", "history", "imagine", "initial", "instead", "mission",
-    "nuclear", "patient", "pattern", "perform", "perhaps", "popular", "private",
-    "problem", "process", "quality", "respect", "science", "section", "serious",
-    "session", "similar", "society", "soldier", "station", "success", "suggest",
-    "support", "teacher", "typical", "victory", "western", "whether", "without",
-    "yourself", "determine", "different", "establish", "executive", "operation",
-    "president", "structure", "technical", "thousands"
+    
 };
 
 const char ALPHABET[] = "abcdefghijklmnopqrstuvwxyz ";
