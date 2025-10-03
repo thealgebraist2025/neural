@@ -1,0 +1,24 @@
+name: Boltzmann sort
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Build with gcc
+      run: gcc -O0 -Wall -g -std=c99 boltzmannsort.c -lm -o boltzmannsort
+
+    - name: Run the primes program
+      run: ./boltzmannsort
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4 # Use the latest version
+      with:
+        name: boltzmannnetwork-diagram
+        path: boltzmannsort.svg
