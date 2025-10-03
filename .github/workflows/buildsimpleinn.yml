@@ -13,7 +13,7 @@ jobs:
       # 2. Checkout code and Compile with -g
       - uses: actions/checkout@v4
       - name: Compile C code with debug symbols
-        run: gcc -g simpleinn.c -o simpleinn -Wall -lm
+        run: gcc -std=c99 -g simpleinn.c -o simpleinn -Wall -lm
 
       # 3. Run the executable and capture the core file
       # Note: We use || true to prevent the step from failing immediately on exit code 139
