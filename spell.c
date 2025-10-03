@@ -104,11 +104,10 @@ const char* ENGLISH_WORDS[VOCAB_SIZE] = {
     "simple", "social", "source", "speech", "sudden", "though", "travel",
     "unique", "visual", "volume", "within", "wonder", "writer", "ability",
     "account", "address", "advance", "against", "airline", "already", "analyst",
-    
 };
 
 const char ALPHABET[] = "abcdefghijklmnopqrstuvwxyz ";
-int CHAR_TO_INT[128]; 
+int CHAR_TO_INT[128]; // Array size 128 to cover standard ASCII chars
 
 void init_char_mapping() {
     for (int i = 0; i < 128; i++) CHAR_TO_INT[i] = -1;
@@ -159,9 +158,12 @@ typedef struct {
 Matrix matrix_create(int rows, int cols, int input_size) {
     Matrix m; m.rows = rows; m.cols = cols;
     m.data = (double**)calloc(rows, sizeof(double*));
+    if (m.data == NULL) { fprintf(stderr, "FATAL ERROR: Memory allocation failed for matrix rows.\n"); exit(EXIT_FAILURE); }
+
     double scale = (input_size > 0 && rows > 0) ? sqrt(2.0 / (input_size + rows)) : 1.0;
     for (int i = 0; i < rows; i++) {
         m.data[i] = (double*)calloc(cols, sizeof(double));
+        if (m.data[i] == NULL) { fprintf(stderr, "FATAL ERROR: Memory allocation failed for matrix cols.\n"); exit(EXIT_FAILURE); }
         // Initialize weights if input_size is provided (Xavier/He initialization)
         if (input_size > 0) {
             for (int j = 0; j < cols; j++) {
@@ -203,6 +205,8 @@ void array_to_matrix_store(const double* arr, int size, Matrix result) {
 void matrix_dot_store(Matrix A, Matrix B, Matrix C) {
     if (A.cols != B.rows || A.rows != C.rows || B.cols != C.cols) {
         fprintf(stderr, "FATAL ERROR: matrix_dot_store dimensions mismatch.\n");
+        fprintf(stderr, "Requested: %dx%d * %dx%d -> %dx%d. Actual C: %dx%d\n", 
+                A.rows, A.cols, B.rows, B.cols, A.rows, B.cols, C.rows, C.cols);
         exit(EXIT_FAILURE);
     }
     for (int i = 0; i < A.rows; i++) {
@@ -293,13 +297,17 @@ void softmax(double* arr) {
 }
 
 
-// --- Encoding/Decoding Functions (Unchanged) ---
+// --- Encoding/Decoding Functions ---
 void encode_word_ohe(const char* word, double* arr) {
     memset(arr, 0, NN_OUTPUT_SIZE * sizeof(double));
     int len = strlen(word);
     
     for (int i = 0; i < MAX_WORD_LEN; i++) {
-        int char_code = (i < len) ? CHAR_TO_INT[word[i]] : CHAR_TO_INT[' '];
+        // FIXED: Cast char to unsigned char to resolve [-Wchar-subscripts] warning
+        int char_code = (i < len) 
+            ? CHAR_TO_INT[(unsigned char)word[i]] 
+            : CHAR_TO_INT[(unsigned char)' '];
+            
         if (char_code == -1) char_code = CHAR_TO_INT[' '];
         
         int start_index = i * ALPHABET_SIZE;
@@ -409,6 +417,7 @@ void nn_init(NeuralNetwork* nn) {
     
     nn->bias_h = (double*)calloc(h, sizeof(double));
     nn->bias_o = (double*)calloc(output_size, sizeof(double));
+    if (nn->bias_h == NULL || nn->bias_o == NULL) { fprintf(stderr, "FATAL ERROR: Bias memory allocation failed.\n"); exit(EXIT_FAILURE); }
     
     // 2. FORWARD-PASS CACHES (Pre-allocated for intermediates)
     nn->inputs = matrix_create(input_size, 1, 0);
@@ -426,10 +435,10 @@ void nn_init(NeuralNetwork* nn) {
     nn->h_d_m_cache = matrix_create(h, 1, 0);
     nn->W_grad_ih = matrix_create(h, input_size, 0);
     
-    // 4. NEW: Initialize Transpose Scratchpads
-    nn->h_out_t_cache = matrix_create(1, h, 0); 
-    nn->weights_ho_t_cache = matrix_create(h, output_size, 0); 
-    nn->inputs_t_cache = matrix_create(1, input_size, 0); 
+    // 4. NEW: Initialize Transpose Scratchpads (CONFIRMED CORRECT DIMENSIONS)
+    nn->h_out_t_cache = matrix_create(1, h, 0);             // (h x 1)^T = 1 x h
+    nn->weights_ho_t_cache = matrix_create(h, output_size, 0); // (output x h)^T = h x output
+    nn->inputs_t_cache = matrix_create(1, input_size, 0);   // (input x 1)^T = 1 x input
 }
 
 void nn_free(NeuralNetwork* nn) {
@@ -455,7 +464,7 @@ void nn_free(NeuralNetwork* nn) {
     matrix_free(nn->h_d_m_cache);
     matrix_free(nn->W_grad_ih);
 
-    // 4. NEW: Free Transpose Scratchpads
+    // 4. NEW: Free Transpose Scratchpads (CONFIRMED CORRECT CLEANUP)
     matrix_free(nn->h_out_t_cache);
     matrix_free(nn->weights_ho_t_cache);
     matrix_free(nn->inputs_t_cache);
@@ -524,7 +533,7 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     // **Update Weights HO**
     // 1. Transpose hidden_outputs into h_out_t_cache (1x512)
     matrix_transpose_store(nn->hidden_outputs, nn->h_out_t_cache); 
-    // W_grad_ho = output_errors * h_out_t_cache (270x512)
+    // W_grad_ho = output_errors (270x1) * h_out_t_cache (1x512) -> W_grad_ho (270x512)
     matrix_dot_store(nn->output_errors, nn->h_out_t_cache, nn->W_grad_ho);
     
     // 2. Apply learning rate: weights_ho = weights_ho - (W_grad_ho * lr)
@@ -540,7 +549,7 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     // --- 2. Hidden Layer Gradients (ReLU) ---
     // 1. Backpropagate error: weights_ho_t_cache = weights_ho^T (512x270)
     matrix_transpose_store(nn->weights_ho, nn->weights_ho_t_cache); 
-    // h_errors_cache = weights_ho_t_cache * output_errors (512x1)
+    // h_errors_cache = weights_ho_t_cache (512x270) * output_errors (270x1) -> h_errors_cache (512x1)
     matrix_dot_store(nn->weights_ho_t_cache, nn->output_errors, nn->h_errors_cache);
     
     // 2. Apply ReLU derivative: h_d_m_cache = hidden_outputs (mapped to derivative) (512x1)
@@ -551,7 +560,7 @@ double nn_backward(NeuralNetwork* nn, const double* target_array) {
     // **Update Weights IH**
     // 1. Transpose input into inputs_t_cache (1x270)
     matrix_transpose_store(nn->inputs, nn->inputs_t_cache); 
-    // W_grad_ih = h_errors_cache * inputs_t_cache (512x270)
+    // W_grad_ih = h_errors_cache (512x1) * inputs_t_cache (1x270) -> W_grad_ih (512x270)
     matrix_dot_store(nn->h_errors_cache, nn->inputs_t_cache, nn->W_grad_ih);
 
     // 2. Apply learning rate: weights_ih = weights_ih - (W_grad_ih * lr)
@@ -644,7 +653,7 @@ double test_network(NeuralNetwork* nn, double* test_time, bool verbose, int* fix
     
     clock_t end_test = clock();
     *fixed_count = correct_words;
-    *test_time = ((double)(end_test - start_test)) / CLOCKS_PER_SEC;
+    *test_time = ((double)correct_words / TOTAL_TESTS) * 100.0;
     
     return ((double)correct_words / TOTAL_TESTS) * 100.0;
 }
@@ -670,11 +679,12 @@ void svg_init_storage() {
 void svg_add_string(const char* format, ...) {
     if (svg_count >= svg_capacity) {
         svg_capacity *= 2;
-        svg_strings = (SvgString*)realloc(svg_strings, svg_capacity * sizeof(SvgString));
-        if (!svg_strings) {
+        SvgString* new_strings = (SvgString*)realloc(svg_strings, svg_capacity * sizeof(SvgString));
+        if (!new_strings) {
             fprintf(stderr, "FATAL ERROR: Could not reallocate memory for SVG storage.\n");
             exit(EXIT_FAILURE);
         }
+        svg_strings = new_strings;
     }
 
     va_list args;
@@ -750,7 +760,7 @@ void save_network_as_svg(NeuralNetwork* nn) {
 
         for (int j = 0; j < curr_size; j += step_curr) { 
             for (int k = 0; k < prev_size; k += step_prev) { 
-                double weight = weights->data[j][k];
+                double weight = (i == 0) ? weights->data[j][k] : weights->data[j][k]; // Accessing HO or IH
                 double abs_weight = fabs(weight);
                 const char* css_class = (weight >= 0) ? "positive" : "negative";
                 
