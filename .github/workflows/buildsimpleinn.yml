@@ -11,7 +11,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v2
 
-    - name: Build with gcc
+    - name: Build
       run: clang -fsanitize=memory -fno-omit-frame-pointer -O0 -Wall -g -std=c99 simpleinn.c -lm -o simpleinn
 
     - name: Run the inn program
