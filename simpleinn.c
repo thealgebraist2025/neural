@@ -5,6 +5,9 @@
 #include <string.h>
 #include <ctype.h>
 
+// Fix for M_PI not being defined by default in <math.h>
+#define M_PI 3.14159265358979323846
+
 // --- INN PARAMETERS AND CONSTANTS ---
 #define D 8                   // Dimension of the sentence feature vector
 #define NUM_LEGAL_SENTENCES 2048 // Training Size
@@ -45,7 +48,7 @@ typedef struct {
     int is_legal;
 } Sentence;
 
-// --- VOCABULARY (omitted for brevity, assume contents are the same) ---
+// --- VOCABULARY ---
 
 const char *const Nouns[] = {"alice", "queen", "hatter", "rabbit", "cat", "king", "mouse", "turtle", "garden", "door", "table", "key", "curiosity", "head", "tea", "dream", "voice", "way", "sister", "time", "world", "thing", "house", "foot", "corner"};
 const double NounValues[] = {1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 3.0, 3.1, 3.2, 3.3, 3.4};
@@ -64,7 +67,7 @@ const char *const NonsenseVerbs[] = {"bleem", "floof", "skree", "quonk", "smashl
 #define NUM_NONSENSE_NOUNS (sizeof(NonsenseNouns) / sizeof(NonsenseNouns[0]))
 #define NUM_NONSENSE_VERBS (sizeof(NonsenseVerbs) / sizeof(NonsenseVerbs[0]))
 
-// --- UTILITY AND MEMORY MANAGEMENT (No change, uses D) ---
+// --- UTILITY AND MEMORY MANAGEMENT ---
 
 Word create_word(const char *source, size_t length) {
     if (length == 0 || source == NULL) {
@@ -135,6 +138,7 @@ void init_matrix(Matrix *M, int rows, int cols, int triangular) {
         }
     }
     for (int i = 0; i < (rows < cols ? rows : cols); i++) { 
+        // Initialize diagonal elements to a value near 1.0
         if (M->data[i][i] == 0.0) M->data[i][i] = 1.0; 
     }
     M->initialized = 1;
@@ -198,22 +202,25 @@ double calculate_nll_loss(const INN_Parameters *const params, const Vector *cons
     for (int i = 0; i < z->size; i++) {
         z_norm_sq += z->data[i] * z->data[i];
     }
+    // Energy term: 0.5 * ||z||^2 / sigma^2
     const double log_prob_z = 0.5 * z_norm_sq / (GAUSSIAN_SIGMA * GAUSSIAN_SIGMA);
     
-    // Only calculate log_det_A if A is square (i.e., invertible)
+    // Volume term: - log(|det(A)|)
     if (params->A.rows == params->A.cols) {
         const double det_A = get_determinant_triangular(&params->A);
         const double abs_det_A = fabs(det_A);
+        // Add epsilon (1e-9) for numerical stability during log calculation
         const double log_det_A = log(abs_det_A > 1e-9 ? abs_det_A : 1e-9); 
+        
         return log_prob_z - log_det_A;
     } else {
-        // For non-invertible/non-square INN variants (not used here, but safe)
+        // If non-square, the flow loss term is ignored (only the energy term remains)
         return log_prob_z;
     }
 }
 
 
-// --- FEATURE MAPPING (No change, uses D=8) ---
+// --- FEATURE MAPPING (Uses D=8) ---
 
 double find_word_value(const Word *word, int *word_type) {
     if (!word->valid || word->len == 0) {
@@ -259,6 +266,7 @@ void map_sentence_to_features(const SentenceText *const st, Vector *V) {
         int word_type = -1;
         const double value = find_word_value(word, &word_type);
 
+        // Only map words that are in the vocabulary and have a positive value
         if (word->valid && value > 0.0) {
             V->data[feature_index] = value;
             feature_index++;
@@ -266,7 +274,7 @@ void map_sentence_to_features(const SentenceText *const st, Vector *V) {
     }
 }
 
-// --- DATASET GENERATION FUNCTIONS (No change) ---
+// --- DATASET GENERATION FUNCTIONS ---
 
 SentenceText convert_raw_to_sentence_text(const char *raw_sentence) {
     SentenceText st = {NULL, 0};
@@ -310,14 +318,13 @@ SentenceText convert_raw_to_sentence_text(const char *raw_sentence) {
 }
 
 int load_sentence_templates(SentenceText *legal_templates_st, int max_templates) {
-    // Standard template loading logic (omitted for brevity, assume content is the same)
+    // Requires a file named 'alice.txt' in the same directory.
     FILE *file = fopen("alice.txt", "r");
     if (file == NULL) {
         fprintf(stderr, "FATAL ERROR: Could not open alice.txt. Make sure the file is in the same directory.\n");
         return 0;
     }
     
-    // ... file reading and tokenization logic (as before) ...
     char *buffer = (char *)malloc(MAX_FILE_READ_SIZE);
     if (buffer == NULL) { fclose(file); return 0; }
 
@@ -344,7 +351,7 @@ int load_sentence_templates(SentenceText *legal_templates_st, int max_templates)
                 for (size_t i = 0; i < st.count; i++) {
                     int word_type = -1;
                     find_word_value(&st.words[i], &word_type);
-                    if (word_type == 0 || word_type == 1) {
+                    if (word_type == 0 || word_type == 1) { // 0=Noun, 1=Verb
                         has_replaceable = 1;
                         break;
                     }
@@ -377,7 +384,7 @@ SentenceText generate_illegal_sentence_text(const SentenceText *legal_template) 
     if (illegal_st.words == NULL) return illegal_st;
     illegal_st.count = legal_template->count;
 
-    // First, find all indices that are Nouns or Verbs
+    // 1. Find all indices that are Nouns or Verbs in the original template
     int replaceable_indices[MAX_WORDS_PER_SENTENCE];
     int replaceable_count = 0;
     for (size_t i = 0; i < legal_template->count; i++) {
@@ -389,9 +396,9 @@ SentenceText generate_illegal_sentence_text(const SentenceText *legal_template) 
         }
     }
 
-    // Determine the indices to replace (guaranteeing at least 1 if available)
+    // 2. Determine the indices to replace (1 or 2 replacements, guaranteed at least 1 if possible)
     int indices_to_replace[2] = {-1, -1};
-    int num_to_replace = (replaceable_count > 0) ? ((rand() % 2) + 1) : 0; // 1 or 2 replacements if possible
+    int num_to_replace = (replaceable_count > 0) ? ((rand() % 2) + 1) : 0; // 1 or 2
     num_to_replace = (num_to_replace > replaceable_count) ? replaceable_count : num_to_replace;
     
     if (num_to_replace > 0) {
@@ -405,7 +412,7 @@ SentenceText generate_illegal_sentence_text(const SentenceText *legal_template) 
         }
     }
 
-    // Perform the copy/replacement
+    // 3. Perform the copy/replacement
     for (size_t i = 0; i < legal_template->count; i++) {
         const Word *original_word = &legal_template->words[i];
         int replaced = 0;
@@ -415,6 +422,7 @@ SentenceText generate_illegal_sentence_text(const SentenceText *legal_template) 
                 int word_type = -1;
                 find_word_value(original_word, &word_type); 
 
+                // Replace with a nonsense word of the same type (Noun/Verb)
                 const char *nonsense_str = (word_type == 0) 
                                             ? NonsenseNouns[rand() % NUM_NONSENSE_NOUNS]
                                             : NonsenseVerbs[rand() % NUM_NONSENSE_VERBS];
@@ -449,19 +457,24 @@ void generate_datasets(Sentence *legal_sentences, Sentence *illegal_sentences, S
 
     printf("Dataset generation starting: %d templates loaded.\n", num_templates);
 
+    // Generate Legal Sentences (Training Data)
     for (int i = 0; i < NUM_LEGAL_SENTENCES; i++) {
         const int template_idx = rand() % num_templates;
         const SentenceText *template = &legal_templates_st[template_idx];
         
+        // Use the generation function, but the result should be similar to the original template
+        // since the INN will learn to map these "mostly legal" features to Gaussian.
         legal_sentences[i].text_data = generate_illegal_sentence_text(template); 
         map_sentence_to_features(&legal_sentences[i].text_data, &legal_sentences[i].features);
         legal_sentences[i].is_legal = 1;
     }
 
+    // Generate Illegal Sentences (Test Data)
     for (int i = 0; i < NUM_ILLEGAL_SENTENCES; i++) {
         const int template_idx = rand() % num_templates;
         const SentenceText *template = &legal_templates_st[template_idx];
 
+        // This intentionally swaps real words with nonsense words, guaranteeing high NLL
         illegal_sentences[i].text_data = generate_illegal_sentence_text(template);
         map_sentence_to_features(&illegal_sentences[i].text_data, &illegal_sentences[i].features);
         illegal_sentences[i].is_legal = 0;
@@ -470,7 +483,7 @@ void generate_datasets(Sentence *legal_sentences, Sentence *illegal_sentences, S
     printf("Dataset generated: %d legal, %d illegal sentences.\n", NUM_LEGAL_SENTENCES, NUM_ILLEGAL_SENTENCES);
 }
 
-// --- SANITY CHECKS (No change) ---
+// --- SANITY CHECKS ---
 
 int run_sanity_checks(SentenceText *templates, int num_templates) {
     int passed = 0;
@@ -577,11 +590,11 @@ int simple_function_test() {
         double epoch_loss = 0.0;
         
         for (int i = 0; i < SINE_TEST_SAMPLES; i++) {
-            // 1. Generate Data (x_i, y_i)
+            // 1. Generate Data (x_i)
             // The INN learns the transformation z = A*x + b where z ~ N(0, 1)
-            // For a flow, we need to provide X and the INN learns the transformation to Z.
-            // Let X = [x_i] where x_i is the "legal" data we want to map to N(0,1).
-            const double x_val = (double)i / SINE_TEST_SAMPLES * 2.0 * M_PI; // x from 0 to 2*PI
+            
+            // x from 0 to 2*PI
+            const double x_val = (double)i / SINE_TEST_SAMPLES * 2.0 * M_PI; 
             const double noise = ((double)rand() / RAND_MAX - 0.5) * 0.1; // Small noise
             
             // Generate data x that approximately follows a sine curve
@@ -596,12 +609,15 @@ int simple_function_test() {
             epoch_loss += nll_loss;
 
             // Backpropagation
-            const double dL_dz = z.data[0] / (GAUSSIAN_SIGMA * GAUSSIAN_SIGMA); // dL/dz = z
+            // dL/dz = z / sigma^2. Since sigma=1, dL/dz = z
+            const double dL_dz = z.data[0] / (GAUSSIAN_SIGMA * GAUSSIAN_SIGMA); 
             const double x_0 = x_in.data[0];
             const double A_00 = params.A.data[0][0];
 
             // Gradients for 1D INN
+            // dL/dA = (dL/dz) * x - 1/A
             const double dL_dA_00 = dL_dz * x_0 - (1.0 / A_00);
+            // dL/db = dL/dz * 1
             const double dL_db_0 = dL_dz;
 
             // Update
@@ -616,18 +632,8 @@ int simple_function_test() {
                    epoch, total_loss, params.A.data[0][0], params.b.data[0]);
         }
         
-        // Stop condition: Loss near 0.9189 is good (log(sqrt(2*pi))) for Gaussian with sigma=1
-        // Loss near 0.5 * z^2 - log(|det(A)|). Since z should be 0, loss should be -log(|det(A)|).
-        // Since the determinant converges to a value that minimizes the overall energy.
-        // A successful test would show a loss that stabilizes and is clearly distinct from the random start.
+        // Stop condition: Check for stable, low loss (well below the initial random loss)
         if (epoch > 100 && total_loss < 2.0) { 
-            // Invert the transformation to see if the sine wave structure is recovered (qualitative test)
-            double det_A = params.A.data[0][0];
-            double inv_A = 1.0 / det_A;
-            double inv_b = -params.b.data[0] * inv_A;
-            
-            // If z=0 (the mode of the target distribution), then x_pred = inv_A * 0 + inv_b = inv_b
-            // This isn't a good check. The check should just be for stable, low loss.
             break; 
         }
     }
@@ -667,6 +673,7 @@ int main(void) {
 
     // 3. Initialize INN and Allocate Memory for Datasets
     INN_Parameters params;
+    // Initialize DxD lower triangular matrix A and Dx1 bias vector b
     init_matrix(&params.A, D, D, 1);
     init_vector(&params.b, D);
     
@@ -687,7 +694,7 @@ int main(void) {
     for(int i = 0; i < num_templates; i++) free_sentence_text(&legal_templates_st[i]);
     
     
-    // --- Training Loop ---
+    // --- Training Loop (Maximum Likelihood Estimation) ---
     const clock_t start_time = clock();
     double last_print_time_sec = 0.0;
     const double print_interval_sec = 10.0; 
@@ -718,28 +725,32 @@ int main(void) {
 
             Vector z; 
             
-            // Forward Pass
+            // Forward Pass: z = A*x + b
             inn_forward(&params, &x, &z); 
             const double nll_loss = calculate_nll_loss(&params, &z);
             epoch_nll_sum += nll_loss;
             sentences_processed_in_epoch++;
 
             // Backpropagation (Gradients)
+            // dL/dz = z / sigma^2
             Vector dL_dz; init_vector(&dL_dz, D);
             const double scale = 1.0 / (GAUSSIAN_SIGMA * GAUSSIAN_SIGMA);
             for (int k = 0; k < D; k++) dL_dz.data[k] = z.data[k] * scale;
 
+            // Update Bias: dL/db = dL/dz
             for (int k = 0; k < D; k++) params.b.data[k] -= LEARNING_RATE * dL_dz.data[k];
 
+            // Update Matrix A (Lower Triangular)
             for (int r = 0; r < D; r++) {
                 for (int c = 0; c < D; c++) {
                     if (c <= r) {
+                        // Core gradient term: dL/dA_rc = (dL/dz_r) * x_c
                         const double grad_A_r_c = dL_dz.data[r] * x.data[c];
                         params.A.data[r][c] -= LEARNING_RATE * grad_A_r_c;
 
                         if (r == c) {
-                             // This term comes from the determinant derivative log(|det(A)|)
-                             params.A.data[r][c] -= LEARNING_RATE * (1.0 / params.A.data[r][c]);
+                             // Additional determinant term for diagonal elements: - 1/A_rr
+                             params.A.data[r][c] -= LEARNING_RATE * (-1.0 / params.A.data[r][c]);
                         }
                     }
                 }
@@ -755,7 +766,7 @@ int main(void) {
         if (training_stopped_early) break; 
         
         // Final epoch print
-        if (!training_stopped_early) {
+        if (sentences_processed_in_epoch > 0) {
              const double total_elapsed_sec = (double)(clock() - start_time) / CLOCKS_PER_SEC;
              printf("%19.2f | %5d | %9d | %14.4f | %6.4e (End of Epoch)\n", 
                        total_elapsed_sec, epoch, NUM_LEGAL_SENTENCES, epoch_nll_sum / sentences_processed_in_epoch, get_determinant_triangular(&params.A));
@@ -769,6 +780,7 @@ int main(void) {
     int legal_count = 0;
     int illegal_count = 0;
 
+    // Evaluate Legal Sentences
     for (int i = 0; i < NUM_LEGAL_SENTENCES; i++) {
         Vector z;
         inn_forward(&params, &legal_sentences[i].features, &z); 
@@ -776,6 +788,7 @@ int main(void) {
         legal_count++;
     }
 
+    // Evaluate Illegal Sentences
     for (int i = 0; i < NUM_ILLEGAL_SENTENCES; i++) {
         Vector z;
         inn_forward(&params, &illegal_sentences[i].features, &z); 
