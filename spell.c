@@ -104,10 +104,11 @@ const char* ENGLISH_WORDS[VOCAB_SIZE] = {
     "simple", "social", "source", "speech", "sudden", "though", "travel",
     "unique", "visual", "volume", "within", "wonder", "writer", "ability",
     "account", "address", "advance", "against", "airline", "already", "analyst",
+    
 };
 
 const char ALPHABET[] = "abcdefghijklmnopqrstuvwxyz ";
-int CHAR_TO_INT[128]; // Array size 128 to cover standard ASCII chars
+int CHAR_TO_INT[128]; 
 
 void init_char_mapping() {
     for (int i = 0; i < 128; i++) CHAR_TO_INT[i] = -1;
@@ -156,6 +157,7 @@ typedef struct {
 
 // --- Matrix Utility Functions (Modified to store result) ---
 Matrix matrix_create(int rows, int cols, int input_size) {
+    printf("[spell.c:%d] matrix_create(%d, %d, %d)\n", __LINE__, rows, cols, input_size);
     Matrix m; m.rows = rows; m.cols = cols;
     m.data = (double**)calloc(rows, sizeof(double*));
     if (m.data == NULL) { fprintf(stderr, "FATAL ERROR: Memory allocation failed for matrix rows.\n"); exit(EXIT_FAILURE); }
@@ -175,12 +177,14 @@ Matrix matrix_create(int rows, int cols, int input_size) {
 }
 
 void matrix_free(Matrix m) {
+    printf("[spell.c:%d] matrix_free(%dx%d)\n", __LINE__, m.rows, m.cols);
     if (m.data == NULL) return;
     for (int i = 0; i < m.rows; i++) free(m.data[i]);
     free(m.data);
 }
 
 void matrix_copy_in(Matrix A, const Matrix B) {
+    printf("[spell.c:%d] matrix_copy_in(%dx%d <- %dx%d)\n", __LINE__, A.rows, A.cols, B.rows, B.cols);
     if (A.rows != B.rows || A.cols != B.cols) {
         fprintf(stderr, "FATAL ERROR: matrix_copy_in dimensions mismatch (%dx%d vs %dx%d).\n", 
                 A.rows, A.cols, B.rows, B.cols);
@@ -194,6 +198,7 @@ void matrix_copy_in(Matrix A, const Matrix B) {
 }
 
 void array_to_matrix_store(const double* arr, int size, Matrix result) {
+    printf("[spell.c:%d] array_to_matrix_store(size %d -> %dx%d)\n", __LINE__, size, result.rows, result.cols);
     if (result.rows != size || result.cols != 1) {
         fprintf(stderr, "FATAL ERROR: array_to_matrix_store dimensions mismatch.\n");
         exit(EXIT_FAILURE);
@@ -203,6 +208,7 @@ void array_to_matrix_store(const double* arr, int size, Matrix result) {
 
 // Stores result of A * B into the pre-allocated Matrix C
 void matrix_dot_store(Matrix A, Matrix B, Matrix C) {
+    printf("[spell.c:%d] matrix_dot_store(%dx%d * %dx%d -> %dx%d)\n", __LINE__, A.rows, A.cols, B.rows, B.cols, C.rows, C.cols);
     if (A.cols != B.rows || A.rows != C.rows || B.cols != C.cols) {
         fprintf(stderr, "FATAL ERROR: matrix_dot_store dimensions mismatch.\n");
         fprintf(stderr, "Requested: %dx%d * %dx%d -> %dx%d. Actual C: %dx%d\n", 
@@ -220,6 +226,7 @@ void matrix_dot_store(Matrix A, Matrix B, Matrix C) {
 
 // Stores result of A^T into the pre-allocated Matrix C
 void matrix_transpose_store(Matrix m, Matrix result) {
+    printf("[spell.c:%d] matrix_transpose_store(%dx%d -> %dx%d)\n", __LINE__, m.rows, m.cols, result.rows, result.cols);
     if (m.rows != result.cols || m.cols != result.rows) {
         fprintf(stderr, "FATAL ERROR: matrix_transpose_store dimensions mismatch.\n");
         exit(EXIT_FAILURE);
@@ -231,6 +238,8 @@ void matrix_transpose_store(Matrix m, Matrix result) {
 
 // Stores result of A op B into the pre-allocated Matrix C
 void matrix_add_subtract_store(Matrix A, Matrix B, Matrix C, bool is_add) {
+    printf("[spell.c:%d] matrix_add_subtract_store(%dx%d %s %dx%d -> %dx%d)\n", 
+           __LINE__, A.rows, A.cols, is_add ? "+" : "-", B.rows, B.cols, C.rows, C.cols);
     if (A.rows != B.rows || A.rows != C.rows || A.cols != B.cols || A.cols != C.cols) {
         fprintf(stderr, "FATAL ERROR: matrix_add_subtract_store dimensions mismatch.\n");
         exit(EXIT_FAILURE);
@@ -245,6 +254,7 @@ void matrix_add_subtract_store(Matrix A, Matrix B, Matrix C, bool is_add) {
 
 // Stores result of A * B (element-wise) into the pre-allocated Matrix C
 void matrix_multiply_elem_store(Matrix A, Matrix B, Matrix C) {
+    printf("[spell.c:%d] matrix_multiply_elem_store(%dx%d * %dx%d -> %dx%d)\n", __LINE__, A.rows, A.cols, B.rows, B.cols, C.rows, C.cols);
     if (A.rows != B.rows || A.rows != C.rows || A.cols != B.cols || A.cols != C.cols) {
         fprintf(stderr, "FATAL ERROR: matrix_multiply_elem_store dimensions mismatch.\n");
         exit(EXIT_FAILURE);
@@ -256,6 +266,7 @@ void matrix_multiply_elem_store(Matrix A, Matrix B, Matrix C) {
 
 // Stores result of A * scalar into the pre-allocated Matrix C
 void matrix_multiply_scalar_store(Matrix A, double scalar, Matrix C) {
+    printf("[spell.c:%d] matrix_multiply_scalar_store(%dx%d * %.2f -> %dx%d)\n", __LINE__, A.rows, A.cols, scalar, C.rows, C.cols);
     if (A.rows != C.rows || A.cols != C.cols) {
         fprintf(stderr, "FATAL ERROR: matrix_multiply_scalar_store dimensions mismatch.\n");
         exit(EXIT_FAILURE);
@@ -267,6 +278,7 @@ void matrix_multiply_scalar_store(Matrix A, double scalar, Matrix C) {
 
 // Maps A into the pre-allocated Matrix C
 void matrix_map_store(Matrix m, Matrix result, double (*func)(double)) {
+    printf("[spell.c:%d] matrix_map_store(%dx%d -> %dx%d)\n", __LINE__, m.rows, m.cols, result.rows, result.cols);
     if (m.rows != result.rows || m.cols != result.cols) {
         fprintf(stderr, "FATAL ERROR: matrix_map_store dimensions mismatch.\n");
         exit(EXIT_FAILURE);
@@ -435,7 +447,7 @@ void nn_init(NeuralNetwork* nn) {
     nn->h_d_m_cache = matrix_create(h, 1, 0);
     nn->W_grad_ih = matrix_create(h, input_size, 0);
     
-    // 4. NEW: Initialize Transpose Scratchpads (CONFIRMED CORRECT DIMENSIONS)
+    // 4. NEW: Initialize Transpose Scratchpads
     nn->h_out_t_cache = matrix_create(1, h, 0);             // (h x 1)^T = 1 x h
     nn->weights_ho_t_cache = matrix_create(h, output_size, 0); // (output x h)^T = h x output
     nn->inputs_t_cache = matrix_create(1, input_size, 0);   // (input x 1)^T = 1 x input
@@ -464,7 +476,7 @@ void nn_free(NeuralNetwork* nn) {
     matrix_free(nn->h_d_m_cache);
     matrix_free(nn->W_grad_ih);
 
-    // 4. NEW: Free Transpose Scratchpads (CONFIRMED CORRECT CLEANUP)
+    // 4. NEW: Free Transpose Scratchpads
     matrix_free(nn->h_out_t_cache);
     matrix_free(nn->weights_ho_t_cache);
     matrix_free(nn->inputs_t_cache);
