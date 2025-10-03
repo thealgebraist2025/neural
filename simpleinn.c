@@ -10,6 +10,7 @@
 #define NUM_ILLEGAL_SENTENCES 32
 #define LEARNING_RATE 0.0001
 #define MAX_EPOCHS 100
+#define TRAINING_TIME_LIMIT_SEC 120.0 // New time limit of 2 minutes
 #define GAUSSIAN_SIGMA 1.0    // Variance of the target base distribution N(0, I)
 #define GAUSSIAN_MU 0.0       // Mean of the target base distribution N(0, I)
 
@@ -385,9 +386,10 @@ int main(void) {
     clock_t last_print_time = start_time;
     const double time_step_sec = 5.0;
     const int print_interval_iterations = 100;
+    int training_stopped_early = 0;
 
     printf("--- Starting INN Training (MLE via SGD) ---\n");
-    printf("Training on feature patterns from the three Alice sentences.\n");
+    printf("Training on feature patterns from the three Alice sentences. Time limit: %.0f seconds.\n", TRAINING_TIME_LIMIT_SEC);
     printf("Epoch | Iteration | Avg NLL (Loss) | Det(A)\n");
     printf("-------------------------------------------\n");
 
@@ -397,6 +399,13 @@ int main(void) {
         const int num_batches = NUM_LEGAL_SENTENCES;
 
         for (int i = 0; i < num_batches; i++) {
+            const double total_elapsed_sec = (double)(clock() - start_time) / CLOCKS_PER_SEC;
+            if (total_elapsed_sec >= TRAINING_TIME_LIMIT_SEC) {
+                printf("--- Stopping training after %.2f seconds (Time Limit Reached) ---\n", total_elapsed_sec);
+                training_stopped_early = 1;
+                break; // Break batch loop
+            }
+
             const int idx = rand() % NUM_LEGAL_SENTENCES;
             const Vector x = legal_sentences[idx].features;
 
@@ -446,6 +455,7 @@ int main(void) {
             }
 
         } // End batch loop
+        if (training_stopped_early) break; // Break epoch loop if time limit hit
     } // End epoch loop
 
     // 4. Detection / Evaluation
@@ -455,7 +465,7 @@ int main(void) {
     int legal_count = 0;
     int illegal_count = 0;
 
-    // Test Legal Sentences
+    // Test Legal Sentences (for average NLL)
     for (int i = 0; i < NUM_LEGAL_SENTENCES; i++) {
         Vector z;
         inn_forward(&params, &legal_sentences[i].features, &z);
@@ -463,7 +473,7 @@ int main(void) {
         legal_count++;
     }
 
-    // Test Illegal Sentences (Scrambled Features)
+    // Test Illegal Sentences (for average NLL)
     for (int i = 0; i < NUM_ILLEGAL_SENTENCES; i++) {
         Vector z;
         inn_forward(&params, &illegal_sentences[i].features, &z);
@@ -476,6 +486,29 @@ int main(void) {
 
     printf("Average NLL for Legal Sentences (Original Alice Structure): %.4f\n", avg_legal_nll);
     printf("Average NLL for Illegal Sentences (Scrambled Alice Features): %.4f\n", avg_illegal_nll);
+    
+    // --- Detailed Sample Output ---
+    printf("\n--- Detailed NLL Analysis ---\n");
+    
+    // Print 20 Legal Sentences
+    printf("\nFirst 20 Legal Sentences (IN-DISTRIBUTION - Low NLL expected):\n");
+    for (int i = 0; i < 20 && i < NUM_LEGAL_SENTENCES; i++) {
+        Vector z;
+        inn_forward(&params, &legal_sentences[i].features, &z);
+        const double nll = calculate_nll_loss(&params, &z);
+        printf("[%2d] NLL: %.4f | Text: %s\n", i + 1, nll, legal_sentences[i].text);
+    }
+
+    // Print 20 Illegal Sentences
+    printf("\nFirst 20 Illegal Sentences (OUT-OF-DISTRIBUTION - High NLL expected):\n");
+    for (int i = 0; i < 20 && i < NUM_ILLEGAL_SENTENCES; i++) {
+        Vector z;
+        inn_forward(&params, &illegal_sentences[i].features, &z);
+        const double nll = calculate_nll_loss(&params, &z);
+        printf("[%2d] NLL: %.4f | Text: %s\n", i + 1, nll, illegal_sentences[i].text);
+    }
+    // --- End Detailed Sample Output ---
+
     printf("\nDetection Conclusion:\n");
 
     if (avg_illegal_nll > avg_legal_nll) {
