@@ -44,9 +44,9 @@ typedef struct {
 } Sentence;
 
 // --- VOCABULARY AND SENTENCE GENERATION DATA ---
+// NOTE: These are used by the parser to map hard-coded words back to features.
 
 // Word lists are simplified to map to a continuous feature space.
-// The index (or a derived value) serves as the embedding.
 const char *const Nouns[] = {"car", "bike", "dog", "lawyer", "judge", "contract", "witness", "defendant"};
 const double NounValues[] = {1.0, 1.5, 2.0, 3.0, 3.5, 4.0, 4.5, 5.0};
 #define NUM_NOUNS 8
@@ -58,6 +58,35 @@ const double VerbValues[] = {1.0, 2.0, 3.0, 4.0};
 const char *const Adjectives[] = {"red", "fast", "legal", "binding", "corrupt"};
 const double AdjectiveValues[] = {1.0, 1.5, 2.0, 3.0, 4.0};
 #define NUM_ADJECTIVES 5
+
+
+// --- HARD-CODED DATASET ---
+// The INN is trained only on "legal" English (Type 1: Low feature values, Type 2: Low feature values)
+const char *const HARDCODED_LEGAL_TEMPLATES[] = {
+    // Type 1: the NOUN VERB the ADJECTIVE NOUN (Features N1, V, Adj, N2, Context=0.0)
+    "the car drives the red bike",
+    "the dog reads the fast car",
+    "the bike signs the legal dog",
+    // Type 2: the NOUN has NOUN (Features N1, V=5.0, Adj=0.0, N2, Context=1.0)
+    "the car has bike",
+    "the dog has car",
+    "the bike has dog"
+};
+#define NUM_LEGAL_TEMPLATES (sizeof(HARDCODED_LEGAL_TEMPLATES) / sizeof(HARDCODED_LEGAL_TEMPLATES[0]))
+
+
+// The INN is tested on "illegal" English (Type 1: High feature values, Type 2: High feature values)
+const char *const HARDCODED_ILLEGAL_TEMPLATES[] = {
+    // Type 1: the NOUN VERB the ADJECTIVE NOUN (Features N1, V, Adj, N2, Context=0.0)
+    "the lawyer drives the corrupt defendant",
+    "the judge reads the binding witness",
+    "the contract runs the fast lawyer",
+    // Type 2: the NOUN has NOUN (Features N1, V=5.0, Adj=0.0, N2, Context=1.0)
+    "the witness has defendant",
+    "the judge has contract"
+};
+#define NUM_ILLEGAL_TEMPLATES (sizeof(HARDCODED_ILLEGAL_TEMPLATES) / sizeof(HARDCODED_ILLEGAL_TEMPLATES[0]))
+
 
 // --- UTILITY FUNCTIONS FOR MATRIX AND VECTOR OPERATIONS ---
 
@@ -251,7 +280,8 @@ double calculate_nll_loss(const INN_Parameters *const params, const Vector *cons
 
     // Term 2: -log|det(A)| (using symbolic calculation)
     const double det_A = get_determinant_triangular(&params->A);
-    const double log_det_A = log(fabs(det_A));
+    // Use fabs to ensure the argument to log is non-negative
+    const double log_det_A = log(fabs(det_A) > 1e-9 ? fabs(det_A) : 1e-9);
 
     // NLL = log_prob_z - log_det_A
     const double nll = log_prob_z - log_det_A;
@@ -259,89 +289,86 @@ double calculate_nll_loss(const INN_Parameters *const params, const Vector *cons
     return nll;
 }
 
-// --- DATASET GENERATION ---
+// --- DATASET PARSING ---
 
 /**
- * @brief Maps a word to its pre-defined continuous feature value.
+ * @brief Attempts to find a word in the vocabulary lists and return its feature value.
  */
-double get_word_value(const char *const word, const char *const *const word_list, const double *const value_list, int count) {
-    for (int i = 0; i < count; i++) {
-        if (strcmp(word, word_list[i]) == 0) {
-            return value_list[i];
-        }
+double find_word_value(const char *word) {
+    // Check Nouns
+    for (int i = 0; i < NUM_NOUNS; i++) {
+        if (strcmp(word, Nouns[i]) == 0) return NounValues[i];
     }
-    return 0.0; // Should not happen for valid words
+    // Check Verbs
+    for (int i = 0; i < NUM_VERBS; i++) {
+        if (strcmp(word, Verbs[i]) == 0) return VerbValues[i];
+    }
+    // Check Adjectives
+    for (int i = 0; i < NUM_ADJECTIVES; i++) {
+        if (strcmp(word, Adjectives[i]) == 0) return AdjectiveValues[i];
+    }
+    return 0.0; // Return 0.0 for common words like 'the' or if not found (shouldn't happen with the hardcoded list)
 }
 
 /**
- * @brief Generates a single sentence and its feature vector.
- * @param type 1 for "the NOUN VERB the ADJECTIVE NOUN", 2 for "the NOUN has NOUN".
- * @param is_legal 1 for sensible words, 0 for nonsense words (same structure, illegal semantics).
+ * @brief Deterministically maps a hard-coded sentence string to its feature vector.
+ * @param text The input sentence string.
+ * @param V The output feature Vector.
  */
-Sentence generate_sentence(const int type, const int is_legal) {
-    Sentence s;
-    init_vector(&s.features, D);
-    s.is_legal = is_legal;
-    s.text[0] = '\0';
+void parse_sentence_to_features(const char *const text, Vector *V) {
+    init_vector(V, D);
+    char n1[32], v[32], adj[32], n2[32];
+    int count;
 
-    // Type 1: the NOUN VERB the ADJECTIVE NOUN
-    if (type == 1) {
-        // Legal words have lower indices, illegal words have higher indices.
-        const int n1_idx = is_legal ? (rand() % 3) : (3 + rand() % (NUM_NOUNS - 3));
-        const int v_idx = rand() % NUM_VERBS;
-        const int adj_idx = rand() % NUM_ADJECTIVES;
-        const int n2_idx = is_legal ? (rand() % 3) : (3 + rand() % (NUM_NOUNS - 3));
-
-        // Construct text
-        sprintf(s.text, "the %s %s the %s %s",
-                Nouns[n1_idx], Verbs[v_idx], Adjectives[adj_idx], Nouns[n2_idx]);
-
-        // Construct features
-        s.features.data[0] = NounValues[n1_idx];
-        s.features.data[1] = VerbValues[v_idx];
-        s.features.data[2] = AdjectiveValues[adj_idx];
-        s.features.data[3] = NounValues[n2_idx];
-        s.features.data[4] = 0.0; // Context feature for Type 1
-    }
-    // Type 2: the NOUN has NOUN
-    else if (type == 2) {
-        const int n1_idx = is_legal ? (rand() % 4) : (4 + rand() % (NUM_NOUNS - 4));
-        const int n2_idx = is_legal ? (rand() % 4) : (4 + rand() % (NUM_NOUNS - 4));
-
-        // Construct text
-        sprintf(s.text, "the %s has %s",
-                Nouns[n1_idx], Nouns[n2_idx]);
-
-        // Construct features (mapping 'has' to a specific VerbValue for consistency)
-        s.features.data[0] = NounValues[n1_idx];
-        s.features.data[1] = 5.0; // Fixed value for "has"
-        s.features.data[2] = 0.0; // Not applicable for Type 2
-        s.features.data[3] = NounValues[n2_idx];
-        s.features.data[4] = 1.0; // Context feature for Type 2
+    // Try Type 1: "the NOUN VERB the ADJECTIVE NOUN"
+    // Features: [N1, V, Adj, N2, 0.0]
+    count = sscanf(text, "the %s %s the %s %s", n1, v, adj, n2);
+    if (count == 4) {
+        V->data[0] = find_word_value(n1);
+        V->data[1] = find_word_value(v);
+        V->data[2] = find_word_value(adj);
+        V->data[3] = find_word_value(n2);
+        V->data[4] = 0.0; // Context feature for Type 1
+        return;
     }
 
-    return s;
+    // Try Type 2: "the NOUN has NOUN"
+    // Features: [N1, V=5.0 ('has'), 0.0, N2, 1.0]
+    count = sscanf(text, "the %s has %s", n1, n2);
+    if (count == 2) {
+        V->data[0] = find_word_value(n1);
+        V->data[1] = 5.0; // Hardcoded value for "has" as per original logic
+        V->data[2] = 0.0;
+        V->data[3] = find_word_value(n2);
+        V->data[4] = 1.0; // Context feature for Type 2
+        return;
+    }
+
+    fprintf(stderr, "Parsing Error: Could not parse sentence '%s'. Features set to zero.\n", text);
 }
 
+
 /**
- * @brief Generates the training and testing datasets.
+ * @brief Populates the training and testing datasets using hard-coded sentences.
  */
 void generate_datasets(Sentence *legal_sentences, Sentence *illegal_sentences) {
-    srand((unsigned int)time(NULL));
-
-    // Generate Legal Sentences
+    // Legal Sentences (Training data)
     for (int i = 0; i < NUM_LEGAL_SENTENCES; i++) {
-        const int type = (i % 2) + 1; // Alternate between Type 1 and Type 2
-        legal_sentences[i] = generate_sentence(type, 1);
+        const char *text = HARDCODED_LEGAL_TEMPLATES[i % NUM_LEGAL_TEMPLATES];
+        strcpy(legal_sentences[i].text, text);
+        parse_sentence_to_features(text, &legal_sentences[i].features);
+        legal_sentences[i].is_legal = 1;
     }
 
-    // Generate Illegal Sentences (Nonsense)
+    // Illegal Sentences (Test data)
     for (int i = 0; i < NUM_ILLEGAL_SENTENCES; i++) {
-        const int type = (i % 2) + 1; // Alternate between Type 1 and Type 2
-        illegal_sentences[i] = generate_sentence(type, 0);
+        const char *text = HARDCODED_ILLEGAL_TEMPLATES[i % NUM_ILLEGAL_TEMPLATES];
+        strcpy(illegal_sentences[i].text, text);
+        parse_sentence_to_features(text, &illegal_sentences[i].features);
+        illegal_sentences[i].is_legal = 0;
     }
 
-    printf("Dataset generated: %d legal, %d illegal sentences.\n", NUM_LEGAL_SENTENCES, NUM_ILLEGAL_SENTENCES);
+    printf("Dataset generated from hard-coded lists: %d legal, %d illegal sentences.\n", NUM_LEGAL_SENTENCES, NUM_ILLEGAL_SENTENCES);
 }
 
 // --- UNIT TESTING FRAMEWORK ---
@@ -406,7 +433,7 @@ int run_tests() {
         failed++;
     }
 
-    // Test 4: Matrix-Vector Multiplication (INN Forward Pass Check) - FIXED FOR ROBUSTNESS
+    // Test 4: Matrix-Vector Multiplication (INN Forward Pass Check)
     Vector x, y_expected, z;
     init_vector(&x, D); // Input vector x is initialized
     init_vector(&y_expected, D);
@@ -459,6 +486,38 @@ int run_tests() {
         printf("Test 5 (NLL Ideal): PASSED (NLL=%.2f)\n", nll_ideal);
     } else {
         printf("Test 5 (NLL Ideal): FAILED (Expected 0.0, Got %.2f)\n", nll_ideal);
+        failed++;
+    }
+
+    // Test 6: Sentence Parser Check (Type 1)
+    Vector v_test1;
+    parse_sentence_to_features("the car drives the red bike", &v_test1);
+    // Expected features: [1.0, 1.0, 1.0, 1.5, 0.0]
+    const double expected_f1[] = {1.0, 1.0, 1.0, 1.5, 0.0};
+    int parser_ok1 = 1;
+    for(int i = 0; i < D; i++) {
+        if (fabs(v_test1.data[i] - expected_f1[i]) > 1e-6) { parser_ok1 = 0; break; }
+    }
+    if (parser_ok1) {
+        printf("Test 6 (Parser Type 1): PASSED\n");
+    } else {
+        printf("Test 6 (Parser Type 1): FAILED\n");
+        failed++;
+    }
+
+    // Test 7: Sentence Parser Check (Type 2)
+    Vector v_test2;
+    parse_sentence_to_features("the dog has car", &v_test2);
+    // Expected features: [2.0, 5.0, 0.0, 1.0, 1.0]
+    const double expected_f2[] = {2.0, 5.0, 0.0, 1.0, 1.0};
+    int parser_ok2 = 1;
+    for(int i = 0; i < D; i++) {
+        if (fabs(v_test2.data[i] - expected_f2[i]) > 1e-6) { parser_ok2 = 0; break; }
+    }
+    if (parser_ok2) {
+        printf("Test 7 (Parser Type 2): PASSED\n");
+    } else {
+        printf("Test 7 (Parser Type 2): FAILED\n");
         failed++;
     }
 
