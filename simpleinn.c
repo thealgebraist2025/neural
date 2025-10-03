@@ -6,12 +6,12 @@
 #include <ctype.h>
 
 // --- INN PARAMETERS AND CONSTANTS ---
-#define D 16                  // Dimension of the sentence feature vector
-#define NUM_LEGAL_SENTENCES 8192 // Training Size
-#define NUM_ILLEGAL_SENTENCES 8192 // Test Size
-#define LEARNING_RATE 0.000005 // REDUCED from 0.00005 to 0.000005 for stability
+#define D 8                   // Dimension of the sentence feature vector (Reduced to 8)
+#define NUM_LEGAL_SENTENCES 2048 // Training Size (Reduced to 2048)
+#define NUM_ILLEGAL_SENTENCES 2048 // Test Size (Reduced to 2048)
+#define LEARNING_RATE 0.00001  // Increased from 0.000005 for faster convergence on a smaller network
 #define MAX_EPOCHS 200
-#define TRAINING_TIME_LIMIT_SEC 300.0 // INCREASED to 5 minutes (300 seconds)
+#define TRAINING_TIME_LIMIT_SEC 180.0 // Reduced to 3 minutes (180 seconds)
 #define GAUSSIAN_SIGMA 1.0    
 #define MAX_WORD_LEN 64
 #define MAX_FILE_READ_SIZE 100000 
@@ -624,7 +624,7 @@ int main(void) {
 
             // Print progress every 10 seconds
             if (total_elapsed_sec - last_print_time_sec >= print_interval_sec) {
-                 printf("%19.2f | %5d | %9d | %14.4f | %6.4e\n", // Changed Det(A) format to scientific for large numbers
+                 printf("%19.2f | %5d | %9d | %14.4f | %6.4e\n", 
                        total_elapsed_sec, epoch, i + 1, epoch_nll_sum / sentences_processed_in_epoch, get_determinant_triangular(&params.A));
                 last_print_time_sec = total_elapsed_sec;
             }
