@@ -32,7 +32,7 @@ jobs:
       # OR, if you are simply running the program:
       # ./spell
       run: |
-        lldb --batch -o "run; bt; quit" ./spell
+        printf "run\nbt\nquit\n" | lldb --batch ./spell
         
     - name: Upload Artifact
       uses: actions/upload-artifact@v4 
