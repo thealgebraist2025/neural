@@ -19,10 +19,25 @@
 #define MAX_WORDS_PER_SENTENCE 50 
 
 // --- NEW DATA STRUCTURES FOR IMMUTABLE STRINGS ---
-typedef struct { char *str; size_t len; int valid; } Word;
-typedef struct { Word *words; size_t count; } SentenceText;
 
-// Matrix, Vector, INN_Parameters (Remain the same)
+/**
+ * Represents an individual word. The 'str' is considered immutable.
+ */
+typedef struct {
+    char *str;      // The dynamically allocated string (or constant)
+    size_t len;     // The length of the string
+    int valid;      // True if the word is valid (not a null/delimiter placeholder)
+} Word;
+
+/**
+ * Represents a sequence of words (a sentence).
+ */
+typedef struct {
+    Word *words;    // Array of Word structs
+    size_t count;   // Number of words in the array
+} SentenceText;
+
+// Matrix, Vector, INN_Parameters
 typedef struct { double data[D][D]; int rows; int cols; int initialized; } Matrix;
 typedef struct { double data[D]; int size; int initialized; } Vector;
 typedef struct { Matrix A; Vector b; } INN_Parameters;
@@ -34,7 +49,7 @@ typedef struct {
     int is_legal;
 } Sentence;
 
-// --- VOCABULARY AND FEATURE MAPPING (Unchanged) ---
+// --- VOCABULARY AND FEATURE MAPPING ---
 const char *const Nouns[] = {"car", "bike", "dog", "lawyer", "judge", "contract", "witness", "defendant", "alice", "way", "side", "door", "middle", "table", "glass", "key", "thought", "locks", "curtain", "sister", "rabbit", "garden", "pool", "mock", "turtle"};
 const double NounValues[] = {1.0, 1.5, 2.0, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0, 10.5, 11.0, 11.5, 12.0, 12.5, 13.0, 13.5};
 #define NUM_NOUNS (sizeof(Nouns) / sizeof(Nouns[0]))
@@ -48,7 +63,7 @@ const char *const NonsenseVerbs[] = {"bleem", "floof", "skree", "quonk", "smashl
 #define NUM_NONSENSE_NOUNS (sizeof(NonsenseNouns) / sizeof(NonsenseNouns[0]))
 #define NUM_NONSENSE_VERBS (sizeof(NonsenseVerbs) / sizeof(NonsenseVerbs[0]))
 
-// --- MEMORY MANAGEMENT / UTILITY FUNCTIONS (Corrected) ---
+// --- MEMORY MANAGEMENT / UTILITY FUNCTIONS ---
 
 /**
  * @brief Allocates and creates a new immutable Word struct.
@@ -104,7 +119,18 @@ Word parse_token_to_word(const char *token) {
     return create_word(token + start_offset, effective_len - start_offset);
 }
 
-// --- MATRIX/VECTOR UTILITIES (Unchanged logic, kept for context) ---
+/**
+ * @brief Replaces strdup with malloc/strcpy for portability.
+ */
+char *safe_strdup(const char *s) {
+    size_t len = strlen(s) + 1;
+    char *new_s = (char *)malloc(len);
+    if (new_s == NULL) return NULL;
+    return (char *)memcpy(new_s, s, len);
+}
+
+// --- MATRIX/VECTOR UTILITIES ---
+
 void init_matrix(Matrix *M, int rows, int cols, int triangular) {
     if (rows != D || cols != D) { fprintf(stderr, "Error: Matrix dimensions must be %dx%d.\n", D, D); return; }
     M->rows = rows; M->cols = cols;
@@ -147,6 +173,8 @@ double get_determinant_triangular(const Matrix *const A) {
     return det;
 }
 
+// --- INN FLOW FUNCTIONS ---
+
 void inn_forward(const INN_Parameters *const params, const Vector *const x, Vector *z) {
     if (!check_init(&params->A) || !check_vector_init(&params->b)) { init_vector(z, D); return; }
     init_vector(z, D);
@@ -166,6 +194,8 @@ double calculate_nll_loss(const INN_Parameters *const params, const Vector *cons
     const double log_det_A = log(fabs(det_A) > 1e-9 ? fabs(det_A) : 1e-9);
     return log_prob_z - log_det_A;
 }
+
+// --- FEATURE MAPPING ---
 
 double find_word_value(const Word *word, int *word_type) {
     if (!word->valid || word->len == 0) {
@@ -196,9 +226,10 @@ double find_word_value(const Word *word, int *word_type) {
 void map_sentence_to_features(const SentenceText *const st, Vector *V) {
     init_vector(V, D);
 
+    // Features: [N1, V1, Adj1, N2, V2, Adj2, V3, N3] (Using Noun/Verb values)
     int noun_count = 0; 
     int verb_count = 0; 
-    int adj_count = 0;  
+    int adj_count = 0;  // Placeholder count, using N/V for D=8 slots
     
     for (size_t i = 0; i < st->count; i++) {
         const Word *word = &st->words[i];
@@ -216,7 +247,7 @@ void map_sentence_to_features(const SentenceText *const st, Vector *V) {
                 else if (verb_count == 1) V->data[4] = value;
                 else if (verb_count == 2) V->data[6] = value;
                 verb_count++;
-            } else if (word_type == 2) { // Adjective
+            } else if (word_type == 2) { // Adjective (Placeholder features)
                 if (adj_count == 0) V->data[2] = value;
                 else if (adj_count == 1) V->data[5] = value;
                 adj_count++;
@@ -229,18 +260,7 @@ void map_sentence_to_features(const SentenceText *const st, Vector *V) {
     }
 }
 
-// --- DATASET GENERATION FUNCTIONS (CRITICAL FIXES HERE) ---
-
-/**
- * @brief Replaces strdup with malloc/strcpy for portability.
- */
-char *safe_strdup(const char *s) {
-    size_t len = strlen(s) + 1;
-    char *new_s = (char *)malloc(len);
-    if (new_s == NULL) return NULL;
-    return (char *)memcpy(new_s, s, len);
-}
-
+// --- DATASET GENERATION FUNCTIONS ---
 
 /**
  * @brief Converts a raw sentence string into a SentenceText array of Words.
@@ -248,7 +268,6 @@ char *safe_strdup(const char *s) {
 SentenceText convert_raw_to_sentence_text(const char *raw_sentence) {
     SentenceText st = {NULL, 0};
 
-    // FIX: Use safe_strdup instead of strdup
     char *raw_copy = safe_strdup(raw_sentence); 
     if (raw_copy == NULL) return st;
 
@@ -305,7 +324,6 @@ int load_sentence_templates(SentenceText *legal_templates_st, int max_templates)
     buffer[bytes_read] = '\0'; 
     fclose(file);
 
-    // FIX: Use safe_strdup instead of strdup
     char *sentence_split_buffer = safe_strdup(buffer);
     if (sentence_split_buffer == NULL) { free(buffer); return 0; }
     free(buffer);
@@ -313,7 +331,6 @@ int load_sentence_templates(SentenceText *legal_templates_st, int max_templates)
     char *token = strtok(sentence_split_buffer, ".!?");
     int count = 0;
     while (token != NULL && count < max_templates) {
-        // Trim leading whitespace
         char *trimmed_token = token;
         size_t len = strlen(token);
         while (isspace(*trimmed_token)) { trimmed_token++; len--; }
@@ -337,7 +354,7 @@ int load_sentence_templates(SentenceText *legal_templates_st, int max_templates)
 
 
 /**
- * @brief Generates an illegal sentence by substituting a word in a legal template.
+ * @brief Generates an illegal sentence by substituting a word in a legal template (deep copy).
  * NEVER modifies existing Word structs, only creates new ones.
  */
 SentenceText generate_illegal_sentence_text(const SentenceText *legal_template) {
@@ -370,7 +387,6 @@ SentenceText generate_illegal_sentence_text(const SentenceText *legal_template) 
                                         : NonsenseVerbs[rand() % NUM_NONSENSE_VERBS];
             illegal_st.words[i] = create_word(nonsense_str, strlen(nonsense_str));
         } else {
-            // Deep copy the word's content
             if (original_word->valid) {
                  illegal_st.words[i] = create_word(original_word->str, original_word->len);
             } else {
@@ -386,66 +402,6 @@ SentenceText generate_illegal_sentence_text(const SentenceText *legal_template) 
     return illegal_st;
 }
 
-// --- SANITY CHECKS AND UNIT TESTS (Unchanged logic, kept for context) ---
-
-int run_sanity_checks(SentenceText *templates, int num_templates) {
-    int passed = 0;
-    int failed = 0;
-
-    printf("\n--- Running Sanity Checks ---\n");
-
-    if (num_templates == 0) {
-        printf("Check 1 (File Load): FAILED. No templates loaded.\n");
-        return 0;
-    } else {
-        printf("Check 1 (File Load): PASSED. Loaded %d templates.\n", num_templates);
-        passed++;
-    }
-
-    if (num_templates > 0) {
-        Vector V;
-        map_sentence_to_features(&templates[0], &V);
-        if (V.data[0] > 0.0 && V.data[1] > 0.0 && V.data[2] > 0.0) {
-            printf("Check 2 (Feature Mapping): PASSED. First template yielded features (N1=%.2f, V1=%.2f, Adj1=%.2f).\n", V.data[0], V.data[1], V.data[2]);
-            passed++;
-        } else {
-            printf("Check 2 (Feature Mapping): FAILED. First template did not yield enough features.\n");
-            failed++;
-        }
-    }
-
-    if (num_templates > 0) {
-        SentenceText illegal_st = generate_illegal_sentence_text(&templates[0]);
-        int found_nonsense = 0;
-        int word_count_match = (illegal_st.count == templates[0].count);
-
-        for (size_t i = 0; i < illegal_st.count; i++) {
-            if (illegal_st.words[i].valid && illegal_st.words[i].len > 0) {
-                for (int j = 0; j < NUM_NONSENSE_NOUNS; j++) {
-                    if (strcmp(illegal_st.words[i].str, NonsenseNouns[j]) == 0) { found_nonsense = 1; break; }
-                }
-                if(found_nonsense) break;
-                for (int j = 0; j < NUM_NONSENSE_VERBS; j++) {
-                    if (strcmp(illegal_st.words[i].str, NonsenseVerbs[j]) == 0) { found_nonsense = 1; break; }
-                }
-                if(found_nonsense) break;
-            }
-        }
-
-        if (found_nonsense && word_count_match) {
-            printf("Check 3 (Illegal Gen): PASSED. Nonsense word found, word count matches.\n");
-            passed++;
-        } else {
-            printf("Check 3 (Illegal Gen): FAILED. Nonsense: %s, Count Match: %s.\n", found_nonsense ? "Yes" : "No", word_count_match ? "Yes" : "No");
-            failed++;
-        }
-        free_sentence_text(&illegal_st);
-    }
-    
-    printf("Sanity Checks Complete: %d PASSED, %d FAILED.\n", passed, failed);
-    return failed == 0;
-}
-
 
 void generate_datasets(Sentence *legal_sentences, Sentence *illegal_sentences, SentenceText *legal_templates_st, int num_templates) {
     if (num_templates == 0) {
@@ -455,15 +411,18 @@ void generate_datasets(Sentence *legal_sentences, Sentence *illegal_sentences, S
 
     printf("Dataset generation starting: %d templates loaded.\n", num_templates);
 
+    // 1. Legal Sentences (Training data)
     for (int i = 0; i < NUM_LEGAL_SENTENCES; i++) {
         const int template_idx = rand() % num_templates;
         const SentenceText *template = &legal_templates_st[template_idx];
         
-        legal_sentences[i].text_data = generate_illegal_sentence_text(template);
+        // Deep copy the SentenceText from the template
+        legal_sentences[i].text_data = generate_illegal_sentence_text(template); 
         map_sentence_to_features(&legal_sentences[i].text_data, &legal_sentences[i].features);
         legal_sentences[i].is_legal = 1;
     }
 
+    // 2. Illegal Sentences (Test data) - Word Substitution
     for (int i = 0; i < NUM_ILLEGAL_SENTENCES; i++) {
         const int template_idx = rand() % num_templates;
         const SentenceText *template = &legal_templates_st[template_idx];
@@ -476,20 +435,103 @@ void generate_datasets(Sentence *legal_sentences, Sentence *illegal_sentences, S
     printf("Dataset generated: %d legal, %d illegal sentences.\n", NUM_LEGAL_SENTENCES, NUM_ILLEGAL_SENTENCES);
 }
 
-// --- MAIN EXECUTION (Unchanged logic, kept for context) ---
+// --- SANITY CHECKS AND UNIT TESTS ---
+
+int run_sanity_checks(SentenceText *templates, int num_templates) {
+    int passed = 0;
+    int failed = 0;
+
+    printf("\n--- Running Sanity Checks ---\n");
+
+    // 1. Check File Loading
+    if (num_templates == 0) {
+        printf("Check 1 (File Load): FAILED. No templates loaded.\n");
+        return 0;
+    } else {
+        printf("Check 1 (File Load): PASSED. Loaded %d templates.\n", num_templates);
+        passed++;
+    }
+
+    // --- Find a robust template for checks 2 & 3 ---
+    int robust_template_idx = -1;
+    for (int i = 0; i < num_templates; i++) {
+        Vector V;
+        map_sentence_to_features(&templates[i], &V);
+        int feature_count = 0;
+        for(int j = 0; j < D; j++) {
+            if (V.data[j] > 0.0) feature_count++;
+        }
+        // Require at least 3 features (e.g., N1, V1, Adj1)
+        if (feature_count >= 3) { 
+            robust_template_idx = i;
+            break;
+        }
+    }
+
+    if (robust_template_idx == -1) {
+        printf("Check 2 (Feature Mapping): FAILED. Could not find any template with at least 3 features.\n");
+        printf("Check 3 (Illegal Gen): FAILED. Aborted due to lack of robust template.\n");
+        return 0; 
+    }
+
+    const SentenceText *test_template = &templates[robust_template_idx];
+    
+    // 2. Check Feature Mapping (on the robust template)
+    Vector V;
+    map_sentence_to_features(test_template, &V);
+    printf("Check 2 (Feature Mapping): PASSED. Template index %d yielded features (N1=%.2f, V1=%.2f).\n", 
+           robust_template_idx, V.data[0], V.data[1]);
+    passed++;
+
+    // 3. Check Illegal Sentence Generation (Immutability and Nonsense)
+    SentenceText illegal_st = generate_illegal_sentence_text(test_template);
+    int found_nonsense = 0;
+    int word_count_match = (illegal_st.count == test_template->count);
+    
+    for (size_t i = 0; i < illegal_st.count; i++) {
+        if (illegal_st.words[i].valid && illegal_st.words[i].len > 0) {
+            for (int j = 0; j < NUM_NONSENSE_NOUNS; j++) {
+                if (strcmp(illegal_st.words[i].str, NonsenseNouns[j]) == 0) { found_nonsense = 1; break; }
+            }
+            if(found_nonsense) break;
+            for (int j = 0; j < NUM_NONSENSE_VERBS; j++) {
+                if (strcmp(illegal_st.words[i].str, NonsenseVerbs[j]) == 0) { found_nonsense = 1; break; }
+            }
+            if(found_nonsense) break;
+        }
+    }
+
+    if (found_nonsense && word_count_match) {
+        printf("Check 3 (Illegal Gen): PASSED. Nonsense word found, word count matches.\n");
+        passed++;
+    } else {
+        printf("Check 3 (Illegal Gen): FAILED. Nonsense: %s, Count Match: %s. (Template Index: %d)\n", 
+               found_nonsense ? "Yes" : "No", word_count_match ? "Yes" : "No", robust_template_idx);
+        failed++;
+    }
+    free_sentence_text(&illegal_st);
+    
+    printf("Sanity Checks Complete: %d PASSED, %d FAILED.\n", passed, failed);
+    return failed == 0;
+}
+
+// --- MAIN EXECUTION ---
 
 int main(void) {
     srand((unsigned int)time(NULL));
     
+    // 1. Load Templates
     SentenceText legal_templates_st[MAX_SENTENCES_FROM_FILE];
     const int num_templates = load_sentence_templates(legal_templates_st, MAX_SENTENCES_FROM_FILE);
 
+    // 2. Run Sanity Checks
     if (!run_sanity_checks(legal_templates_st, num_templates)) {
         fprintf(stderr, "\nFATAL ERROR: Initial sanity checks failed. Aborting training.\n");
         for(int i = 0; i < num_templates; i++) free_sentence_text(&legal_templates_st[i]);
         return 1;
     }
 
+    // 3. Initialize INN and Allocate Memory for Datasets
     INN_Parameters params;
     init_matrix(&params.A, D, D, 1);
     init_vector(&params.b, D);
@@ -504,10 +546,14 @@ int main(void) {
         return 1;
     }
 
+    // 4. Generate Datasets
     generate_datasets(legal_sentences, illegal_sentences, legal_templates_st, num_templates);
     
+    // Templates are no longer needed, free them
     for(int i = 0; i < num_templates; i++) free_sentence_text(&legal_templates_st[i]);
     
+    
+    // --- Training Loop ---
     const clock_t start_time = clock();
     double last_print_time_sec = 0.0;
     const double print_interval_sec = 10.0; 
@@ -538,6 +584,7 @@ int main(void) {
             const double nll_loss = calculate_nll_loss(&params, &z);
             epoch_nll_sum += nll_loss;
 
+            // Backpropagation (Gradients)
             Vector dL_dz; init_vector(&dL_dz, D);
             const double scale = 1.0 / (GAUSSIAN_SIGMA * GAUSSIAN_SIGMA);
             for (int k = 0; k < D; k++) dL_dz.data[k] = z.data[k] * scale;
@@ -566,6 +613,7 @@ int main(void) {
         if (training_stopped_early) break; 
     } 
 
+    // --- Evaluation ---
     printf("\n--- INN Detection Test (Legal vs. Nonsensical) ---\n");
     double legal_nll_sum = 0.0;
     double illegal_nll_sum = 0.0;
@@ -604,6 +652,7 @@ int main(void) {
         printf("The INN failed to clearly distinguish between the original and modified feature patterns.\n");
     }
     
+    // 5. Cleanup
     for (int i = 0; i < NUM_LEGAL_SENTENCES; i++) free_sentence_text(&legal_sentences[i].text_data);
     for (int i = 0; i < NUM_ILLEGAL_SENTENCES; i++) free_sentence_text(&illegal_sentences[i].text_data);
     free(legal_sentences);
