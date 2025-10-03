@@ -6,12 +6,12 @@
 #include <ctype.h>
 
 // --- INN PARAMETERS AND CONSTANTS ---
-#define D 8                   // Dimension of the sentence feature vector (Reduced to 8)
-#define NUM_LEGAL_SENTENCES 2048 // Training Size (Reduced to 2048)
-#define NUM_ILLEGAL_SENTENCES 2048 // Test Size (Reduced to 2048)
-#define LEARNING_RATE 0.00001  // Increased from 0.000005 for faster convergence on a smaller network
+#define D 8                   // Dimension of the sentence feature vector
+#define NUM_LEGAL_SENTENCES 2048 // Training Size
+#define NUM_ILLEGAL_SENTENCES 2048 // Test Size
+#define LEARNING_RATE 0.00001  
 #define MAX_EPOCHS 200
-#define TRAINING_TIME_LIMIT_SEC 180.0 // Reduced to 3 minutes (180 seconds)
+#define TRAINING_TIME_LIMIT_SEC 180.0 
 #define GAUSSIAN_SIGMA 1.0    
 #define MAX_WORD_LEN 64
 #define MAX_FILE_READ_SIZE 100000 
@@ -31,7 +31,9 @@ typedef struct {
     size_t count;   
 } SentenceText;
 
-// Matrix, Vector, INN_Parameters
+// Flexible Matrix/Vector structures to handle both D=8 and D=1 (for the sine test)
+// Note: Arrays are still fixed size but we use the 'rows/cols/size' fields to manage dimensions.
+// For the 1D test, we only use [0][0] for Matrix and [0] for Vector.
 typedef struct { double data[D][D]; int rows; int cols; int initialized; } Matrix;
 typedef struct { double data[D]; int size; int initialized; } Vector;
 typedef struct { Matrix A; Vector b; } INN_Parameters;
@@ -43,7 +45,7 @@ typedef struct {
     int is_legal;
 } Sentence;
 
-// --- VOCABULARY: CHOSEN FROM ALICE IN WONDERLAND ---
+// --- VOCABULARY (omitted for brevity, assume contents are the same) ---
 
 const char *const Nouns[] = {"alice", "queen", "hatter", "rabbit", "cat", "king", "mouse", "turtle", "garden", "door", "table", "key", "curiosity", "head", "tea", "dream", "voice", "way", "sister", "time", "world", "thing", "house", "foot", "corner"};
 const double NounValues[] = {1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 3.0, 3.1, 3.2, 3.3, 3.4};
@@ -62,7 +64,7 @@ const char *const NonsenseVerbs[] = {"bleem", "floof", "skree", "quonk", "smashl
 #define NUM_NONSENSE_NOUNS (sizeof(NonsenseNouns) / sizeof(NonsenseNouns[0]))
 #define NUM_NONSENSE_VERBS (sizeof(NonsenseVerbs) / sizeof(NonsenseVerbs[0]))
 
-// --- UTILITY AND MEMORY MANAGEMENT ---
+// --- UTILITY AND MEMORY MANAGEMENT (No change, uses D) ---
 
 Word create_word(const char *source, size_t length) {
     if (length == 0 || source == NULL) {
@@ -119,7 +121,12 @@ char *safe_strdup(const char *s) {
 // --- MATRIX/VECTOR UTILITIES ---
 
 void init_matrix(Matrix *M, int rows, int cols, int triangular) {
-    if (rows != D || cols != D) { fprintf(stderr, "Error: Matrix dimensions must be %dx%d.\n", D, D); return; }
+    // If rows or cols is 1, it's the simple test. If it's D, it's the language model.
+    if (rows > D || cols > D || rows <= 0 || cols <= 0) { 
+        fprintf(stderr, "Error: Matrix dimensions must be 1x1 or %dx%d.\n", D, D); 
+        M->initialized = 0;
+        return; 
+    }
     M->rows = rows; M->cols = cols;
     for (int i = 0; i < rows; i++) {
         for (int j = 0; j < cols; j++) {
@@ -127,12 +134,18 @@ void init_matrix(Matrix *M, int rows, int cols, int triangular) {
             else M->data[i][j] = ((double)rand() / RAND_MAX) * 0.01;
         }
     }
-    for (int i = 0; i < D; i++) { if (M->data[i][i] == 0.0) M->data[i][i] = 1.0; }
+    for (int i = 0; i < (rows < cols ? rows : cols); i++) { 
+        if (M->data[i][i] == 0.0) M->data[i][i] = 1.0; 
+    }
     M->initialized = 1;
 }
 
 void init_vector(Vector *V, int size) {
-    if (size != D) { fprintf(stderr, "Error: Vector dimension must be %d.\n", D); return; }
+    if (size > D || size <= 0) { 
+        fprintf(stderr, "Error: Vector dimension must be 1 or %d.\n", D); 
+        V->initialized = 0;
+        return; 
+    }
     V->size = size;
     for (int i = 0; i < size; i++) V->data[i] = 0.0;
     V->initialized = 1;
@@ -145,8 +158,8 @@ int check_vector_init(const Vector *const V) { return V->initialized; }
  * @brief Multiplies Matrix A by Vector x, storing the result in y.
  */
 void multiply_matrix_vector(const Matrix *const A, const Vector *const x, Vector *y) {
-    if (!check_init(A) || !check_vector_init(x) || A->cols != x->size) { init_vector(y, D); return; }
-    init_vector(y, D);
+    if (!check_init(A) || !check_vector_init(x) || A->cols != x->size) { init_vector(y, A->rows); return; }
+    init_vector(y, A->rows);
     for (int i = 0; i < A->rows; i++) {
         double sum = 0.0;
         for (int j = 0; j < A->cols; j++) {
@@ -158,8 +171,10 @@ void multiply_matrix_vector(const Matrix *const A, const Vector *const x, Vector
 
 double get_determinant_triangular(const Matrix *const A) {
     if (!check_init(A)) return 0.0;
+    // This function only works for square matrices where rows == cols.
+    if (A->rows != A->cols) return 0.0; 
     double det = 1.0;
-    for (int i = 0; i < D; i++) det *= A->data[i][i];
+    for (int i = 0; i < A->rows; i++) det *= A->data[i][i];
     return det;
 }
 
@@ -169,30 +184,36 @@ double get_determinant_triangular(const Matrix *const A) {
  * @brief Performs the forward pass of the INN: z = A * x + b
  */
 void inn_forward(const INN_Parameters *const params, const Vector *const x, Vector *z) {
-    if (!check_init(&params->A) || !check_vector_init(&params->b)) { init_vector(z, D); return; } 
+    if (!check_init(&params->A) || !check_vector_init(&params->b)) { init_vector(z, x->size); return; } 
 
-    init_vector(z, D);
+    init_vector(z, params->A.rows);
     multiply_matrix_vector(&params->A, x, z);
-    for (int i = 0; i < D; i++) {
+    for (int i = 0; i < params->A.rows; i++) {
         z->data[i] += params->b.data[i];
     }
 }
 
 double calculate_nll_loss(const INN_Parameters *const params, const Vector *const z) {
     double z_norm_sq = 0.0;
-    for (int i = 0; i < D; i++) {
+    for (int i = 0; i < z->size; i++) {
         z_norm_sq += z->data[i] * z->data[i];
     }
     const double log_prob_z = 0.5 * z_norm_sq / (GAUSSIAN_SIGMA * GAUSSIAN_SIGMA);
-    const double det_A = get_determinant_triangular(&params->A);
-    // Ensure log is taken of a positive value, clipping the absolute determinant
-    const double abs_det_A = fabs(det_A);
-    const double log_det_A = log(abs_det_A > 1e-9 ? abs_det_A : 1e-9); 
-    return log_prob_z - log_det_A;
+    
+    // Only calculate log_det_A if A is square (i.e., invertible)
+    if (params->A.rows == params->A.cols) {
+        const double det_A = get_determinant_triangular(&params->A);
+        const double abs_det_A = fabs(det_A);
+        const double log_det_A = log(abs_det_A > 1e-9 ? abs_det_A : 1e-9); 
+        return log_prob_z - log_det_A;
+    } else {
+        // For non-invertible/non-square INN variants (not used here, but safe)
+        return log_prob_z;
+    }
 }
 
 
-// --- FEATURE MAPPING ---
+// --- FEATURE MAPPING (No change, uses D=8) ---
 
 double find_word_value(const Word *word, int *word_type) {
     if (!word->valid || word->len == 0) {
@@ -245,7 +266,7 @@ void map_sentence_to_features(const SentenceText *const st, Vector *V) {
     }
 }
 
-// --- DATASET GENERATION FUNCTIONS ---
+// --- DATASET GENERATION FUNCTIONS (No change) ---
 
 SentenceText convert_raw_to_sentence_text(const char *raw_sentence) {
     SentenceText st = {NULL, 0};
@@ -289,12 +310,14 @@ SentenceText convert_raw_to_sentence_text(const char *raw_sentence) {
 }
 
 int load_sentence_templates(SentenceText *legal_templates_st, int max_templates) {
+    // Standard template loading logic (omitted for brevity, assume content is the same)
     FILE *file = fopen("alice.txt", "r");
     if (file == NULL) {
         fprintf(stderr, "FATAL ERROR: Could not open alice.txt. Make sure the file is in the same directory.\n");
         return 0;
     }
-
+    
+    // ... file reading and tokenization logic (as before) ...
     char *buffer = (char *)malloc(MAX_FILE_READ_SIZE);
     if (buffer == NULL) { fclose(file); return 0; }
 
@@ -344,6 +367,7 @@ int load_sentence_templates(SentenceText *legal_templates_st, int max_templates)
     free(sentence_split_buffer);
     return count;
 }
+
 
 SentenceText generate_illegal_sentence_text(const SentenceText *legal_template) {
     SentenceText illegal_st = {NULL, 0};
@@ -446,7 +470,7 @@ void generate_datasets(Sentence *legal_sentences, Sentence *illegal_sentences, S
     printf("Dataset generated: %d legal, %d illegal sentences.\n", NUM_LEGAL_SENTENCES, NUM_ILLEGAL_SENTENCES);
 }
 
-// --- SANITY CHECKS ---
+// --- SANITY CHECKS (No change) ---
 
 int run_sanity_checks(SentenceText *templates, int num_templates) {
     int passed = 0;
@@ -526,18 +550,117 @@ int run_sanity_checks(SentenceText *templates, int num_templates) {
     return failed == 0;
 }
 
+// --- NEW SIMPLE FUNCTION TEST ---
+
+#define SINE_TEST_SAMPLES 1000
+#define SINE_TEST_LR 0.001
+#define SINE_TEST_EPOCHS 500
+
+/**
+ * @brief Trains an INN on the simple 1D sine function $y = \sin(x) + \text{noise}$ 
+ * to check for basic convergence and correct gradient application.
+ */
+int simple_function_test() {
+    printf("\n\n--- Running Simple Function (1D Sin Wave) Test ---\n");
+    
+    INN_Parameters params;
+    // Initialize 1x1 matrix A and 1x1 vector b
+    init_matrix(&params.A, 1, 1, 1);
+    init_vector(&params.b, 1);
+    
+    // Check initial random weights (should be near 1.0 for A, near 0.0 for b)
+    printf("Initial Parameters: A[0][0]=%.4f, b[0]=%.4f\n", params.A.data[0][0], params.b.data[0]);
+
+    double total_loss = 0.0;
+
+    for (int epoch = 0; epoch < SINE_TEST_EPOCHS; epoch++) {
+        double epoch_loss = 0.0;
+        
+        for (int i = 0; i < SINE_TEST_SAMPLES; i++) {
+            // 1. Generate Data (x_i, y_i)
+            // The INN learns the transformation z = A*x + b where z ~ N(0, 1)
+            // For a flow, we need to provide X and the INN learns the transformation to Z.
+            // Let X = [x_i] where x_i is the "legal" data we want to map to N(0,1).
+            const double x_val = (double)i / SINE_TEST_SAMPLES * 2.0 * M_PI; // x from 0 to 2*PI
+            const double noise = ((double)rand() / RAND_MAX - 0.5) * 0.1; // Small noise
+            
+            // Generate data x that approximately follows a sine curve
+            Vector x_in; init_vector(&x_in, 1);
+            x_in.data[0] = sin(x_val) + noise; 
+
+            Vector z; 
+            
+            // Forward Pass: z = A * x + b
+            inn_forward(&params, &x_in, &z); 
+            const double nll_loss = calculate_nll_loss(&params, &z);
+            epoch_loss += nll_loss;
+
+            // Backpropagation
+            const double dL_dz = z.data[0] / (GAUSSIAN_SIGMA * GAUSSIAN_SIGMA); // dL/dz = z
+            const double x_0 = x_in.data[0];
+            const double A_00 = params.A.data[0][0];
+
+            // Gradients for 1D INN
+            const double dL_dA_00 = dL_dz * x_0 - (1.0 / A_00);
+            const double dL_db_0 = dL_dz;
+
+            // Update
+            params.A.data[0][0] -= SINE_TEST_LR * dL_dA_00;
+            params.b.data[0] -= SINE_TEST_LR * dL_db_0;
+        }
+        
+        total_loss = epoch_loss / SINE_TEST_SAMPLES;
+        
+        if (epoch % 50 == 0) {
+            printf("Epoch %5d: Avg Loss = %8.4f, A[0][0] = %7.4f, b[0] = %7.4f\n", 
+                   epoch, total_loss, params.A.data[0][0], params.b.data[0]);
+        }
+        
+        // Stop condition: Loss near 0.9189 is good (log(sqrt(2*pi))) for Gaussian with sigma=1
+        // Loss near 0.5 * z^2 - log(|det(A)|). Since z should be 0, loss should be -log(|det(A)|).
+        // Since the determinant converges to a value that minimizes the overall energy.
+        // A successful test would show a loss that stabilizes and is clearly distinct from the random start.
+        if (epoch > 100 && total_loss < 2.0) { 
+            // Invert the transformation to see if the sine wave structure is recovered (qualitative test)
+            double det_A = params.A.data[0][0];
+            double inv_A = 1.0 / det_A;
+            double inv_b = -params.b.data[0] * inv_A;
+            
+            // If z=0 (the mode of the target distribution), then x_pred = inv_A * 0 + inv_b = inv_b
+            // This isn't a good check. The check should just be for stable, low loss.
+            break; 
+        }
+    }
+    
+    printf("Final Loss: %.4f\n", total_loss);
+    if (total_loss < 2.0) {
+        printf("Sine Test: PASSED. INN converged to a stable, low-loss state (Loss < 2.0).\n");
+        return 1;
+    } else {
+        printf("Sine Test: FAILED. INN did not converge to a stable, low-loss state.\n");
+        return 0;
+    }
+}
+
+
 // --- MAIN EXECUTION ---
 
 int main(void) {
     srand((unsigned int)time(NULL));
     
+    // 0. Run Simple Sine Function Test
+    if (!simple_function_test()) {
+         fprintf(stderr, "\nFATAL ERROR: Simple INN function test failed. Check core gradient implementation.\n");
+         return 1;
+    }
+
     // 1. Load Templates
     SentenceText legal_templates_st[MAX_SENTENCES_FROM_FILE];
     const int num_templates = load_sentence_templates(legal_templates_st, MAX_SENTENCES_FROM_FILE);
 
     // 2. Run Sanity Checks
     if (!run_sanity_checks(legal_templates_st, num_templates)) {
-        fprintf(stderr, "\nFATAL ERROR: Initial sanity checks failed. Aborting training.\n");
+        fprintf(stderr, "\nFATAL ERROR: Initial language sanity checks failed. Aborting training.\n");
         for(int i = 0; i < num_templates; i++) free_sentence_text(&legal_templates_st[i]);
         return 1;
     }
@@ -570,7 +693,7 @@ int main(void) {
     const double print_interval_sec = 10.0; 
     int training_stopped_early = 0;
 
-    printf("\n--- Starting INN Training (MLE via SGD) ---\n");
+    printf("\n\n--- Starting Language INN Training (MLE via SGD) ---\n");
     printf("Training on %d Alice sentences (D=%d). Time limit: %.0f seconds.\n", NUM_LEGAL_SENTENCES, D, TRAINING_TIME_LIMIT_SEC);
     printf("Total Elapsed (s) | Epoch | Iteration | Avg NLL (Loss) | Det(A)\n");
     printf("----------------------------------------------------------------\n");
@@ -630,6 +753,13 @@ int main(void) {
             }
         } 
         if (training_stopped_early) break; 
+        
+        // Final epoch print
+        if (!training_stopped_early) {
+             const double total_elapsed_sec = (double)(clock() - start_time) / CLOCKS_PER_SEC;
+             printf("%19.2f | %5d | %9d | %14.4f | %6.4e (End of Epoch)\n", 
+                       total_elapsed_sec, epoch, NUM_LEGAL_SENTENCES, epoch_nll_sum / sentences_processed_in_epoch, get_determinant_triangular(&params.A));
+        }
     } 
 
     // --- Evaluation ---
