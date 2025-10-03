@@ -116,7 +116,7 @@ char *safe_strdup(const char *s) {
     return (char *)memcpy(new_s, s, len);
 }
 
-// --- MATRIX/VECTOR UTILITIES (Unchanged) ---
+// --- MATRIX/VECTOR UTILITIES ---
 
 void init_matrix(Matrix *M, int rows, int cols, int triangular) {
     if (rows != D || cols != D) { fprintf(stderr, "Error: Matrix dimensions must be %dx%d.\n", D, D); return; }
@@ -139,6 +139,23 @@ void init_vector(Vector *V, int size) {
 }
 
 int check_init(const Matrix *const M) { return M->initialized; }
+int check_vector_init(const Vector *const V) { return V->initialized; } // Added check_vector_init
+
+/**
+ * @brief Multiplies Matrix A by Vector x, storing the result in y.
+ */
+void multiply_matrix_vector(const Matrix *const A, const Vector *const x, Vector *y) {
+    if (!check_init(A) || !check_vector_init(x) || A->cols != x->size) { init_vector(y, D); return; }
+    init_vector(y, D);
+    for (int i = 0; i < A->rows; i++) {
+        double sum = 0.0;
+        for (int j = 0; j < A->cols; j++) {
+            sum += A->data[i][j] * x->data[j];
+        }
+        y->data[i] = sum;
+    }
+}
+
 double get_determinant_triangular(const Matrix *const A) {
     if (!check_init(A)) return 0.0;
     double det = 1.0;
@@ -146,9 +163,22 @@ double get_determinant_triangular(const Matrix *const A) {
     return det;
 }
 
-// --- INN FLOW FUNCTIONS (Unchanged) ---
+// --- INN FLOW FUNCTIONS (Restored definition) ---
 
-void inn_forward(const INN_Parameters *const params, const Vector *const x, Vector *z); // Forward declaration
+/**
+ * @brief Performs the forward pass of the INN: z = A * x + b
+ */
+void inn_forward(const INN_Parameters *const params, const Vector *const x, Vector *z) {
+    // We already check initialization inside multiply_matrix_vector, 
+    // but a basic check here for params.b is safe.
+    if (!check_init(&params->A) || !check_vector_init(&params->b)) { init_vector(z, D); return; } 
+
+    init_vector(z, D);
+    multiply_matrix_vector(&params->A, x, z);
+    for (int i = 0; i < D; i++) {
+        z->data[i] += params->b.data[i];
+    }
+}
 
 double calculate_nll_loss(const INN_Parameters *const params, const Vector *const z) {
     double z_norm_sq = 0.0;
@@ -162,7 +192,7 @@ double calculate_nll_loss(const INN_Parameters *const params, const Vector *cons
 }
 
 
-// --- FEATURE MAPPING (Simplified Logic) ---
+// --- FEATURE MAPPING ---
 
 double find_word_value(const Word *word, int *word_type) {
     if (!word->valid || word->len == 0) {
@@ -196,10 +226,6 @@ double find_word_value(const Word *word, int *word_type) {
     return 0.0;
 }
 
-/**
- * @brief Maps a SentenceText to its feature vector (D=8). 
- * Fills features sequentially with the first 8 recognized words.
- */
 void map_sentence_to_features(const SentenceText *const st, Vector *V) {
     init_vector(V, D);
 
@@ -219,7 +245,7 @@ void map_sentence_to_features(const SentenceText *const st, Vector *V) {
     }
 }
 
-// --- DATASET GENERATION FUNCTIONS (Unchanged logic) ---
+// --- DATASET GENERATION FUNCTIONS ---
 
 SentenceText convert_raw_to_sentence_text(const char *raw_sentence) {
     SentenceText st = {NULL, 0};
@@ -318,7 +344,6 @@ SentenceText generate_illegal_sentence_text(const SentenceText *legal_template) 
     for (size_t i = 0; i < legal_template->count; i++) {
         const Word *original_word = &legal_template->words[i];
         int word_type = -1;
-        // Check if the original word is a feature-generating type (N, V, or Adj)
         find_word_value(original_word, &word_type); 
 
         int do_replace = 0;
@@ -381,7 +406,7 @@ void generate_datasets(Sentence *legal_sentences, Sentence *illegal_sentences, S
     printf("Dataset generated: %d legal, %d illegal sentences.\n", NUM_LEGAL_SENTENCES, NUM_ILLEGAL_SENTENCES);
 }
 
-// --- SANITY CHECKS (Modified Threshold) ---
+// --- SANITY CHECKS ---
 
 int run_sanity_checks(SentenceText *templates, int num_templates) {
     int passed = 0;
@@ -398,7 +423,7 @@ int run_sanity_checks(SentenceText *templates, int num_templates) {
         passed++;
     }
 
-    // --- FIX: Lowered robustness threshold to 1 feature ---
+    // --- Check 2 & 3 Setup: Look for at least 1 feature ---
     int robust_template_idx = -1;
     const int REQUIRED_FEATURES = 1; 
     for (int i = 0; i < num_templates; i++) {
@@ -525,10 +550,8 @@ int main(void) {
             const Vector x = legal_sentences[idx].features;
 
             Vector z; 
-            // Forward declaration fix for compiler warning
-            void multiply_matrix_vector(const Matrix *const A, const Vector *const x, Vector *y);
             
-            inn_forward(&params, &x, &z);
+            inn_forward(&params, &x, &z); // Linker error resolved here
             const double nll_loss = calculate_nll_loss(&params, &z);
             epoch_nll_sum += nll_loss;
 
@@ -570,14 +593,14 @@ int main(void) {
 
     for (int i = 0; i < NUM_LEGAL_SENTENCES; i++) {
         Vector z;
-        inn_forward(&params, &legal_sentences[i].features, &z);
+        inn_forward(&params, &legal_sentences[i].features, &z); // Linker error resolved here
         legal_nll_sum += calculate_nll_loss(&params, &z);
         legal_count++;
     }
 
     for (int i = 0; i < NUM_ILLEGAL_SENTENCES; i++) {
         Vector z;
-        inn_forward(&params, &illegal_sentences[i].features, &z);
+        inn_forward(&params, &illegal_sentences[i].features, &z); // Linker error resolved here
         illegal_nll_sum += calculate_nll_loss(&params, &z);
         illegal_count++;
     }
