@@ -11,7 +11,7 @@
 #define NUM_ILLEGAL_SENTENCES 2048 // Test Size
 #define LEARNING_RATE 0.00005  
 #define MAX_EPOCHS 200
-#define TRAINING_TIME_LIMIT_SEC 240.0 // 4 minutes
+#define TRAINING_TIME_LIMIT_SEC 120.0 // 2 minutes (Guaranteed target time)
 #define GAUSSIAN_SIGMA 1.0    
 #define MAX_WORD_LEN 64
 #define MAX_FILE_READ_SIZE 100000 
@@ -139,7 +139,7 @@ void init_vector(Vector *V, int size) {
 }
 
 int check_init(const Matrix *const M) { return M->initialized; }
-int check_vector_init(const Vector *const V) { return V->initialized; } // Added check_vector_init
+int check_vector_init(const Vector *const V) { return V->initialized; } 
 
 /**
  * @brief Multiplies Matrix A by Vector x, storing the result in y.
@@ -163,14 +163,12 @@ double get_determinant_triangular(const Matrix *const A) {
     return det;
 }
 
-// --- INN FLOW FUNCTIONS (Restored definition) ---
+// --- INN FLOW FUNCTIONS ---
 
 /**
  * @brief Performs the forward pass of the INN: z = A * x + b
  */
 void inn_forward(const INN_Parameters *const params, const Vector *const x, Vector *z) {
-    // We already check initialization inside multiply_matrix_vector, 
-    // but a basic check here for params.b is safe.
     if (!check_init(&params->A) || !check_vector_init(&params->b)) { init_vector(z, D); return; } 
 
     init_vector(z, D);
@@ -536,24 +534,29 @@ int main(void) {
 
     for (int epoch = 0; epoch < MAX_EPOCHS; epoch++) {
         double epoch_nll_sum = 0.0;
+        int sentences_processed_in_epoch = 0; // Track sentences processed in the current epoch
 
+        // The inner loop selects random legal sentences (stochastic gradient descent)
         for (int i = 0; i < NUM_LEGAL_SENTENCES; i++) {
             const double total_elapsed_sec = (double)(clock() - start_time) / CLOCKS_PER_SEC;
             
+            // Check time limit at the start of each step
             if (total_elapsed_sec >= TRAINING_TIME_LIMIT_SEC) {
                 printf("--- Stopping training after %.2f seconds (Time Limit Reached) ---\n", total_elapsed_sec);
                 training_stopped_early = 1;
                 break;
             }
 
-            const int idx = rand() % NUM_LEGAL_SENTENCES;
+            const int idx = rand() % NUM_LEGAL_SENTENCES; // Randomly choose a legal sentence
             const Vector x = legal_sentences[idx].features;
 
             Vector z; 
             
-            inn_forward(&params, &x, &z); // Linker error resolved here
+            // Forward Pass
+            inn_forward(&params, &x, &z); 
             const double nll_loss = calculate_nll_loss(&params, &z);
             epoch_nll_sum += nll_loss;
+            sentences_processed_in_epoch++;
 
             // Backpropagation (Gradients)
             Vector dL_dz; init_vector(&dL_dz, D);
@@ -575,9 +578,10 @@ int main(void) {
                 }
             }
 
+            // Print progress every 10 seconds
             if (total_elapsed_sec - last_print_time_sec >= print_interval_sec) {
                  printf("%19.2f | %5d | %9d | %14.4f | %6.4f\n",
-                       total_elapsed_sec, epoch, i + 1, epoch_nll_sum / (i + 1), get_determinant_triangular(&params.A));
+                       total_elapsed_sec, epoch, i + 1, epoch_nll_sum / sentences_processed_in_epoch, get_determinant_triangular(&params.A));
                 last_print_time_sec = total_elapsed_sec;
             }
         } 
@@ -593,14 +597,14 @@ int main(void) {
 
     for (int i = 0; i < NUM_LEGAL_SENTENCES; i++) {
         Vector z;
-        inn_forward(&params, &legal_sentences[i].features, &z); // Linker error resolved here
+        inn_forward(&params, &legal_sentences[i].features, &z); 
         legal_nll_sum += calculate_nll_loss(&params, &z);
         legal_count++;
     }
 
     for (int i = 0; i < NUM_ILLEGAL_SENTENCES; i++) {
         Vector z;
-        inn_forward(&params, &illegal_sentences[i].features, &z); // Linker error resolved here
+        inn_forward(&params, &illegal_sentences[i].features, &z); 
         illegal_nll_sum += calculate_nll_loss(&params, &z);
         illegal_count++;
     }
