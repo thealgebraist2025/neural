@@ -11,14 +11,33 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v2
 
+    - name: Install LLDB Debugger
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y lldb
+        
     - name: Build with gcc
+      # Using -g ensures debugging symbols are included for lldb
       run: gcc -O0 -Wall -g -std=c99 spell.c -lm -o spell
 
-    - name: Run the spell program
-      run: echo spell | lldb /bin/true
-
+    - name: Run the spell program under LLDB
+      # NOTE: The command 'echo spell | lldb /bin/true' is syntactically
+      # incorrect for running a program and providing its name as input.
+      # To run the *built* program under lldb, you typically need to
+      # execute a script or use lldb's batch mode.
+      # However, assuming the original command was an attempt to debug, 
+      # a placeholder to test lldb execution is used below. 
+      # For actual debugging, the run command would be:
+      # lldb ./spell -b -o 'run' -o 'bt' -o 'quit'
+      # OR, if you are simply running the program:
+      # ./spell
+      run: |
+        #./spell
+        # If the goal was to debug the segmentation fault, this is what you'd use:
+        lldb ./spell --batch --command "run" --command "bt"
+        
     - name: Upload Artifact
-      uses: actions/upload-artifact@v4 # Use the latest version
+      uses: actions/upload-artifact@v4 
       with:
         name: spellnetwork-diagram
         path: network.svg
