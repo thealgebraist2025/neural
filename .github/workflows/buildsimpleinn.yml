@@ -1,0 +1,24 @@
+name: INN sentences 
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Build with gcc
+      run: gcc -O3 -Wall -g -std=c99 simpleinn.c -lm -o simpleinn
+
+    - name: Run the inn program
+      run: ./simpleinn
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4 # Use the latest version
+      with:
+        name: innnetwork-diagram
+        path: innsort.svg
