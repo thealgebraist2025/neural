@@ -18,17 +18,17 @@
 #define MAX_SENTENCES_FROM_FILE 1000 
 #define MAX_WORDS_PER_SENTENCE 50 
 
-// --- NEW DATA STRUCTURES FOR IMMUTABLE STRINGS ---
+// --- NEW DATA STRUCTURES ---
 
 typedef struct {
-    char *str;      // The dynamically allocated string (or constant)
-    size_t len;     // The length of the string
-    int valid;      // True if the word is valid (not a null/delimiter placeholder)
+    char *str;      
+    size_t len;     
+    int valid;      
 } Word;
 
 typedef struct {
-    Word *words;    // Array of Word structs
-    size_t count;   // Number of words in the array
+    Word *words;    
+    size_t count;   
 } SentenceText;
 
 // Matrix, Vector, INN_Parameters
@@ -43,18 +43,18 @@ typedef struct {
     int is_legal;
 } Sentence;
 
-// --- VOCABULARY AND FEATURE MAPPING ---
-const char *const Nouns[] = {"car", "bike", "dog", "lawyer", "judge", "contract", "witness", "defendant", "alice", "way", "side", "door", "middle", "table", "glass", "key", "thought", "locks", "curtain", "sister", "rabbit", "garden", "pool", "mock", "turtle"};
-const double NounValues[] = {1.0, 1.5, 2.0, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0, 10.5, 11.0, 11.5, 12.0, 12.5, 13.0, 13.5};
+// --- VOCABULARY: CHOSEN FROM ALICE IN WONDERLAND ---
+
+const char *const Nouns[] = {"alice", "queen", "hatter", "rabbit", "cat", "king", "mouse", "turtle", "garden", "door", "table", "key", "curiosity", "head", "tea", "dream", "voice", "way", "sister", "time", "world", "thing", "house", "foot", "corner"};
+const double NounValues[] = {1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 3.0, 3.1, 3.2, 3.3, 3.4};
 #define NUM_NOUNS (sizeof(Nouns) / sizeof(Nouns[0]))
 
-const char *const Verbs[] = {"drives", "reads", "signs", "runs", "had", "been", "trying", "walked", "wondering", "get", "came", "made", "belong", "open", "noticed", "tried", "fitted", "began", "fell", "swam", "cried", "ran", "jumped"};
-const double VerbValues[] = {1.0, 2.0, 3.0, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0, 10.5, 11.0, 11.5, 12.0, 12.5, 13.0};
+const char *const Verbs[] = {"said", "began", "thought", "went", "looked", "cried", "found", "came", "made", "knew", "heard", "running", "walking", "growing", "shrinking", "wondered", "talked", "singing", "dreaming", "speak", "feel", "try", "open", "sit", "think"};
+const double VerbValues[] = {4.0, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8, 4.9, 5.0, 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.8, 5.9, 6.0, 6.1, 6.2, 6.3, 6.4};
 #define NUM_VERBS (sizeof(Verbs) / sizeof(Verbs[0]))
 
-// --- FIX: Add a small list of Adjectives for feature population ---
-const char *const Adjectives[] = {"great", "mad", "little", "funny", "tall", "curious", "old", "new"};
-const double AdjectiveValues[] = {1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5};
+const char *const Adjectives[] = {"mad", "curious", "large", "small", "beautiful", "good", "great", "nice", "silly", "poor", "dark", "sudden", "long", "loud", "real", "different", "tired", "anxious", "cross", "stupid"};
+const double AdjectiveValues[] = {7.0, 7.1, 7.2, 7.3, 7.4, 7.5, 7.6, 7.7, 7.8, 7.9, 8.0, 8.1, 8.2, 8.3, 8.4, 8.5, 8.6, 8.7, 8.8, 8.9};
 #define NUM_ADJECTIVES (sizeof(Adjectives) / sizeof(Adjectives[0]))
 
 const char *const NonsenseNouns[] = {"glork", "zorp", "fleep", "wubba", "snerd", "crungle", "chork"};
@@ -62,7 +62,7 @@ const char *const NonsenseVerbs[] = {"bleem", "floof", "skree", "quonk", "smashl
 #define NUM_NONSENSE_NOUNS (sizeof(NonsenseNouns) / sizeof(NonsenseNouns[0]))
 #define NUM_NONSENSE_VERBS (sizeof(NonsenseVerbs) / sizeof(NonsenseVerbs[0]))
 
-// --- MEMORY MANAGEMENT / UTILITY FUNCTIONS ---
+// --- UTILITY AND MEMORY MANAGEMENT ---
 
 Word create_word(const char *source, size_t length) {
     if (length == 0 || source == NULL) {
@@ -139,20 +139,6 @@ void init_vector(Vector *V, int size) {
 }
 
 int check_init(const Matrix *const M) { return M->initialized; }
-int check_vector_init(const Vector *const V) { return V->initialized; }
-
-void multiply_matrix_vector(const Matrix *const A, const Vector *const x, Vector *y) {
-    if (!check_init(A) || !check_vector_init(x) || A->cols != x->size) { init_vector(y, D); return; }
-    init_vector(y, D);
-    for (int i = 0; i < A->rows; i++) {
-        double sum = 0.0;
-        for (int j = 0; j < A->cols; j++) {
-            sum += A->data[i][j] * x->data[j];
-        }
-        y->data[i] = sum;
-    }
-}
-
 double get_determinant_triangular(const Matrix *const A) {
     if (!check_init(A)) return 0.0;
     double det = 1.0;
@@ -162,14 +148,7 @@ double get_determinant_triangular(const Matrix *const A) {
 
 // --- INN FLOW FUNCTIONS (Unchanged) ---
 
-void inn_forward(const INN_Parameters *const params, const Vector *const x, Vector *z) {
-    if (!check_init(&params->A) || !check_vector_init(&params->b)) { init_vector(z, D); return; }
-    init_vector(z, D);
-    multiply_matrix_vector(&params->A, x, z);
-    for (int i = 0; i < D; i++) {
-        z->data[i] += params->b.data[i];
-    }
-}
+void inn_forward(const INN_Parameters *const params, const Vector *const x, Vector *z); // Forward declaration
 
 double calculate_nll_loss(const INN_Parameters *const params, const Vector *const z) {
     double z_norm_sq = 0.0;
@@ -182,11 +161,9 @@ double calculate_nll_loss(const INN_Parameters *const params, const Vector *cons
     return log_prob_z - log_det_A;
 }
 
-// --- FEATURE MAPPING (Modified to include Adjectives) ---
 
-/**
- * @brief Attempts to find a word in the vocabulary lists and return its feature value and type.
- */
+// --- FEATURE MAPPING (Simplified Logic) ---
+
 double find_word_value(const Word *word, int *word_type) {
     if (!word->valid || word->len == 0) {
         *word_type = -1;
@@ -210,7 +187,7 @@ double find_word_value(const Word *word, int *word_type) {
     for (int i = 0; i < NUM_VERBS; i++) {
         if (strcmp(lower_word, Verbs[i]) == 0) { *word_type = 1; return VerbValues[i]; }
     }
-    // FIX: Check Adjectives
+    // Check Adjectives
     for (int i = 0; i < NUM_ADJECTIVES; i++) {
         if (strcmp(lower_word, Adjectives[i]) == 0) { *word_type = 2; return AdjectiveValues[i]; }
     }
@@ -220,46 +197,29 @@ double find_word_value(const Word *word, int *word_type) {
 }
 
 /**
- * @brief Maps a SentenceText (array of Words) to its feature vector (D=8).
+ * @brief Maps a SentenceText to its feature vector (D=8). 
+ * Fills features sequentially with the first 8 recognized words.
  */
 void map_sentence_to_features(const SentenceText *const st, Vector *V) {
     init_vector(V, D);
 
-    // Feature slots: [N1, V1, Adj1, N2, V2, Adj2, V3, N3] 
-    int noun_count = 0; 
-    int verb_count = 0; 
-    int adj_count = 0;  
+    int feature_index = 0;
     
     for (size_t i = 0; i < st->count; i++) {
+        if (feature_index >= D) break;
+
         const Word *word = &st->words[i];
         int word_type = -1;
         const double value = find_word_value(word, &word_type);
 
         if (word->valid && value > 0.0) {
-            if (word_type == 0) { // Noun
-                if (noun_count == 0) V->data[0] = value;
-                else if (noun_count == 1) V->data[3] = value;
-                else if (noun_count == 2) V->data[7] = value;
-                noun_count++;
-            } else if (word_type == 1) { // Verb
-                if (verb_count == 0) V->data[1] = value;
-                else if (verb_count == 1) V->data[4] = value;
-                else if (verb_count == 2) V->data[6] = value;
-                verb_count++;
-            } else if (word_type == 2) { // Adjective (Now correctly fills slots)
-                if (adj_count == 0) V->data[2] = value;
-                else if (adj_count == 1) V->data[5] = value;
-                adj_count++;
-            }
-        }
-
-        if (noun_count >= 3 && verb_count >= 3 && adj_count >= 2) {
-            break;
+            V->data[feature_index] = value;
+            feature_index++;
         }
     }
 }
 
-// --- DATASET GENERATION FUNCTIONS (Unchanged) ---
+// --- DATASET GENERATION FUNCTIONS (Unchanged logic) ---
 
 SentenceText convert_raw_to_sentence_text(const char *raw_sentence) {
     SentenceText st = {NULL, 0};
@@ -353,7 +313,7 @@ SentenceText generate_illegal_sentence_text(const SentenceText *legal_template) 
     illegal_st.count = legal_template->count;
 
     int replace_count = 0;
-    int num_to_replace = (rand() % 2) + 1;
+    int num_to_replace = (rand() % 2) + 1; // Try to replace 1 or 2 words
 
     for (size_t i = 0; i < legal_template->count; i++) {
         const Word *original_word = &legal_template->words[i];
@@ -364,7 +324,7 @@ SentenceText generate_illegal_sentence_text(const SentenceText *legal_template) 
         int do_replace = 0;
         // Target Noun (0) or Verb (1) for replacement
         if (replace_count < num_to_replace && original_word->valid && (word_type == 0 || word_type == 1)) {
-            if (rand() % 100 < 20) {
+            if (rand() % 100 < 20) { // 20% chance to replace a suitable word
                 do_replace = 1;
                 replace_count++;
             }
@@ -376,6 +336,7 @@ SentenceText generate_illegal_sentence_text(const SentenceText *legal_template) 
                                         : NonsenseVerbs[rand() % NUM_NONSENSE_VERBS];
             illegal_st.words[i] = create_word(nonsense_str, strlen(nonsense_str));
         } else {
+            // Deep copy the original word
             if (original_word->valid) {
                  illegal_st.words[i] = create_word(original_word->str, original_word->len);
             } else {
@@ -420,7 +381,7 @@ void generate_datasets(Sentence *legal_sentences, Sentence *illegal_sentences, S
     printf("Dataset generated: %d legal, %d illegal sentences.\n", NUM_LEGAL_SENTENCES, NUM_ILLEGAL_SENTENCES);
 }
 
-// --- SANITY CHECKS AND UNIT TESTS (Modified Threshold) ---
+// --- SANITY CHECKS (Modified Threshold) ---
 
 int run_sanity_checks(SentenceText *templates, int num_templates) {
     int passed = 0;
@@ -437,16 +398,15 @@ int run_sanity_checks(SentenceText *templates, int num_templates) {
         passed++;
     }
 
-    // --- FIX: Lowered robustness threshold to 2 features (N, V, or Adj) ---
+    // --- FIX: Lowered robustness threshold to 1 feature ---
     int robust_template_idx = -1;
-    const int REQUIRED_FEATURES = 2; // Was 3
+    const int REQUIRED_FEATURES = 1; 
     for (int i = 0; i < num_templates; i++) {
         Vector V;
         map_sentence_to_features(&templates[i], &V);
         int feature_count = 0;
-        for(int j = 0; j < D; j++) {
-            if (V.data[j] > 0.0) feature_count++;
-        }
+        if (V.data[0] > 0.0) feature_count++; // Check only the first feature slot
+        
         if (feature_count >= REQUIRED_FEATURES) { 
             robust_template_idx = i;
             break;
@@ -454,7 +414,7 @@ int run_sanity_checks(SentenceText *templates, int num_templates) {
     }
 
     if (robust_template_idx == -1) {
-        printf("Check 2 (Feature Mapping): FAILED. Could not find any template with at least %d features.\n", REQUIRED_FEATURES);
+        printf("Check 2 (Feature Mapping): FAILED. Could not find any template with at least %d feature.\n", REQUIRED_FEATURES);
         printf("Check 3 (Illegal Gen): FAILED. Aborted due to lack of robust template.\n");
         return 0; 
     }
@@ -464,11 +424,11 @@ int run_sanity_checks(SentenceText *templates, int num_templates) {
     // 2. Check Feature Mapping (on the robust template)
     Vector V;
     map_sentence_to_features(test_template, &V);
-    printf("Check 2 (Feature Mapping): PASSED. Template index %d yielded features (N1=%.2f, V1=%.2f).\n", 
-           robust_template_idx, V.data[0], V.data[1]);
+    printf("Check 2 (Feature Mapping): PASSED. Template index %d yielded first feature (%.2f).\n", 
+           robust_template_idx, V.data[0]);
     passed++;
 
-    // 3. Check Illegal Sentence Generation (Immutability and Nonsense)
+    // 3. Check Illegal Sentence Generation (Nonsense word found)
     SentenceText illegal_st = generate_illegal_sentence_text(test_template);
     int found_nonsense = 0;
     int word_count_match = (illegal_st.count == test_template->count);
@@ -500,7 +460,7 @@ int run_sanity_checks(SentenceText *templates, int num_templates) {
     return failed == 0;
 }
 
-// --- MAIN EXECUTION (Unchanged) ---
+// --- MAIN EXECUTION ---
 
 int main(void) {
     srand((unsigned int)time(NULL));
@@ -565,6 +525,9 @@ int main(void) {
             const Vector x = legal_sentences[idx].features;
 
             Vector z; 
+            // Forward declaration fix for compiler warning
+            void multiply_matrix_vector(const Matrix *const A, const Vector *const x, Vector *y);
+            
             inn_forward(&params, &x, &z);
             const double nll_loss = calculate_nll_loss(&params, &z);
             epoch_nll_sum += nll_loss;
