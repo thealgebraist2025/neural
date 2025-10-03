@@ -32,9 +32,7 @@ jobs:
       # OR, if you are simply running the program:
       # ./spell
       run: |
-        #./spell
-        # If the goal was to debug the segmentation fault, this is what you'd use:
-        lldb ./spell --batch --command "run" --command "bt"
+        lldb --batch -o "run; bt; quit" ./spell
         
     - name: Upload Artifact
       uses: actions/upload-artifact@v4 
