@@ -13,8 +13,9 @@
 #define IMAGE_SIZE 128          // The primary dimension for the image (128x128)
 #define SMALL_GRID_SIZE 16      // Size for the downscaled grid (16x16)
 #define PIXEL_MAX 255
-#define THRESHOLD 128           // Grayscale value for tracing heuristics
-#define MAX_INSTRUCTIONS 50     // Increased instruction limit for more complex shapes
+#define TRACE_THRESHOLD 64      // Grayscale value for pixel segmentation (pixels > 64 are "dark")
+#define A_TEMPLATE_THRESHOLD 128 // Grayscale value for template comparison
+#define MAX_INSTRUCTIONS 50     // Instruction limit
 #define SA_RUNTIME_SECONDS 60   // Optimization runtime
 #define SA_LOG_INTERVAL_SECONDS 5
 #define JPEG_OUTPUT_FILENAME "generated.jpg"
@@ -92,12 +93,6 @@ const int A_TEMPLATE[SMALL_GRID_SIZE * SMALL_GRID_SIZE] = {
 };
 
 
-// Forward declarations
-static void draw_line(Image* const img, const Point p1, const Point p2, const Pixel intensity);
-static Image* render_drawing(const Drawing* const drawing);
-static float calculate_template_error(const Image* const rendered_img);
-static void downscale_image(const Image* const large_img, SmallImage* const small_img);
-
 // --- 2. JPEG Error Handling ---
 
 struct my_error_mgr {
@@ -113,6 +108,12 @@ my_error_exit (j_common_ptr cinfo)
   (*cinfo->err->output_message) (cinfo);
   longjmp(myerr->setjmp_buffer, 1);
 }
+
+// Forward declarations
+static void draw_line(Image* const img, const Point p1, const Point p2, const Pixel intensity);
+static Image* render_drawing(const Drawing* const drawing);
+static float calculate_template_error(const Image* const rendered_img);
+static void downscale_image(const Image* const large_img, SmallImage* const small_img);
 
 // --- 3. Utility Functions ---
 
@@ -175,10 +176,10 @@ static void downscale_image(const Image* const large_img, SmallImage* const smal
 }
 
 /**
- * @brief Loads a JPEG file, resizes it, and optionally inverts colors to ensure black lines on white background.
+ * @brief Loads a JPEG file, resizes it, and inverts colors to ensure black lines on white background.
  */
 static Image* load_and_resize_target(const char* filename) {
-    // ... (JPEG loading logic remains the same) ...
+    // ... (JPEG loading and color inversion logic remains the same) ...
     struct jpeg_decompress_struct cinfo;
     struct my_error_mgr jerr;
     FILE *infile;
@@ -261,7 +262,6 @@ static Image* load_and_resize_target(const char* filename) {
     }
     
     // --- COLOR INVERSION LOGIC ---
-    // Check if the average brightness of the resized image suggests a light background
     long total_brightness = 0;
     const int total_pixels_resized = IMAGE_SIZE * IMAGE_SIZE;
     for (int i = 0; i < total_pixels_resized; i++) {
@@ -269,15 +269,13 @@ static Image* load_and_resize_target(const char* filename) {
     }
     const long average_brightness = total_brightness / total_pixels_resized;
 
-    // If average brightness is high (closer to 255/white), we invert it to dark lines on white background
     if (average_brightness > PIXEL_MAX / 2) {
-        // Average brightness is high (light image, likely white background), INVERT!
+        // Average brightness is high (light image), INVERT for black-on-white target!
         for (int i = 0; i < total_pixels_resized; i++) {
             target_img->data[i] = PIXEL_MAX - target_img->data[i];
         }
         printf("[INFO] Image is light-on-dark. Colors inverted for black-on-white target.\n");
     } else {
-        // Average brightness is low (dark image), no inversion needed.
         printf("[INFO] Image is dark-on-light, no inversion.\n");
     }
     // --- END COLOR INVERSION LOGIC ---
@@ -296,6 +294,7 @@ static Image* load_and_resize_target(const char* filename) {
  * @brief Draws a line between two points using Bresenham's algorithm.
  */
 static void draw_line(Image* const img, const Point p1, const Point p2, const Pixel intensity) {
+    // ... (Bresenham's line drawing implementation remains the same) ...
     int x1 = p1.x, y1 = p1.y, x2 = p2.x, y2 = p2.y;
     int dx = abs(x2 - x1);
     int sx = x1 < x2 ? 1 : -1;
@@ -324,6 +323,7 @@ static void draw_line(Image* const img, const Point p1, const Point p2, const Pi
  * @return A newly rendered Image.
  */
 static Image* render_drawing(const Drawing* const drawing) {
+    // ... (Rendering logic remains the same) ...
     Image* img = create_image();
     Point current_pos = {0, 0};
     int i;
@@ -378,7 +378,7 @@ static float calculate_template_error(const Image* const rendered_img) {
 
     for (i = 0; i < total_pixels; i++) {
         // Map grayscale rendered pixel (0=White, 255=Black) to a binary value (0 or 1)
-        const int rendered_binary = small_img[i] > THRESHOLD ? 1 : 0;
+        const int rendered_binary = small_img[i] > A_TEMPLATE_THRESHOLD ? 1 : 0;
         
         // Template value is 1 (dark/black) or 0 (light/white)
         const int template_value = A_TEMPLATE[i];
@@ -393,7 +393,7 @@ static float calculate_template_error(const Image* const rendered_img) {
 
 /**
  * @brief Calculates the combined fitness score for the Simulated Annealing.
- * F = MSE_Image + (Weight * MSE_Template)
+ * $F = MSE_{Image} + (\text{Weight} \times MSE_{Template})$
  */
 static float calculate_combined_fitness(const Image* const rendered_img, const Image* const target_img) {
     const float mse_image = calculate_mse_image(rendered_img, target_img);
@@ -404,7 +404,171 @@ static float calculate_combined_fitness(const Image* const rendered_img, const I
 }
 
 
-// --- 5. Simulated Annealing Heuristics & Mutations ---
+// --- 5. Initial Drawing Heuristics (Component-based Vectorization) ---
+
+#define MAX_COMPONENTS 10
+#define MAX_PIXELS_PER_COMPONENT (SMALL_GRID_SIZE * SMALL_GRID_SIZE)
+
+// Structure to hold a single connected component (a cluster of dark pixels)
+typedef struct {
+    Point pixels[MAX_PIXELS_PER_COMPONENT]; // Store coordinates (0-15)
+    int count;
+} Component;
+
+
+/**
+ * @brief Depth-First Search (DFS) to find all connected pixels in a component.
+ * Uses 8-way adjacency.
+ * @param small_img The 16x16 downscaled image.
+ * @param visited A 16x16 array tracking visited pixels.
+ * @param x Current x-coordinate (0-15).
+ * @param y Current y-coordinate (0-15).
+ * @param current_component Pointer to the component being built.
+ */
+static void dfs_find_component(const SmallImage* const small_img, int visited[SMALL_GRID_SIZE][SMALL_GRID_SIZE], int x, int y, Component* const current_component) {
+    // Check bounds, check visited, check pixel darkness (value > TRACE_THRESHOLD)
+    if (x < 0 || x >= SMALL_GRID_SIZE || y < 0 || y >= SMALL_GRID_SIZE || 
+        visited[y][x] || (*small_img)[y * SMALL_GRID_SIZE + x] <= TRACE_THRESHOLD) {
+        return;
+    }
+
+    visited[y][x] = 1;
+    current_component->pixels[current_component->count++] = (Point){x, y};
+
+    // Recursively check 8 neighbors
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            if (dx != 0 || dy != 0) { // Exclude self
+                dfs_find_component(small_img, visited, x + dx, y + dy, current_component);
+            }
+        }
+    }
+}
+
+/**
+ * @brief Splits the 16x16 target image into disconnected dark pixel clusters.
+ * @return The number of components found.
+ */
+static int find_connected_components(const SmallImage* const small_img, Component components[MAX_COMPONENTS]) {
+    int visited[SMALL_GRID_SIZE][SMALL_GRID_SIZE] = {0};
+    int component_count = 0;
+
+    for (int y = 0; y < SMALL_GRID_SIZE; y++) {
+        for (int x = 0; x < SMALL_GRID_SIZE; x++) {
+            if (!visited[y][x] && (*small_img)[y * SMALL_GRID_SIZE + x] > TRACE_THRESHOLD) {
+                if (component_count >= MAX_COMPONENTS) {
+                    // Safety break
+                    fprintf(stderr, "[WARNING] Max components reached (%d).\n", MAX_COMPONENTS);
+                    return component_count;
+                }
+                
+                // Initialize the new component
+                components[component_count].count = 0;
+
+                // Start DFS to find all connected pixels
+                dfs_find_component(small_img, visited, x, y, &components[component_count]);
+                component_count++;
+            }
+        }
+    }
+    return component_count;
+}
+
+/**
+ * @brief Simplifies a cluster of pixels (a Component) into a single LINE instruction.
+ * This is done by finding the two points that are furthest apart in the component.
+ * @param component The cluster of pixels.
+ * @param line_p1 Output for the start point (128x128 coords).
+ * @param line_p2 Output for the end point (128x128 coords).
+ */
+static void simplify_component_to_lines(const Component* const component, Point* const line_p1, Point* const line_p2) {
+    if (component->count == 0) return;
+    if (component->count == 1) {
+        *line_p1 = component->pixels[0];
+        *line_p2 = component->pixels[0];
+        return;
+    }
+
+    long max_dist_sq = -1;
+    int best_p1_idx = 0;
+    int best_p2_idx = 0;
+
+    // Find the pair of points (pixels) that are farthest from each other
+    for (int i = 0; i < component->count; i++) {
+        for (int j = i + 1; j < component->count; j++) {
+            const Point pA = component->pixels[i];
+            const Point pB = component->pixels[j];
+
+            // Squared Euclidean distance
+            const long dx = pA.x - pB.x;
+            const long dy = pA.y - pB.y;
+            const long dist_sq = dx * dx + dy * dy;
+
+            if (dist_sq > max_dist_sq) {
+                max_dist_sq = dist_sq;
+                best_p1_idx = i;
+                best_p2_idx = j;
+            }
+        }
+    }
+    
+    // Convert 16x16 coordinates to 128x128 center points
+    const int SCALE_FACTOR = IMAGE_SIZE / SMALL_GRID_SIZE; // 8
+    const int offset = SCALE_FACTOR / 2; // 4
+
+    Point p1_16 = component->pixels[best_p1_idx];
+    Point p2_16 = component->pixels[best_p2_idx];
+
+    line_p1->x = p1_16.x * SCALE_FACTOR + offset;
+    line_p1->y = p1_16.y * SCALE_FACTOR + offset;
+
+    line_p2->x = p2_16.x * SCALE_FACTOR + offset;
+    line_p2->y = p2_16.y * SCALE_FACTOR + offset;
+}
+
+/**
+ * @brief Generates the initial Drawing program by segmenting the target image
+ * and approximating each segment with a single line.
+ */
+static Drawing generate_initial_drawing(const Image* const target_img) {
+    Drawing d;
+    memset(&d, 0, sizeof(Drawing));
+
+    SmallImage small_img;
+    downscale_image(target_img, &small_img);
+    
+    Component components[MAX_COMPONENTS];
+    const int component_count = find_connected_components(&small_img, components);
+
+    const Pixel trace_intensity = 220;
+    int instructions_added = 0;
+
+    for (int i = 0; i < component_count; i++) {
+        if (instructions_added + 2 > MAX_INSTRUCTIONS) {
+            fprintf(stderr, "[WARNING] Max instructions hit during component processing.\n");
+            break;
+        }
+
+        Component* comp = &components[i];
+        
+        // Ignore very small components (e.g., noise)
+        if (comp->count < 2) continue;
+
+        Point p1_128, p2_128;
+        simplify_component_to_lines(comp, &p1_128, &p2_128);
+
+        // Add MOVE and LINE instructions
+        d.instructions[d.count++] = (Instruction){INSTR_MOVE, p1_128, 0};
+        d.instructions[d.count++] = (Instruction){INSTR_LINE, p2_128, trace_intensity};
+        instructions_added += 2;
+    }
+
+    printf("[INFO] Component vectorization generated %d instructions from %d components.\n", d.count, component_count);
+    return d;
+}
+
+
+// --- 6. Simulated Annealing Heuristics & Mutations ---
 
 /**
  * @brief Generates a random valid Point.
@@ -414,115 +578,10 @@ static Point random_point(void) {
 }
 
 /**
- * @brief Finds the grid index of the darkest unvisited pixel in the 16x16 grid.
- * @return Index (0 to 255), or -1 if all are visited/too light.
- */
-static int find_darkest_unvisited(const SmallImage* const small_img, const int* const visited) {
-    Pixel darkest_value = THRESHOLD; // Start searching above the threshold
-    int darkest_idx = -1;
-
-    for (int i = 0; i < SMALL_GRID_SIZE * SMALL_GRID_SIZE; i++) {
-        if (!visited[i] && (*small_img)[i] > darkest_value) {
-            darkest_value = (*small_img)[i];
-            darkest_idx = i;
-        }
-    }
-    return darkest_idx;
-}
-
-/**
- * @brief Implements a Greedy Path-Finding Algorithm on the 16x16 grid for initial tracing.
- * Now improved to ensure disconnected parts are also traced.
- */
-static Drawing generate_initial_drawing(const Image* const target_img) {
-    Drawing d;
-    memset(&d, 0, sizeof(Drawing));
-
-    SmallImage small_img;
-    downscale_image(target_img, &small_img);
-
-    int visited[SMALL_GRID_SIZE * SMALL_GRID_SIZE] = {0};
-    const int SCALE_FACTOR = IMAGE_SIZE / SMALL_GRID_SIZE; // 8
-    const int pixel_step = SCALE_FACTOR;
-    const Pixel trace_intensity = 220;
-    
-    int current_idx;
-    
-    while (d.count < MAX_INSTRUCTIONS) {
-        
-        // 1. Find the start of the next segment (darkest unvisited pixel globally)
-        current_idx = find_darkest_unvisited(&small_img, visited);
-
-        if (current_idx == -1) {
-            // No more significantly dark, unvisited pixels
-            break; 
-        }
-        
-        // Convert 16x16 index to 128x128 center point
-        const int cx = (current_idx % SMALL_GRID_SIZE) * pixel_step + pixel_step / 2;
-        const int cy = (current_idx / SMALL_GRID_SIZE) * pixel_step + pixel_step / 2;
-        Point current_pos = {cx, cy};
-
-        // Add an initial MOVE instruction for the new segment
-        d.instructions[d.count++] = (Instruction){INSTR_MOVE, current_pos, 0};
-        visited[current_idx] = 1;
-        
-        // Exit if this MOVE instruction fills the budget
-        if (d.count >= MAX_INSTRUCTIONS) break;
-
-        // 2. Greedy Trace Loop: Extend the current segment
-        while (1) {
-            int best_neighbor_idx = -1;
-            Pixel best_neighbor_value = 0;
-            
-            // Check 8-neighborhood for the best unvisited dark pixel
-            for (int dy = -1; dy <= 1; dy++) {
-                for (int dx = -1; dx <= 1; dx++) {
-                    if (dx == 0 && dy == 0) continue;
-
-                    int nx = current_idx % SMALL_GRID_SIZE + dx;
-                    int ny = current_idx / SMALL_GRID_SIZE + dy;
-                    int n_idx = ny * SMALL_GRID_SIZE + nx;
-
-                    if (nx >= 0 && nx < SMALL_GRID_SIZE && ny >= 0 && ny < SMALL_GRID_SIZE &&
-                        !visited[n_idx] && small_img[n_idx] > best_neighbor_value) {
-                        
-                        best_neighbor_value = small_img[n_idx];
-                        best_neighbor_idx = n_idx;
-                    }
-                }
-            }
-            
-            if (best_neighbor_idx != -1 && best_neighbor_value >= THRESHOLD) {
-                // Found a good connected neighbor: continue line
-                current_idx = best_neighbor_idx;
-                visited[current_idx] = 1;
-                
-                const int nx = current_idx % SMALL_GRID_SIZE;
-                const int ny = current_idx / SMALL_GRID_SIZE;
-                Point next_pos = {nx * pixel_step + pixel_step / 2, ny * pixel_step + pixel_step / 2};
-                
-                // Add a LINE instruction
-                d.instructions[d.count++] = (Instruction){INSTR_LINE, next_pos, trace_intensity};
-                current_pos = next_pos;
-                
-                if (d.count >= MAX_INSTRUCTIONS) break;
-
-            } else {
-                // No good connected neighbor found: break out of inner loop to start new segment
-                break;
-            }
-        }
-    }
-
-    printf("[INFO] Greedy initialization generated %d instructions in %d segments.\n", d.count, current_idx == -1 ? 0 : d.count - 1);
-    return d;
-}
-
-/**
  * @brief Generates a neighboring state by randomly mutating the current drawing.
  */
 static Drawing mutate_drawing(const Drawing* const current) {
+    // ... (Mutation logic remains the same) ...
     Drawing next = *current;
     
     // 0: Modify, 1: Add, 2: Remove
@@ -573,45 +632,94 @@ static float acceptance_probability(const float old_fitness, const float new_fit
     if (new_fitness < old_fitness) {
         return 1.0f;
     }
-    // E^(delta_F / T)
+    // $e^{\Delta F / T}$
     return (float)exp((double)(old_fitness - new_fitness) / temp);
 }
 
-// --- 6. Unit Tests ---
+// --- 7. Unit Tests ---
+
+/**
+ * @brief Unit test to verify the component detection and line simplification.
+ */
+static void test_initial_drawing_vectorization(void) {
+    printf("\n--- Running Unit Test: Component Vectorization ---\n");
+    SmallImage test_small_img;
+    memset(test_small_img, 0, sizeof(test_small_img));
+    
+    // Set up a simple 16x16 image with three clear, separate components:
+    // 1. A vertical line (Component 1)
+    for (int y = 1; y < 8; y++) test_small_img[y * 16 + 2] = 100; // x=2, y=1..7
+    
+    // 2. A horizontal line (Component 2)
+    for (int x = 9; x < 15; x++) test_small_img[10 * 16 + x] = 100; // y=10, x=9..14
+    
+    // 3. A single pixel (Component 3 - should be ignored by the main function but detected here)
+    test_small_img[15 * 16 + 15] = 100; // x=15, y=15
+
+    Component components[MAX_COMPONENTS];
+    const int component_count = find_connected_components(&test_small_img, components);
+
+    if (component_count == 3) {
+        printf("[SUCCESS] Component Detection Passed: Found 3 components.\n");
+    } else {
+        printf("[FAILURE] Component Detection Failed: Found %d components (Expected 3).\n", component_count);
+    }
+    
+    // Test Line Simplification for Component 1 (Vertical Line)
+    Point p1, p2;
+    if (components[0].count > 1) {
+        simplify_component_to_lines(&components[0], &p1, &p2);
+        // Expected 16x16 coordinates for Comp 1: (2, 1) and (2, 7)
+        if ((p1.x == 16+4 && p1.y == 8+4) && (p2.x == 16+4 && p2.y == 56+4)) {
+            printf("[SUCCESS] Line Simplification Comp 1: Line approximated correctly.\n");
+        } else {
+             printf("[FAILURE] Line Simplification Comp 1: Expected (2,1)-(2,7) -> Got (%d,%d)-(%d,%d) (16x16 simplified coords not matching 128x128).\n",
+                p1.x/8, p1.y/8, p2.x/8, p2.y/8);
+        }
+    }
+
+    // Test Line Simplification for Component 2 (Horizontal Line)
+    if (components[1].count > 1) {
+        simplify_component_to_lines(&components[1], &p1, &p2);
+        // Expected 16x16 coordinates for Comp 2: (9, 10) and (14, 10)
+        if ((p1.x == 72+4 && p1.y == 80+4) && (p2.x == 112+4 && p2.y == 80+4)) {
+            printf("[SUCCESS] Line Simplification Comp 2: Line approximated correctly.\n");
+        } else {
+             printf("[FAILURE] Line Simplification Comp 2: Expected (9,10)-(14,10) -> Got (%d,%d)-(%d,%d) (16x16 simplified coords not matching 128x128).\n",
+                p1.x/8, p1.y/8, p2.x/8, p2.y/8);
+        }
+    }
+
+
+    printf("--------------------------------------------------\n");
+}
+
 
 /**
  * @brief Unit test to verify that a simple 3-line 'A' drawing matches the hardcoded A_TEMPLATE.
  */
 static void test_a_template_match(void) {
-    printf("\n--- Running Unit Test: A-Template Match ---\n");
+    printf("\n--- Running Unit Test: A-Template Match (Control) ---\n");
     Drawing test_drawing = {0};
     
-    // Create a 3-line 'A' using coordinates that map to the center of the 16x16 grid:
-    // P1: Top center (x=64, y=16) 
-    // P2: Bottom left (x=16, y=112) 
-    // P3: Bottom right (x=112, y=112) 
-    // P4: Crossbar start (x=32, y=80) 
-    // P5: Crossbar end (x=96, y=80) 
-
+    // Create a 3-line 'A' using coordinates that map to the center of the 16x16 grid blocks:
     const Pixel intensity = 255; // Solid black lines
 
-    // 1. Left leg (P1 to P2)
+    // 1. Left leg (Top-center to Bottom-left)
     test_drawing.instructions[test_drawing.count++] = (Instruction){INSTR_MOVE, {64, 16}, 0};
     test_drawing.instructions[test_drawing.count++] = (Instruction){INSTR_LINE, {16, 112}, intensity};
     
-    // 2. Right leg (P1 to P3)
+    // 2. Right leg (Top-center to Bottom-right)
     test_drawing.instructions[test_drawing.count++] = (Instruction){INSTR_MOVE, {64, 16}, 0};
     test_drawing.instructions[test_drawing.count++] = (Instruction){INSTR_LINE, {112, 112}, intensity};
     
-    // 3. Crossbar (P4 to P5)
+    // 3. Crossbar (Middle-left to Middle-right)
     test_drawing.instructions[test_drawing.count++] = (Instruction){INSTR_MOVE, {32, 80}, 0};
     test_drawing.instructions[test_drawing.count++] = (Instruction){INSTR_LINE, {96, 80}, intensity};
 
     Image* rendered_a = render_drawing(&test_drawing);
     float template_error = calculate_template_error(rendered_a);
     
-    // Expected template error for a near-perfect match should be very low (close to 0).
-    // The handwritten A is curved, while the template is blocky, so we allow a bit more error.
     const float max_acceptable_error = 0.08f; 
 
     if (template_error < max_acceptable_error) {
@@ -620,7 +728,6 @@ static void test_a_template_match(void) {
     } else {
         printf("[FAILURE] Template Match Test Failed! Error: %.4f (Expected < %.4f)\n", 
                template_error, max_acceptable_error);
-        printf("  This suggests the 'A' template matching or rendering is inaccurate.\n");
     }
     
     free(rendered_a);
@@ -628,12 +735,13 @@ static void test_a_template_match(void) {
 }
 
 
-// --- 7. JPEG Output (Using libjpeg) ---
+// --- 8. JPEG Output (Using libjpeg) ---
 
 /**
  * @brief Saves a grayscale Image to a high-quality JPEG file using libjpeg.
  */
 static void save_jpeg_grayscale(const Image* const img, const Drawing* const best_drawing, const float final_fitness) {
+    // ... (JPEG saving logic remains the same) ...
     struct jpeg_compress_struct cinfo;
     struct jpeg_error_mgr jerr;
     FILE *outfile;
@@ -690,13 +798,15 @@ static void save_jpeg_grayscale(const Image* const img, const Drawing* const bes
 }
 
 
-// --- 8. Main Program Execution ---
+// --- 9. Main Program Execution ---
 
 int main(void) {
     srand((unsigned int)time(NULL));
 
-    // Run the unit test before starting the main optimization
+    // Run all unit tests
     test_a_template_match();
+    test_initial_drawing_vectorization();
+
 
     printf("--- Drawing Optimizer with 'A' Constraint ---\n");
     printf("--- Target image loading from: %s ---\n", JPEG_INPUT_FILENAME);
@@ -709,12 +819,12 @@ int main(void) {
         return EXIT_FAILURE;
     }
 
-    // 1. Initial Heuristic Guess via Greedy Tracing
+    // 1. Initial Heuristic Guess via Component Vectorization
     Drawing current_drawing = generate_initial_drawing(target_img);
     Image* current_img = render_drawing(&current_drawing);
     float current_fitness = calculate_combined_fitness(current_img, target_img);
 
-    printf("Initial Greedy Trace Fitness: %.2f\n", current_fitness);
+    printf("Initial Component Vectorization Fitness: %.2f\n", current_fitness);
     printf("Initial Instruction Count: %d\n", current_drawing.count);
     printf("-----------------------------------------------------------\n");
     printf("Starting Simulated Annealing for %d seconds...\n", SA_RUNTIME_SECONDS);
@@ -742,7 +852,7 @@ int main(void) {
             break;
         }
 
-        // 1. Temperature update
+        // 1. Temperature update (Linear cooling)
         temp = initial_temp * (1.0f - (elapsed_time / SA_RUNTIME_SECONDS));
         if (temp < 0.001f) temp = 0.001f;
 
