@@ -24,4 +24,4 @@ jobs:
       uses: actions/upload-artifact@v4 # Use the latest version
       with:
         name: annealing-image
-        path: a.jpg
+        path: generated.jpg
