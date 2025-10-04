@@ -11,15 +11,15 @@
 // --- 1. Constants and Type Definitions ---
 
 #define IMAGE_SIZE 128          // The primary dimension for the image (128x128)
-#define SMALL_GRID_SIZE 16      // Size for the downscaled grid used for tracing
+#define SMALL_GRID_SIZE 16      // Size for the downscaled grid (16x16)
 #define PIXEL_MAX 255
 #define THRESHOLD 128           // Grayscale value for tracing heuristics
-#define MAX_INSTRUCTIONS 32     // The initial instruction limit is now 32
-#define INITIAL_TRIALS 128      // Number of initial random programs to test
-#define SA_RUNTIME_SECONDS 60   // Optimization runtime reduced for faster initial testing
+#define MAX_INSTRUCTIONS 32     // Strict limit on instruction count
+#define SA_RUNTIME_SECONDS 60   // Optimization runtime
 #define SA_LOG_INTERVAL_SECONDS 5
 #define JPEG_OUTPUT_FILENAME "generated.jpg"
 #define JPEG_INPUT_FILENAME "a.jpg" // Mandatory input file name
+#define A_TEMPLATE_WEIGHT 0.5f  // Weight for the 'A' shape template error
 
 // Using int for screen coordinates (0-127)
 typedef int Coord;
@@ -33,18 +33,17 @@ typedef struct {
     Coord y;
 } Point;
 
-// Enum for the instruction types (Only MOVE and LINE remain)
+// Enum for the instruction types (Only MOVE and LINE)
 typedef enum {
     INSTR_MOVE,
     INSTR_LINE,
-    INSTR_TYPE_COUNT // Only 2 types now
+    INSTR_TYPE_COUNT
 } InstructionType;
 
 // Structure for a single drawing instruction
 typedef struct {
     InstructionType type;
     Point p;
-    // radius removed
     Pixel intensity;
 } Instruction;
 
@@ -72,20 +71,41 @@ typedef struct {
 // Array type for the 16x16 grid used internally for tracing/sampling
 typedef Pixel SmallImage[SMALL_GRID_SIZE * SMALL_GRID_SIZE];
 
+// Hardcoded 16x16 template for the letter 'A' (1=Dark/Black, 0=Light/White)
+const int A_TEMPLATE[SMALL_GRID_SIZE * SMALL_GRID_SIZE] = {
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,
+    0,0,0,0,0,0,1,0,0,1,0,0,0,0,0,0,
+    0,0,0,0,0,1,0,0,0,0,1,0,0,0,0,0,
+    0,0,0,0,1,0,0,0,0,0,0,1,0,0,0,0,
+    0,0,0,1,0,0,0,0,0,0,0,0,1,0,0,0,
+    0,0,1,0,0,0,0,0,0,0,0,0,0,1,0,0,
+    0,1,0,0,0,0,0,0,0,0,0,0,0,0,1,0,
+    1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, // Crossbar
+    1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+    1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+    1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+    1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+    1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+    1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+    1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+};
+
+
 // Forward declarations
 static void draw_line(Image* const img, const Point p1, const Point p2, const Pixel intensity);
+static Image* render_drawing(const Drawing* const drawing);
+static float calculate_combined_fitness(const Image* const rendered_img, const Image* const target_img);
+static void downscale_image(const Image* const large_img, SmallImage* const small_img);
 
 // --- 2. JPEG Error Handling ---
 
-// Custom error handling structure for libjpeg
 struct my_error_mgr {
     struct jpeg_error_mgr pub;
     jmp_buf setjmp_buffer;
 };
-
 typedef struct my_error_mgr * my_error_ptr;
 
-// Error exit routine that uses setjmp/longjmp
 METHODDEF(void)
 my_error_exit (j_common_ptr cinfo)
 {
@@ -121,7 +141,6 @@ static void set_pixel(Image* const img, const Coord x, const Coord y, const Pixe
 
 /**
  * @brief Loads a JPEG file, decompresses it, and resizes it to the target IMAGE_SIZE x IMAGE_SIZE.
- * @return The 128x128 Image struct, or NULL on failure.
  */
 static Image* load_and_resize_target(const char* filename) {
     struct jpeg_decompress_struct cinfo;
@@ -131,20 +150,15 @@ static Image* load_and_resize_target(const char* filename) {
     Image* target_img = NULL;
     LoadedImage raw_img = {NULL, 0, 0, 0};
 
-    // Step 1: Open the input file
     if ((infile = fopen(filename, "rb")) == NULL) {
         fprintf(stderr, "[ERROR] Can't open %s\n", filename);
         return NULL;
     }
-
-    // Step 2: Initialize the JPEG decompression object
-    // FIX: Zero-initialize the structure before libjpeg uses it (fixes MSan warning)
     memset(&cinfo, 0, sizeof(cinfo));
     cinfo.err = jpeg_std_error(&jerr.pub);
     jerr.pub.error_exit = my_error_exit;
 
     if (setjmp(jerr.setjmp_buffer)) {
-        // If we get here, the JPEG code has signaled an error.
         jpeg_destroy_decompress(&cinfo);
         fclose(infile);
         if (raw_img.data) free(raw_img.data);
@@ -154,14 +168,8 @@ static Image* load_and_resize_target(const char* filename) {
 
     jpeg_create_decompress(&cinfo);
     jpeg_stdio_src(&cinfo, infile);
-
-    // Step 3: Read file parameters
     (void)jpeg_read_header(&cinfo, TRUE);
-
-    // Force output to grayscale for simplicity (1 component)
     cinfo.out_color_space = JCS_GRAYSCALE;
-    
-    // Step 4: Start decompressor
     (void)jpeg_start_decompress(&cinfo);
     
     raw_img.width = cinfo.output_width;
@@ -169,28 +177,24 @@ static Image* load_and_resize_target(const char* filename) {
     raw_img.components = cinfo.output_components;
     long total_pixels = (long)raw_img.width * raw_img.height * raw_img.components;
 
-    // Allocate buffer for the entire raw image data
     raw_img.data = (Pixel*)malloc(total_pixels * sizeof(Pixel));
     if (!raw_img.data) {
         perror("[ERROR] Failed to allocate memory for raw image data");
-        longjmp(jerr.setjmp_buffer, 1); // Jump to error exit
+        longjmp(jerr.setjmp_buffer, 1);
     }
 
     int row_stride = raw_img.width * raw_img.components;
     Pixel* buffer_ptr = raw_img.data;
 
-    // Step 5: Read scanlines
     while (cinfo.output_scanline < cinfo.output_height) {
         row_pointer[0] = buffer_ptr + (cinfo.output_scanline * row_stride);
         (void)jpeg_read_scanlines(&cinfo, row_pointer, 1);
     }
 
-    // Step 6: Finish decompression and cleanup
     (void)jpeg_finish_decompress(&cinfo);
     jpeg_destroy_decompress(&cinfo);
     fclose(infile);
     
-    // --- Step 7: Resize/Resample to 128x128 using averaging ---
     target_img = create_image();
     const float scale_x = (float)raw_img.width / IMAGE_SIZE;
     const float scale_y = (float)raw_img.height / IMAGE_SIZE;
@@ -199,12 +203,12 @@ static Image* load_and_resize_target(const char* filename) {
         for (int tx = 0; tx < IMAGE_SIZE; tx++) {
             long sum = 0;
             long count = 0;
-
-            // Define the block in the source image corresponding to target pixel (tx, ty)
             const int sx_start = (int)(tx * scale_x);
+            const int int_scale_x = (int)scale_x;
+            const int int_scale_y = (int)scale_y;
+            const int block_w = int_scale_x > 0 ? int_scale_x : 1;
+            const int block_h = int_scale_y > 0 ? int_scale_y : 1;
             const int sy_start = (int)(ty * scale_y);
-            const int block_w = (int)scale_x > 0 ? (int)scale_x : 1;
-            const int block_h = (int)scale_y > 0 ? (int)scale_y : 1;
 
             for (int sy = sy_start; sy < sy_start + block_h && sy < raw_img.height; sy++) {
                 for (int sx = sx_start; sx < sx_start + block_w && sx < raw_img.width; sx++) {
@@ -213,9 +217,7 @@ static Image* load_and_resize_target(const char* filename) {
                 }
             }
             
-            // Set the target pixel to the average value
             if (count > 0) {
-                // Keep 0=white, 255=black.
                 target_img->data[ty * IMAGE_SIZE + tx] = (Pixel)(sum / count);
             }
         }
@@ -230,23 +232,33 @@ static Image* load_and_resize_target(const char* filename) {
 
 /**
  * @brief Downscales a 128x128 image to a 16x16 grid using simple averaging.
+ * NOTE: Refactored to use explicit start/offset to prevent heap-buffer-overflow.
  */
 static void downscale_image(const Image* const large_img, SmallImage* const small_img) {
-    const int TARGET_SIZE = SMALL_GRID_SIZE;
-    const int SCALE_FACTOR = IMAGE_SIZE / TARGET_SIZE; // 8
+    const int GRID_SIZE = SMALL_GRID_SIZE; // 16
+    const int BLOCK_SIZE = IMAGE_SIZE / GRID_SIZE; // 8
 
-    for (int sy = 0; sy < TARGET_SIZE; sy++) {
-        for (int sx = 0; sx < TARGET_SIZE; sx++) {
+    for (int sy = 0; sy < GRID_SIZE; sy++) {
+        for (int sx = 0; sx < GRID_SIZE; sx++) {
             long sum = 0;
-            const int block_pixels = SCALE_FACTOR * SCALE_FACTOR;
+            const int block_pixels = BLOCK_SIZE * BLOCK_SIZE;
 
-            for (int ly = sy * SCALE_FACTOR; ly < (sy + 1) * SCALE_FACTOR; ly++) {
-                for (int lx = sx * SCALE_FACTOR; lx < (lx + 1) * SCALE_FACTOR; lx++) {
+            // Define starting pixel in 128x128 grid
+            const int start_y = sy * BLOCK_SIZE;
+            const int start_x = sx * BLOCK_SIZE;
+
+            for (int dy = 0; dy < BLOCK_SIZE; dy++) {
+                const int ly = start_y + dy;
+                for (int dx = 0; dx < BLOCK_SIZE; dx++) {
+                    const int lx = start_x + dx;
+                    
+                    // Access is safe: max ly/lx is 120 + 7 = 127.
                     sum += large_img->data[ly * IMAGE_SIZE + lx];
                 }
             }
-            // Use simple integer division for averaging
-            (*small_img)[sy * TARGET_SIZE + sx] = (Pixel)(sum / block_pixels);
+            
+            // Set the target pixel to the average value
+            (*small_img)[sy * GRID_SIZE + sx] = (Pixel)(sum / block_pixels);
         }
     }
 }
@@ -302,16 +314,16 @@ static Image* render_drawing(const Drawing* const drawing) {
                 current_pos = instr->p;
                 break;
             case INSTR_TYPE_COUNT:
-                break;
+                break; // Should not happen
         }
     }
     return img;
 }
 
 /**
- * @brief Calculates the Mean Squared Error (MSE) between two images.
+ * @brief Calculates the Mean Squared Error (MSE) between two 128x128 images.
  */
-static float calculate_error(const Image* const img1, const Image* const img2) {
+static float calculate_mse_image(const Image* const img1, const Image* const img2) {
     double sum_squared_error = 0.0;
     const int total_pixels = IMAGE_SIZE * IMAGE_SIZE;
     int i;
@@ -323,6 +335,45 @@ static float calculate_error(const Image* const img1, const Image* const img2) {
     return (float)(sum_squared_error / total_pixels);
 }
 
+/**
+ * @brief Calculates the Mean Squared Error (MSE) between the rendered 16x16 grid and the A-Template.
+ */
+static float calculate_template_error(const Image* const rendered_img) {
+    SmallImage small_img;
+    downscale_image(rendered_img, &small_img);
+
+    double sum_squared_error = 0.0;
+    const int total_pixels = SMALL_GRID_SIZE * SMALL_GRID_SIZE;
+    int i;
+
+    for (i = 0; i < total_pixels; i++) {
+        // Map grayscale rendered pixel (0=White, 255=Black) to a binary value (0 or 1)
+        const int rendered_binary = small_img[i] > THRESHOLD ? 1 : 0;
+        
+        // Template value is 1 (dark/black) or 0 (light/white)
+        const int template_value = A_TEMPLATE[i];
+
+        // We want (rendered_binary - template_value) to be 0 for a match
+        const int diff = rendered_binary - template_value;
+        sum_squared_error += (double)diff * diff;
+    }
+
+    return (float)(sum_squared_error / total_pixels);
+}
+
+/**
+ * @brief Calculates the combined fitness score for the Simulated Annealing.
+ * F = MSE_Image + (Weight * MSE_Template)
+ */
+static float calculate_combined_fitness(const Image* const rendered_img, const Image* const target_img) {
+    const float mse_image = calculate_mse_image(rendered_img, target_img);
+    const float mse_template = calculate_template_error(rendered_img);
+
+    // The fitness function prioritizes both matching the original image and looking like an 'A'
+    return mse_image + (A_TEMPLATE_WEIGHT * mse_template);
+}
+
+
 // --- 5. Simulated Annealing Heuristics & Mutations ---
 
 /**
@@ -333,90 +384,113 @@ static Point random_point(void) {
 }
 
 /**
- * @brief Generates a single, randomized $32$-instruction drawing based on the downscaled grid.
+ * @brief Finds the grid index of the darkest unvisited pixel in the 16x16 grid.
+ * @return Index (0 to 255), or -1 if all are visited/too light.
  */
-static Drawing generate_single_random_drawing(const SmallImage* const small_img) {
+static int find_darkest_unvisited(const SmallImage* const small_img, const int* const visited) {
+    Pixel darkest_value = THRESHOLD;
+    int darkest_idx = -1;
+
+    for (int i = 0; i < SMALL_GRID_SIZE * SMALL_GRID_SIZE; i++) {
+        if (!visited[i] && (*small_img)[i] > darkest_value) {
+            darkest_value = (*small_img)[i];
+            darkest_idx = i;
+        }
+    }
+    return darkest_idx;
+}
+
+/**
+ * @brief Implements a Greedy Path-Finding Algorithm on the 16x16 grid for initial tracing.
+ */
+static Drawing generate_initial_drawing(const Image* const target_img) {
     Drawing d;
     memset(&d, 0, sizeof(Drawing));
 
-    const int TARGET_SIZE = SMALL_GRID_SIZE;
-    const int SCALE_FACTOR = IMAGE_SIZE / TARGET_SIZE; // 8
+    SmallImage small_img;
+    downscale_image(target_img, &small_img);
+
+    int visited[SMALL_GRID_SIZE * SMALL_GRID_SIZE] = {0};
+    const int SCALE_FACTOR = IMAGE_SIZE / SMALL_GRID_SIZE; // 8
     const int pixel_step = SCALE_FACTOR;
     const Pixel trace_intensity = 220;
     
-    // Collect all "dark" $16 \times 16$ coordinates
-    Point dark_points[TARGET_SIZE * TARGET_SIZE];
-    int dark_count = 0;
+    int current_idx = find_darkest_unvisited(&small_img, visited);
+    
+    if (current_idx == -1) {
+        // Fallback if no sufficiently dark pixels are found
+        d.count = 0;
+        return d;
+    }
 
-    for (int sy = 0; sy < TARGET_SIZE; sy++) {
-        for (int sx = 0; sx < TARGET_SIZE; sx++) {
-            if ((*small_img)[sy * TARGET_SIZE + sx] >= THRESHOLD) {
-                // Convert $16 \times 16$ grid coord to $128 \times 128$ center
-                dark_points[dark_count++] = (Point){sx * pixel_step + pixel_step / 2, sy * pixel_step + pixel_step / 2};
+    // Convert 16x16 index to 128x128 center point
+    const int cx = (current_idx % SMALL_GRID_SIZE) * pixel_step + pixel_step / 2;
+    const int cy = (current_idx / SMALL_GRID_SIZE) * pixel_step + pixel_step / 2;
+    Point current_pos = {cx, cy};
+
+    // 1. Initial MOVE instruction
+    d.instructions[d.count++] = (Instruction){INSTR_MOVE, current_pos, 0};
+    visited[current_idx] = 1;
+
+    // 2. Greedy Trace Loop
+    while (d.count < MAX_INSTRUCTIONS) {
+        int best_neighbor_idx = -1;
+        Pixel best_neighbor_value = 0;
+        
+        // Check 8-neighborhood for the best unvisited dark pixel
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                if (dx == 0 && dy == 0) continue;
+
+                int nx = current_idx % SMALL_GRID_SIZE + dx;
+                int ny = current_idx / SMALL_GRID_SIZE + dy;
+                int n_idx = ny * SMALL_GRID_SIZE + nx;
+
+                if (nx >= 0 && nx < SMALL_GRID_SIZE && ny >= 0 && ny < SMALL_GRID_SIZE &&
+                    !visited[n_idx] && small_img[n_idx] > best_neighbor_value) {
+                    
+                    best_neighbor_value = small_img[n_idx];
+                    best_neighbor_idx = n_idx;
+                }
+            }
+        }
+        
+        if (best_neighbor_idx != -1 && best_neighbor_value >= THRESHOLD) {
+            // Found a good connected neighbor
+            current_idx = best_neighbor_idx;
+            visited[current_idx] = 1;
+            
+            const int nx = current_idx % SMALL_GRID_SIZE;
+            const int ny = current_idx / SMALL_GRID_SIZE;
+            Point next_pos = {nx * pixel_step + pixel_step / 2, ny * pixel_step + pixel_step / 2};
+            
+            // Add a LINE instruction
+            d.instructions[d.count++] = (Instruction){INSTR_LINE, next_pos, trace_intensity};
+            current_pos = next_pos;
+
+        } else {
+            // No good connected neighbor found, start a new segment (MOVE)
+            int new_segment_idx = find_darkest_unvisited(&small_img, visited);
+            
+            if (new_segment_idx != -1) {
+                current_idx = new_segment_idx;
+                visited[current_idx] = 1;
+                
+                const int nx = current_idx % SMALL_GRID_SIZE;
+                const int ny = current_idx / SMALL_GRID_SIZE;
+                Point next_pos = {nx * pixel_step + pixel_step / 2, ny * pixel_step + pixel_step / 2};
+
+                // Add a MOVE instruction
+                d.instructions[d.count++] = (Instruction){INSTR_MOVE, next_pos, 0};
+                current_pos = next_pos;
+            } else {
+                // All available dark spots have been visited, terminate trace
+                break; 
             }
         }
     }
 
-    if (dark_count < 2) {
-        // Fallback: if too few dark points, just use a couple of random points
-        d.count = 2;
-        d.instructions[0] = (Instruction){INSTR_MOVE, random_point(), 0, 0};
-        d.instructions[1] = (Instruction){INSTR_LINE, random_point(), trace_intensity};
-        return d;
-    }
-
-    // Create a random set of up to MAX_INSTRUCTIONS (32)
-    d.count = 0;
-    int max_instr_limit = rand() % (MAX_INSTRUCTIONS - 1) + 2; // min 2, max 32
-
-    // Force the first instruction to be a MOVE to establish the initial pen position
-    d.instructions[0] = (Instruction){INSTR_MOVE, dark_points[rand() % dark_count], 0, 0};
-    d.count = 1;
-
-    for (int i = 1; i < max_instr_limit; i++) {
-        if (d.count >= MAX_INSTRUCTIONS) break;
-
-        const InstructionType type = (InstructionType)(rand() % INSTR_TYPE_COUNT);
-        Point target_p = dark_points[rand() % dark_count];
-        
-        if (type == INSTR_MOVE) {
-            d.instructions[d.count++] = (Instruction){INSTR_MOVE, target_p, 0, 0};
-        } else { // INSTR_LINE
-            d.instructions[d.count++] = (Instruction){INSTR_LINE, target_p, trace_intensity};
-        }
-    }
-
     return d;
-}
-
-
-/**
- * @brief Generates the initial drawing by running 128 randomized trials and selecting the best one.
- */
-static Drawing generate_initial_drawing(const Image* const target_img) {
-    SmallImage small_img;
-    downscale_image(target_img, &small_img);
-
-    Drawing best_drawing;
-    float best_error = 1e18; // Very large number
-
-    printf("[INFO] Running %d initial drawing trials to find the best start state (max %d instructions)...\n", INITIAL_TRIALS, MAX_INSTRUCTIONS);
-
-    for (int i = 0; i < INITIAL_TRIALS; i++) {
-        Drawing current_drawing = generate_single_random_drawing(&small_img);
-        Image* current_img = render_drawing(&current_drawing);
-        float current_error = calculate_error(current_img, target_img);
-
-        if (current_error < best_error) {
-            best_error = current_error;
-            best_drawing = current_drawing;
-        }
-        free(current_img);
-    }
-    
-    printf("[INFO] Best initial trial found (MSE: %.2f, Count: %d).\n", best_error, best_drawing.count);
-
-    return best_drawing;
 }
 
 /**
@@ -469,12 +543,12 @@ static Drawing mutate_drawing(const Drawing* const current) {
 /**
  * @brief Calculates the acceptance probability for Simulated Annealing.
  */
-static float acceptance_probability(const float old_error, const float new_error, const float temp) {
-    if (new_error < old_error) {
+static float acceptance_probability(const float old_fitness, const float new_fitness, const float temp) {
+    if (new_fitness < old_fitness) {
         return 1.0f;
     }
-    // E^(delta_E / T)
-    return (float)exp((double)(old_error - new_error) / temp);
+    // E^(delta_F / T)
+    return (float)exp((double)(old_fitness - new_fitness) / temp);
 }
 
 // --- 6. JPEG Output (Using libjpeg) ---
@@ -482,7 +556,7 @@ static float acceptance_probability(const float old_error, const float new_error
 /**
  * @brief Saves a grayscale Image to a high-quality JPEG file using libjpeg.
  */
-static void save_jpeg_grayscale(const Image* const img, const Drawing* const best_drawing, const float final_error) {
+static void save_jpeg_grayscale(const Image* const img, const Drawing* const best_drawing, const float final_fitness) {
     struct jpeg_compress_struct cinfo;
     struct jpeg_error_mgr jerr;
     FILE *outfile;
@@ -491,51 +565,39 @@ static void save_jpeg_grayscale(const Image* const img, const Drawing* const bes
 
     const int quality = 90; // High quality setting
 
-    // Step 1: Initialize JPEG compression object
-    // Initialize the compression struct to zero for safety.
     memset(&cinfo, 0, sizeof(cinfo));
     cinfo.err = jpeg_std_error(&jerr);
     jpeg_create_compress(&cinfo);
 
-    // Step 2: Open the output file
     if ((outfile = fopen(JPEG_OUTPUT_FILENAME, "wb")) == NULL) {
         fprintf(stderr, "[ERROR] Can't open %s for writing\n", JPEG_OUTPUT_FILENAME);
         return;
     }
     jpeg_stdio_dest(&cinfo, outfile);
 
-    // Step 3: Set compression parameters
     cinfo.image_width = IMAGE_SIZE;
     cinfo.image_height = IMAGE_SIZE;
-    cinfo.input_components = 1; // Grayscale image
+    cinfo.input_components = 1;
     cinfo.in_color_space = JCS_GRAYSCALE;
-
-    // Calculate row_stride
-    row_stride = IMAGE_SIZE * cinfo.input_components; // Bytes per row for grayscale (1 byte/pixel)
+    row_stride = IMAGE_SIZE * cinfo.input_components;
 
     jpeg_set_defaults(&cinfo);
-    jpeg_set_quality(&cinfo, quality, TRUE); // Set the desired quality
-
-    // Step 4: Start compressor
+    jpeg_set_quality(&cinfo, quality, TRUE);
     jpeg_start_compress(&cinfo, TRUE);
 
-    // Step 5: Write scanlines
     while (cinfo.next_scanline < cinfo.image_height) {
         row_pointer[0] = (JSAMPROW)&img->data[cinfo.next_scanline * row_stride];
         (void)jpeg_write_scanlines(&cinfo, row_pointer, 1);
     }
 
-    // Step 6: Finish compression and close file
     jpeg_finish_compress(&cinfo);
     fclose(outfile);
-
-    // Step 7: Release JPEG compression object
     jpeg_destroy_compress(&cinfo);
 
 
     printf("\nSuccessfully saved best rendered image to %s (JPEG, Quality %d).\n", JPEG_OUTPUT_FILENAME, quality);
     printf("--- Final Results ---\n");
-    printf("Final Mean Squared Error (MSE): %.2f\n", final_error);
+    printf("Final Combined Fitness Score: %.2f\n", final_fitness);
     printf("Final Instruction Count: %d\n", best_drawing->count);
     printf("Final Instructions:\n");
 
@@ -554,14 +616,12 @@ static void save_jpeg_grayscale(const Image* const img, const Drawing* const bes
 // --- 7. Main Program Execution ---
 
 int main(void) {
-    // Seed the random number generator
     srand((unsigned int)time(NULL));
 
-    printf("--- Drawing Heuristic and Simulated Annealing Optimizer (Line-Only) ---\n");
+    printf("--- Drawing Optimizer with 'A' Constraint ---\n");
     printf("--- Target image loading from: %s ---\n", JPEG_INPUT_FILENAME);
+    printf("--- Constraint Weight (A-Template): %.1f ---\n", A_TEMPLATE_WEIGHT);
 
-    // --- Setup ---
-    // Generate the target image by loading and resizing the input JPEG
     Image* target_img = load_and_resize_target(JPEG_INPUT_FILENAME);
     
     if (target_img == NULL) {
@@ -569,12 +629,12 @@ int main(void) {
         return EXIT_FAILURE;
     }
 
-    // 1. Initial Heuristic Guess via Random Trials (128 runs)
+    // 1. Initial Heuristic Guess via Greedy Tracing
     Drawing current_drawing = generate_initial_drawing(target_img);
     Image* current_img = render_drawing(&current_drawing);
-    float current_error = calculate_error(current_img, target_img);
+    float current_fitness = calculate_combined_fitness(current_img, target_img);
 
-    printf("Initial Best Trial Error (MSE): %.2f\n", current_error);
+    printf("Initial Greedy Trace Fitness: %.2f\n", current_fitness);
     printf("Initial Instruction Count: %d\n", current_drawing.count);
     printf("-----------------------------------------------------------\n");
     printf("Starting Simulated Annealing for %d seconds...\n", SA_RUNTIME_SECONDS);
@@ -584,11 +644,10 @@ int main(void) {
     const time_t start_time = time(NULL);
     time_t last_log_time = start_time;
     float elapsed_time;
-    float best_error = current_error;
+    float best_fitness = current_fitness;
     Drawing best_drawing = current_drawing;
     int iteration = 0;
 
-    // SA parameters
     const float initial_temp = 1000.0f;
     float temp = initial_temp;
 
@@ -600,29 +659,29 @@ int main(void) {
         elapsed_time = (float)difftime(current_time, start_time);
 
         if (elapsed_time >= SA_RUNTIME_SECONDS) {
-            break; // Time limit reached
+            break;
         }
 
-        // 1. Temperature update (Linear cooling schedule)
+        // 1. Temperature update
         temp = initial_temp * (1.0f - (elapsed_time / SA_RUNTIME_SECONDS));
         if (temp < 0.001f) temp = 0.001f;
 
         // 2. Generate a neighbor state
         next_drawing = mutate_drawing(&current_drawing);
         next_img = render_drawing(&next_drawing);
-        float new_error = calculate_error(next_img, target_img);
+        float new_fitness = calculate_combined_fitness(next_img, target_img);
 
         // 3. Acceptance criterion
         const float prob = (float)rand() / (float)RAND_MAX;
-        if (acceptance_probability(current_error, new_error, temp) > prob) {
-            // Accept the new state (Accept a better state, or a worse state based on probability)
+        if (acceptance_probability(current_fitness, new_fitness, temp) > prob) {
+            // Accept the new state
             free(current_img);
             current_drawing = next_drawing;
-            current_error = new_error;
+            current_fitness = new_fitness;
             current_img = next_img;
 
-            if (current_error < best_error) {
-                best_error = current_error;
+            if (current_fitness < best_fitness) {
+                best_fitness = current_fitness;
                 best_drawing = current_drawing;
             }
         } else {
@@ -632,10 +691,10 @@ int main(void) {
 
         iteration++;
 
-        // 4. Logging output every SA_LOG_INTERVAL_SECONDS
+        // 4. Logging output
         if (difftime(current_time, last_log_time) >= SA_LOG_INTERVAL_SECONDS) {
-            printf("| Time: %3.0fs / %ds | Iteration: %7d | T: %7.2f | Count: %4d | Current Error: %7.2f | Best Error: %7.2f |\n",
-                   elapsed_time, SA_RUNTIME_SECONDS, iteration, temp, current_drawing.count, current_error, best_error);
+            printf("| Time: %3.0fs / %ds | Iteration: %7d | T: %7.2f | Count: %4d | Current Fitness: %7.2f | Best Fitness: %7.2f |\n",
+                   elapsed_time, SA_RUNTIME_SECONDS, iteration, temp, current_drawing.count, current_fitness, best_fitness);
             last_log_time = current_time;
         }
     }
@@ -644,13 +703,9 @@ int main(void) {
     printf("-----------------------------------------------------------\n");
     printf("Optimization finished after %d iterations and %.0f seconds.\n", iteration, elapsed_time);
 
-    // Render the final best drawing to get the image for output
     Image* best_img = render_drawing(&best_drawing);
+    save_jpeg_grayscale(best_img, &best_drawing, best_fitness);
 
-    // Use the libjpeg writer function
-    save_jpeg_grayscale(best_img, &best_drawing, best_error);
-
-    // Clean up memory
     free(target_img);
     free(current_img);
     free(best_img);
