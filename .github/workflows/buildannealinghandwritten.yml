@@ -12,10 +12,10 @@ jobs:
       uses: actions/checkout@v2
 
     - name: Install development Libraries
-      run: sudo apt-get install -y libpng-dev 
+      run: sudo apt-get install -y libjpeg-dev 
 
     - name: Build
-      run: clang -fsanitize=memory -fno-omit-frame-pointer -O0 -Wall -g -std=c99 annealinghandwritten.c -lm -lpng -o annealing
+      run: clang -fsanitize=memory -fno-omit-frame-pointer -O0 -Wall -g -std=c99 annealinghandwritten.c -lm -ljpeg -o annealing
 
     - name: Run the inn program
       run: ./annealing
@@ -24,4 +24,4 @@ jobs:
       uses: actions/upload-artifact@v4 # Use the latest version
       with:
         name: annealing-image
-        path: annealing.png
+        path: annealing.jpg
