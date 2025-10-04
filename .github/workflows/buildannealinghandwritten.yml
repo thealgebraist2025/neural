@@ -1,0 +1,24 @@
+name: INN sentences 
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Build
+      run: clang -fsanitize=memory -fno-omit-frame-pointer -O0 -Wall -g -std=c99 annealinghandwritten.c -lm -o annealing
+
+    - name: Run the inn program
+      run: ./annealing
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4 # Use the latest version
+      with:
+        name: annealing-image
+        path: annealing.png
