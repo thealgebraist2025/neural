@@ -3,21 +3,22 @@
 #include <string.h>
 #include <time.h>
 #include <math.h>
+#include <setjmp.h> // Required for libjpeg error handling
 
 // Include the external libjpeg library headers
 #include <jpeglib.h>
 
 // --- 1. Constants and Type Definitions ---
 
-#define IMAGE_SIZE 128
-#define SMALL_SIZE 16
-#define SCALE_FACTOR (IMAGE_SIZE / SMALL_SIZE) // 128 / 16 = 8
+#define IMAGE_SIZE 128          // The primary dimension for the image (128x128)
+#define SMALL_GRID_SIZE 16      // Size for the downscaled grid used for initial tracing
 #define PIXEL_MAX 255
-#define THRESHOLD 128 // Grayscale value
+#define THRESHOLD 128           // Grayscale value for tracing heuristics
 #define MAX_INSTRUCTIONS 1024
-#define SA_RUNTIME_SECONDS 180 // Optimization runtime
+#define SA_RUNTIME_SECONDS 180  // Optimization runtime
 #define SA_LOG_INTERVAL_SECONDS 5
-#define JPEG_FILENAME "annealing_result.jpg" // Output file format
+#define JPEG_OUTPUT_FILENAME "annealing_result.jpg"
+#define JPEG_INPUT_FILENAME "a.jpg" // Mandatory input file name
 
 // Using int for screen coordinates (0-127)
 typedef int Coord;
@@ -53,42 +54,45 @@ typedef struct {
     int count;
 } Drawing;
 
-// Structure for the 128x128 8-bit image
+/**
+ * @brief Structure for the 128x128 8-bit image (The final target and rendered output)
+ */
 typedef struct {
     Pixel data[IMAGE_SIZE * IMAGE_SIZE];
 } Image;
 
-// Array type for the 16x16 downscaled image
-typedef Pixel SmallImage[SMALL_SIZE * SMALL_SIZE];
+// Structure for image data loaded from JPEG before resizing
+typedef struct {
+    Pixel *data;
+    int width;
+    int height;
+    int components; // 1 for grayscale, 3 for RGB
+} LoadedImage;
 
-// Forward declaration for drawing primitive
+// Array type for the 16x16 grid used internally for tracing/sampling
+typedef Pixel SmallImage[SMALL_GRID_SIZE * SMALL_GRID_SIZE];
+
+// Forward declarations
 static void draw_line(Image* const img, const Point p1, const Point p2, const Pixel intensity);
 
-// --- 2. Embedded Target Data ---
+// --- 2. JPEG Error Handling ---
 
-/**
- * @brief Embedded 16x16 grayscale pixel data representing a handwritten 'A'.
- * This data is scaled up to 128x128 to create the final target image.
- * Grayscale values: 0 = White, 255 = Black.
- */
-static const Pixel EMBEDDED_A_DATA[SMALL_SIZE * SMALL_SIZE] = {
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 100, 150, 150, 100, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 150, 255, 0, 0, 255, 150, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 150, 255, 0, 0, 0, 0, 255, 150, 0, 0, 0, 0, 0,
-    0, 0, 150, 255, 0, 0, 0, 0, 0, 0, 255, 150, 0, 0, 0, 0,
-    0, 0, 150, 255, 200, 200, 200, 200, 200, 200, 255, 150, 0, 0, 0, 0,
-    0, 0, 150, 255, 0, 0, 0, 0, 0, 0, 255, 150, 0, 0, 0, 0,
-    0, 0, 150, 255, 0, 0, 0, 0, 0, 0, 255, 150, 0, 0, 0, 0,
-    0, 0, 150, 255, 0, 0, 0, 0, 0, 0, 255, 150, 0, 0, 0, 0,
-    0, 0, 0, 150, 255, 0, 0, 0, 0, 255, 150, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 100, 200, 200, 200, 200, 100, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+// Custom error handling structure for libjpeg
+struct my_error_mgr {
+    struct jpeg_error_mgr pub;
+    jmp_buf setjmp_buffer;
 };
+
+typedef struct my_error_mgr * my_error_ptr;
+
+// Error exit routine that uses setjmp/longjmp
+METHODDEF(void)
+my_error_exit (j_common_ptr cinfo)
+{
+  my_error_ptr myerr = (my_error_ptr) cinfo->err;
+  (*cinfo->err->output_message) (cinfo);
+  longjmp(myerr->setjmp_buffer, 1);
+}
 
 // --- 3. Utility Functions ---
 
@@ -116,36 +120,124 @@ static void set_pixel(Image* const img, const Coord x, const Coord y, const Pixe
 }
 
 /**
- * @brief Creates the 128x128 target image by scaling the embedded 16x16 data.
- * The scaling factor is 8 (128/16).
+ * @brief Loads a JPEG file, decompresses it, and resizes it to the target IMAGE_SIZE x IMAGE_SIZE.
+ * @return The 128x128 Image struct, or NULL on failure.
  */
-static Image* generate_handwritten_A_target(void) {
-    Image* img = create_image();
+static Image* load_and_resize_target(const char* filename) {
+    struct jpeg_decompress_struct cinfo;
+    struct my_error_mgr jerr;
+    FILE *infile;
+    JSAMPROW row_pointer[1];
+    Image* target_img = NULL;
+    LoadedImage raw_img = {NULL, 0, 0, 0};
 
-    for (int sy = 0; sy < SMALL_SIZE; sy++) {
-        for (int sx = 0; sx < SMALL_SIZE; sx++) {
-            const Pixel color = EMBEDDED_A_DATA[sy * SMALL_SIZE + sx];
-            const int start_x = sx * SCALE_FACTOR;
-            const int start_y = sy * SCALE_FACTOR;
+    // Step 1: Open the input file
+    if ((infile = fopen(filename, "rb")) == NULL) {
+        fprintf(stderr, "[ERROR] Can't open %s\n", filename);
+        return NULL;
+    }
 
-            // Paint the 8x8 block
-            for (int ly = start_y; ly < start_y + SCALE_FACTOR; ly++) {
-                for (int lx = start_x; lx < start_x + SCALE_FACTOR; lx++) {
-                    img->data[ly * IMAGE_SIZE + lx] = color;
+    // Step 2: Initialize the JPEG decompression object
+    cinfo.err = jpeg_std_error(&jerr.pub);
+    jerr.pub.error_exit = my_error_exit;
+
+    if (setjmp(jerr.setjmp_buffer)) {
+        // If we get here, the JPEG code has signaled an error.
+        jpeg_destroy_decompress(&cinfo);
+        fclose(infile);
+        if (raw_img.data) free(raw_img.data);
+        if (target_img) free(target_img);
+        return NULL;
+    }
+
+    jpeg_create_decompress(&cinfo);
+    jpeg_stdio_src(&cinfo, infile);
+
+    // Step 3: Read file parameters
+    (void)jpeg_read_header(&cinfo, TRUE);
+
+    // Force output to grayscale for simplicity (1 component)
+    cinfo.out_color_space = JCS_GRAYSCALE;
+    cinfo.desired_number_of_color_components = 1;
+    
+    // Step 4: Start decompressor
+    (void)jpeg_start_decompress(&cinfo);
+    
+    raw_img.width = cinfo.output_width;
+    raw_img.height = cinfo.output_height;
+    raw_img.components = cinfo.output_components;
+    long total_pixels = (long)raw_img.width * raw_img.height * raw_img.components;
+
+    // Allocate buffer for the entire raw image data
+    raw_img.data = (Pixel*)malloc(total_pixels * sizeof(Pixel));
+    if (!raw_img.data) {
+        perror("[ERROR] Failed to allocate memory for raw image data");
+        longjmp(jerr.setjmp_buffer, 1); // Jump to error exit
+    }
+
+    int row_stride = raw_img.width * raw_img.components;
+    Pixel* buffer_ptr = raw_img.data;
+
+    // Step 5: Read scanlines
+    while (cinfo.output_scanline < cinfo.output_height) {
+        row_pointer[0] = buffer_ptr + (cinfo.output_scanline * row_stride);
+        (void)jpeg_read_scanlines(&cinfo, row_pointer, 1);
+    }
+
+    // Step 6: Finish decompression and cleanup
+    (void)jpeg_finish_decompress(&cinfo);
+    jpeg_destroy_decompress(&cinfo);
+    fclose(infile);
+    
+    // --- Step 7: Resize/Resample to 128x128 using averaging ---
+    target_img = create_image();
+    const float scale_x = (float)raw_img.width / IMAGE_SIZE;
+    const float scale_y = (float)raw_img.height / IMAGE_SIZE;
+
+    for (int ty = 0; ty < IMAGE_SIZE; ty++) {
+        for (int tx = 0; tx < IMAGE_SIZE; tx++) {
+            long sum = 0;
+            long count = 0;
+
+            // Define the block in the source image corresponding to target pixel (tx, ty)
+            const int sx_start = (int)(tx * scale_x);
+            const int sy_start = (int)(ty * scale_y);
+            const int sx_end = (int)((tx + 1) * scale_x);
+            const int sy_end = (int)((ty + 1) * scale_y);
+
+            // Iterate over the source block and sum the pixel values
+            for (int sy = sy_start; sy < sx_end; sy++) {
+                if (sy >= raw_img.height) continue;
+                for (int sx = sx_start; sx < sy_end; sx++) {
+                    if (sx >= raw_img.width) continue;
+                    sum += raw_img.data[sy * raw_img.width + sx];
+                    count++;
                 }
+            }
+            
+            // Set the target pixel to the average value
+            if (count > 0) {
+                target_img->data[ty * IMAGE_SIZE + tx] = (Pixel)(sum / count);
             }
         }
     }
+    
+    printf("[INFO] Successfully loaded and resized %s from %dx%d (Grayscale) to %dx%d.\n",
+           filename, raw_img.width, raw_img.height, IMAGE_SIZE, IMAGE_SIZE);
 
-    return img;
+    free(raw_img.data);
+    return target_img;
 }
 
 /**
  * @brief Downscales a 128x128 image to a 16x16 grid using simple averaging.
  */
 static void downscale_image(const Image* const large_img, SmallImage* const small_img) {
-    for (int sy = 0; sy < SMALL_SIZE; sy++) {
-        for (int sx = 0; sx < SMALL_SIZE; sx++) {
+    const int TARGET_SIZE = SMALL_GRID_SIZE;
+    const int SCALE_FACTOR = IMAGE_SIZE / TARGET_SIZE; // 8
+
+    for (int sy = 0; sy < TARGET_SIZE; sy++) {
+        for (int sx = 0; sx < TARGET_SIZE; sx++) {
             long sum = 0;
             const int block_pixels = SCALE_FACTOR * SCALE_FACTOR;
 
@@ -155,7 +247,7 @@ static void downscale_image(const Image* const large_img, SmallImage* const smal
                 }
             }
             // Use simple integer division for averaging
-            (*small_img)[sy * SMALL_SIZE + sx] = (Pixel)(sum / block_pixels);
+            (*small_img)[sy * TARGET_SIZE + sx] = (Pixel)(sum / block_pixels);
         }
     }
 }
@@ -265,18 +357,21 @@ static Drawing generate_initial_drawing(const Image* const target_img) {
     SmallImage small_img;
     downscale_image(target_img, &small_img);
 
+    const int TARGET_SIZE = SMALL_GRID_SIZE;
+    const int SCALE_FACTOR = IMAGE_SIZE / TARGET_SIZE; // 8
+
     const Pixel trace_intensity = 220;
     const int pixel_step = SCALE_FACTOR;
 
     // Trace Connections (4-neighborhood: Right, Down)
-    for (int sy = 0; sy < SMALL_SIZE; sy++) {
-        for (int sx = 0; sx < SMALL_SIZE; sx++) {
-            if (small_img[sy * SMALL_SIZE + sx] >= THRESHOLD) {
+    for (int sy = 0; sy < TARGET_SIZE; sy++) {
+        for (int sx = 0; sx < TARGET_SIZE; sx++) {
+            if (small_img[sy * TARGET_SIZE + sx] >= THRESHOLD) {
                 // Point A (Start of segment in 128x128 scale)
                 const Point A = {sx * pixel_step + pixel_step / 2, sy * pixel_step + pixel_step / 2};
 
                 // Check right neighbor (Horizontal connection)
-                if (sx < SMALL_SIZE - 1 && small_img[sy * SMALL_SIZE + sx + 1] >= THRESHOLD) {
+                if (sx < TARGET_SIZE - 1 && small_img[sy * TARGET_SIZE + sx + 1] >= THRESHOLD) {
                     const Point B = {(sx + 1) * pixel_step + pixel_step / 2, sy * pixel_step + pixel_step / 2};
                     if (d.count + 2 <= MAX_INSTRUCTIONS) {
                         d.instructions[d.count++] = (Instruction){INSTR_MOVE, A, 0, 0};
@@ -285,7 +380,7 @@ static Drawing generate_initial_drawing(const Image* const target_img) {
                 }
 
                 // Check down neighbor (Vertical connection)
-                if (sy < SMALL_SIZE - 1 && small_img[(sy + 1) * SMALL_SIZE + sx] >= THRESHOLD) {
+                if (sy < TARGET_SIZE - 1 && small_img[(sy + 1) * TARGET_SIZE + sx] >= THRESHOLD) {
                     const Point B = {sx * pixel_step + pixel_step / 2, (sy + 1) * pixel_step + pixel_step / 2};
                     if (d.count + 2 <= MAX_INSTRUCTIONS) {
                         d.instructions[d.count++] = (Instruction){INSTR_MOVE, A, 0, 0};
@@ -430,7 +525,8 @@ static void save_jpeg_grayscale(const Image* const img, const Drawing* const bes
     struct jpeg_error_mgr jerr;
     FILE *outfile;
     JSAMPROW row_pointer[1];
-    int row_stride;
+    int row_stride; 
+
     const int quality = 90; // High quality setting
 
     // Step 1: Initialize JPEG compression object
@@ -438,8 +534,8 @@ static void save_jpeg_grayscale(const Image* const img, const Drawing* const bes
     jpeg_create_compress(&cinfo);
 
     // Step 2: Open the output file
-    if ((outfile = fopen(JPEG_FILENAME, "wb")) == NULL) {
-        fprintf(stderr, "[ERROR] Can't open %s for writing\n", JPEG_FILENAME);
+    if ((outfile = fopen(JPEG_OUTPUT_FILENAME, "wb")) == NULL) {
+        fprintf(stderr, "[ERROR] Can't open %s for writing\n", JPEG_OUTPUT_FILENAME);
         return;
     }
     jpeg_stdio_dest(&cinfo, outfile);
@@ -450,6 +546,9 @@ static void save_jpeg_grayscale(const Image* const img, const Drawing* const bes
     cinfo.input_components = 1; // Grayscale image
     cinfo.in_color_space = JCS_GRAYSCALE;
 
+    // FIX FOR MEMORY SANITIZER: Calculate row_stride before starting compression
+    row_stride = IMAGE_SIZE * cinfo.input_components; // Bytes per row for grayscale (1 byte/pixel)
+
     jpeg_set_defaults(&cinfo);
     jpeg_set_quality(&cinfo, quality, TRUE); // Set the desired quality
 
@@ -457,8 +556,6 @@ static void save_jpeg_grayscale(const Image* const img, const Drawing* const bes
     jpeg_start_compress(&cinfo, TRUE);
 
     // Step 5: Write scanlines
-    row_stride = IMAGE_SIZE * cinfo.input_components; // Bytes per row for grayscale (1 byte/pixel)
-
     while (cinfo.next_scanline < cinfo.image_height) {
         row_pointer[0] = &img->data[cinfo.next_scanline * row_stride];
         (void)jpeg_write_scanlines(&cinfo, row_pointer, 1);
@@ -472,7 +569,7 @@ static void save_jpeg_grayscale(const Image* const img, const Drawing* const bes
     jpeg_destroy_compress(&cinfo);
 
 
-    printf("\nSuccessfully saved best rendered image to %s (JPEG, Quality %d).\n", JPEG_FILENAME, quality);
+    printf("\nSuccessfully saved best rendered image to %s (JPEG, Quality %d).\n", JPEG_OUTPUT_FILENAME, quality);
     printf("--- Final Results ---\n");
     printf("Final Mean Squared Error (MSE): %.2f\n", final_error);
     printf("Final Instruction Count: %d\n", best_drawing->count);
@@ -500,13 +597,16 @@ int main(void) {
     srand((unsigned int)time(NULL));
 
     printf("--- Drawing Heuristic and Simulated Annealing Optimizer (libjpeg) ---\n");
-
-    // The previous run_tests function is removed for brevity and focus on the main task,
-    // as the utility functions were proven robust.
+    printf("--- Target image loading from: %s ---\n", JPEG_INPUT_FILENAME);
 
     // --- Setup ---
-    // Generate the target image using the embedded 'A' data
-    Image* target_img = generate_handwritten_A_target();
+    // Generate the target image by loading and resizing the input JPEG
+    Image* target_img = load_and_resize_target(JPEG_INPUT_FILENAME);
+    
+    if (target_img == NULL) {
+        fprintf(stderr, "[FATAL] Failed to load target image. Exiting.\n");
+        return EXIT_FAILURE;
+    }
 
     // 1. Initial Heuristic Guess via Tracing
     Drawing current_drawing = generate_initial_drawing(target_img);
