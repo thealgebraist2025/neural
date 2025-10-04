@@ -138,6 +138,8 @@ static Image* load_and_resize_target(const char* filename) {
     }
 
     // Step 2: Initialize the JPEG decompression object
+    // FIX for MemorySanitizer: Zero-initialize the structure before libjpeg uses it.
+    memset(&cinfo, 0, sizeof(cinfo));
     cinfo.err = jpeg_std_error(&jerr.pub);
     jerr.pub.error_exit = my_error_exit;
 
@@ -158,8 +160,6 @@ static Image* load_and_resize_target(const char* filename) {
 
     // Force output to grayscale for simplicity (1 component)
     cinfo.out_color_space = JCS_GRAYSCALE;
-    // FIX 1: The 'desired_number_of_color_components' field may not exist.
-    // Setting cinfo.out_color_space to JCS_GRAYSCALE is sufficient to get 1 component.
     
     // Step 4: Start decompressor
     (void)jpeg_start_decompress(&cinfo);
@@ -203,18 +203,6 @@ static Image* load_and_resize_target(const char* filename) {
             // Define the block in the source image corresponding to target pixel (tx, ty)
             const int sx_start = (int)(tx * scale_x);
             const int sy_start = (int)(ty * scale_y);
-            // Note: Fixed logic error here in loop bounds which could cause out-of-bounds access
-            // The sx_end and sy_end calculations below are slightly incorrect for block averaging.
-            // The original code was using sx_end for the sy loop and vice-versa.
-            // However, the original logic in the previous response was trying to sample a block:
-            /*
-             * for (int sy = sy_start; sy < sx_end; sy++) {
-             * ...
-             * for (int sx = sx_start; sx < sy_end; sx++) {
-             * ...
-             * }
-             * }
-            */
             // The current code implements a fixed-size block averaging which is robust:
             const int block_w = (int)scale_x > 0 ? (int)scale_x : 1;
             const int block_h = (int)scale_y > 0 ? (int)scale_y : 1;
@@ -542,6 +530,8 @@ static void save_jpeg_grayscale(const Image* const img, const Drawing* const bes
     const int quality = 90; // High quality setting
 
     // Step 1: Initialize JPEG compression object
+    // Initialize the compression struct to zero for safety.
+    memset(&cinfo, 0, sizeof(cinfo));
     cinfo.err = jpeg_std_error(&jerr);
     jpeg_create_compress(&cinfo);
 
@@ -665,7 +655,6 @@ int main(void) {
         float new_error = calculate_error(next_img, target_img);
 
         // 3. Acceptance criterion
-        // FIX 3: Cast RAND_MAX to float to avoid implicit conversion warning
         const float prob = (float)rand() / (float)RAND_MAX;
         if (acceptance_probability(current_error, new_error, temp) > prob) {
             // Accept the new state (Accept a better state, or a worse state based on probability)
