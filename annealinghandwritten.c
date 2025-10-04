@@ -238,6 +238,11 @@ static float calculate_error(const Image* const img1, const Image* const img2) {
  */
 static Drawing generate_initial_drawing(const Image* const target_img) {
     Drawing d;
+    
+    // Defensive coding: Explicitly zero the entire drawing structure to satisfy
+    // strict memory sanitizers and ensure all padding is clean.
+    memset(&d, 0, sizeof(Drawing));
+
     d.count = 0;
     SmallImage small_img;
     downscale_image(target_img, &small_img);
@@ -245,10 +250,7 @@ static Drawing generate_initial_drawing(const Image* const target_img) {
     const Pixel trace_intensity = 220;
     const int pixel_step = SCALE_FACTOR;
 
-    // Set all remaining instructions to MOVE {0, 0} to avoid uninitialized data
-    for (int i = 0; i < MAX_INSTRUCTIONS; i++) {
-        d.instructions[i] = (Instruction){INSTR_MOVE, {0, 0}, 0, 0};
-    }
+    // The instructions array is already zeroed by memset(d, 0, ...)
 
     // Trace Connections (4-neighborhood: Right, Down)
     for (int sy = 0; sy < SMALL_SIZE; sy++) {
