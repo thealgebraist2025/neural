@@ -404,7 +404,9 @@ static unsigned char* convert_to_rgb_buffer(const Image* const target, const Ima
     const int total_height = IMAGE_SIZE * 2;
     const int total_pixels = IMAGE_SIZE * total_height;
     // 3 color components (RGB) per pixel
-    unsigned char* buffer = (unsigned char*)malloc(total_pixels * 3);
+
+    // Use calloc to guarantee buffer is fully initialized to 0, satisfying MemorySanitizer
+    unsigned char* buffer = (unsigned char*)calloc(total_pixels * 3, 1);
     if (!buffer) {
         perror("Failed to allocate RGB buffer");
         exit(EXIT_FAILURE);
@@ -481,7 +483,8 @@ static void save_png_composite(const Image* const target, const Image* const ren
 
     // 6. Prepare pixel data and row pointers
     rgb_buffer = convert_to_rgb_buffer(target, rendered);
-    row_pointers = (png_bytep*)malloc(sizeof(png_bytep) * height);
+    // Use calloc for row_pointers as well, for maximum safety
+    row_pointers = (png_bytep*)calloc(height, sizeof(png_bytep));
     if (!rgb_buffer || !row_pointers) { goto cleanup; }
 
     for (int y = 0; y < height; y++) {
