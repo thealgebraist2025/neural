@@ -52,7 +52,8 @@ void initialize_synthetic_data(void) {
 /**
  * @brief Calculates the Hamming distance for 8 1D horizontal deformations per row,
  * using AVX (256-bit) assembly to process 4 rows in parallel.
- * * Note: AVX instructions are prefixed with 'v' (e.g., vmovdqu, vpxor).
+ * * FIX: The AVX shift instructions (vpsllq, vpsrlq) require the shift count to be 
+ * provided via an XMM register, not the CL register. This block has been corrected.
  */
 void calculate_1d_distances(void) {
     int result_index = 0;
@@ -60,7 +61,6 @@ void calculate_1d_distances(void) {
     const int shifts[] = { -4, -3, -2, -1, 1, 2, 3, 4 };
     
     // We iterate in chunks of 4 rows, since AVX 256-bit registers hold 4 x 64-bit integers.
-    // ROWS (64) is divisible by 4, so no cleanup loop is needed.
     for (int i = 0; i < ROWS; i += 4) {
         // Pointers to the current block of 4 rows
         const uint64_t *h_ptr = &HANDWRITTEN_IMAGE[i];
@@ -75,6 +75,9 @@ void calculate_1d_distances(void) {
             if (shift_amount < 0) {
                 // --- AVX ASSEMBLY BLOCK for Parallel LEFT SHIFT (vpsllq) ---
                 int absolute_shift = -shift_amount;
+                // Store the scalar shift amount in a 64-bit variable 
+                // so we can pass its memory address to the assembly (constraint %3).
+                uint64_t shift_reg_val = absolute_shift;
                 
                 __asm__ volatile (
                     // Load 4 handwritten rows into YMM0 (256 bits)
@@ -82,9 +85,11 @@ void calculate_1d_distances(void) {
                     // Load 4 reference rows into YMM1
                     "vmovdqu %2, %%ymm1\n\t"
                     
-                    // Parallel Shift Left (vpsllq shifts all 4 x 64-bit elements by CL)
-                    // The shift count must be placed in CL for vpsllq
-                    "vpsllq %%cl, %%ymm0, %%ymm0\n\t" 
+                    // Load scalar shift amount (64-bit) into XMM2 using vmovq. (%3 is the memory location of shift_reg_val)
+                    "vmovq %3, %%xmm2\n\t" 
+                    
+                    // Parallel Shift Left (vpsllq uses the shift count from the lowest 64 bits of XMM2)
+                    "vpsllq %%xmm2, %%ymm0, %%ymm0\n\t" 
                     
                     // Parallel XOR (YMM0 = YMM0 XOR YMM1)
                     "vpxor %%ymm1, %%ymm0, %%ymm0\n\t"
@@ -92,22 +97,26 @@ void calculate_1d_distances(void) {
                     // Store the 4 x 64-bit XOR results back to memory
                     "vmovdqu %%ymm0, %0\n\t"
                     
-                    : "=m" (four_xored_results[0]) // Output: write the 4 results to memory
-                    : "m" (h_ptr[0]), // Input 1: Address of the 4 handwritten rows
-                      "m" (r_ptr[0]), // Input 2: Address of the 4 reference rows
-                      "c" ((uint8_t)absolute_shift) // Input 3: Shift amount in CL
-                    : "ymm0", "ymm1" // Clobbered registers
+                    : "=m" (four_xored_results[0]) // %0
+                    : "m" (h_ptr[0]), // %1
+                      "m" (r_ptr[0]), // %2
+                      "m" (shift_reg_val) // %3 (The new shift count constraint)
+                    : "ymm0", "ymm1", "xmm2" // Clobbered registers: added xmm2
                 );
 
             } else {
                 // --- AVX ASSEMBLY BLOCK for Parallel RIGHT SHIFT (vpsrlq) ---
+                uint64_t shift_reg_val = shift_amount;
                 
                 __asm__ volatile (
                     "vmovdqu %1, %%ymm0\n\t"
                     "vmovdqu %2, %%ymm1\n\t"
                     
-                    // Parallel Shift Right (vpsrlq shifts all 4 x 64-bit elements by CL)
-                    "vpsrlq %%cl, %%ymm0, %%ymm0\n\t" 
+                    // Load scalar shift amount (64-bit) into XMM2
+                    "vmovq %3, %%xmm2\n\t"
+                    
+                    // Parallel Shift Right
+                    "vpsrlq %%xmm2, %%ymm0, %%ymm0\n\t" 
                     
                     "vpxor %%ymm1, %%ymm0, %%ymm0\n\t"
                     
@@ -116,13 +125,12 @@ void calculate_1d_distances(void) {
                     : "=m" (four_xored_results[0])
                     : "m" (h_ptr[0]),
                       "m" (r_ptr[0]),
-                      "c" ((uint8_t)shift_amount) 
-                    : "ymm0", "ymm1"
+                      "m" (shift_reg_val) 
+                    : "ymm0", "ymm1", "xmm2" // Clobbered registers: added xmm2
                 );
             }
 
             // After parallel shift and XOR, we perform the scalar POPCNT on the 4 results.
-            // This is done 4 times per AVX operation.
             for (int k = 0; k < 4; ++k) {
                 uint64_t distance_val = 0;
                 
