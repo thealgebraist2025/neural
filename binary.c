@@ -89,20 +89,23 @@ void rotate_image_45_degrees(void) {
     for (int i = 0; i < BITS_TOTAL; ++i) {
         uint16_t dest_index = map_ptr[i];
 
+        // FIX: Introduce 64-bit temporaries to force Clang to assign 64-bit registers
+        // to the source index inputs, resolving the MOVQ/MOVL conflict error.
+        uint64_t i_64 = i; 
+        uint64_t dest_index_64 = dest_index; 
+
         // --- Optimized Assembly Block (Minimal Bitwise Operations) ---
         // Constraint mapping (Input list starts at %0):
-        // %0: i (source index, int)
+        // %0: i_64 (source index, uint64_t)
         // %1: src_ptr (Source pointer)
         // %2: dst_ptr (Destination pointer)
-        // %3: dest_index (Destination index, uint16_t)
+        // %3: dest_index_64 (Destination index, uint64_t)
 
         __asm__ volatile (
             // 1. Setup Source Bit Index (i) and Destination Bit Index (dest_index)
-            // FIX 1: Use MOVL. This loads the 32-bit value and implicitly zero-extends 
-            // the full 64-bit register (RDX/RDI), resolving the 'invalid operand' error 
-            // caused by MOVQ expecting a 64-bit source.
-            "movl %0, %%edx\n\t"        // EDX = i. RDX = 0 | EDX.
-            "movl %3, %%edi\n\t"        // EDI = dest_index. RDI = 0 | EDI.
+            // Use MOVQ with the 64-bit temporary variables.
+            "movq %0, %%rdx\n\t"        // RDX = i_64 (source bit index 0-4095)
+            "movq %3, %%rdi\n\t"        // RDI = dest_index_64 (destination bit index 0-4095)
 
             // --- Get Source Bit Value (using BTQ) ---
             // Calculate R_src offset: R_src = RDX / 64. R8 = 8 * R_src.
@@ -110,7 +113,7 @@ void rotate_image_45_degrees(void) {
             "shrq $6, %%r8\n\t"         // R8 holds R_src (Row Index)
             "imulq $8, %%r8, %%r8\n\t"  // R8 holds byte offset of the source word
             
-            // BTQ requires a 64-bit memory operand. RDX holds the index modulo 64.
+            // BTQ requires a 64-bit memory operand. RDX holds the index (implicit modulo 64).
             "btq (%1, %%r8), %%rdx\n\t"   // Test bit RDX % 64 at address src_ptr + R8
             
             // --- Check and Set Destination Bit Value (using JNC/BTSQ) ---
@@ -122,16 +125,16 @@ void rotate_image_45_degrees(void) {
             "shrq $6, %%r9\n\t"         // R9 holds R_dst (Row Index)
             "imulq $8, %%r9, %%r9\n\t"  // R9 holds byte offset of the destination word
             
-            // BTSQ requires a 64-bit memory operand. RDI holds the index modulo 64.
+            // BTSQ requires a 64-bit memory operand. RDI holds the index (implicit modulo 64).
             "btsq (%2, %%r9), %%rdi\n\t" 
 
             "1:\n\t" // Label for jump instruction (if bit was 0)
 
             : // No outputs modified in this block
-            : "r" (i), // %0 Source index (i)
-              "r" (src_ptr), // %1 Source pointer
-              "r" (dst_ptr), // %2 Destination pointer
-              "r" (dest_index) // %3 Destination index (dest_index)
+            : "r" (i_64),           // %0 Source index (i)
+              "r" (src_ptr),        // %1 Source pointer
+              "r" (dst_ptr),        // %2 Destination pointer
+              "r" (dest_index_64)   // %3 Destination index (dest_index)
             : "rdx", "rdi", "r8", "r9", "cc", "memory" // Clobbered: CC for Carry Flag and memory
         );
     }
