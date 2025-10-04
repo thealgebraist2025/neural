@@ -1,0 +1,24 @@
+name: Build voronoi 
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Build
+      run: clang -fsanitize=address,undefined,leak -fno-omit-frame-pointer -O0 -Wall -g -std=c99 voronoi.c -lm -ljpeg -o voronoi 
+
+    - name: Run the program
+      run: ./voronoi 
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4 # Use the latest version
+      with:
+        name: voronoi-graph
+        path: voronoi.svg
