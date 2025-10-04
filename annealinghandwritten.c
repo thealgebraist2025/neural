@@ -3,7 +3,7 @@
 #include <string.h>
 #include <time.h>
 #include <math.h>
-#include <setjmp.h> // Required for libjpeg error handling
+#include <setjmp.h> 
 
 // Include the external libjpeg library headers
 #include <jpeglib.h>
@@ -95,7 +95,7 @@ const int A_TEMPLATE[SMALL_GRID_SIZE * SMALL_GRID_SIZE] = {
 // Forward declarations
 static void draw_line(Image* const img, const Point p1, const Point p2, const Pixel intensity);
 static Image* render_drawing(const Drawing* const drawing);
-static float calculate_combined_fitness(const Image* const rendered_img, const Image* const target_img);
+static float calculate_template_error(const Image* const rendered_img);
 static void downscale_image(const Image* const large_img, SmallImage* const small_img);
 
 // --- 2. JPEG Error Handling ---
@@ -135,14 +135,50 @@ static Image* create_image(void) {
  */
 static void set_pixel(Image* const img, const Coord x, const Coord y, const Pixel value) {
     if (x >= 0 && x < IMAGE_SIZE && y >= 0 && y < IMAGE_SIZE) {
-        img->data[y * IMAGE_SIZE + x] = value;
+        // We use the maximum value if the intensity is high to ensure we draw dark lines
+        if (value > img->data[y * IMAGE_SIZE + x]) {
+             img->data[y * IMAGE_SIZE + x] = value;
+        }
     }
 }
 
 /**
- * @brief Loads a JPEG file, decompresses it, and resizes it to the target IMAGE_SIZE x IMAGE_SIZE.
+ * @brief Downscales a 128x128 image to a 16x16 grid using simple averaging.
+ */
+static void downscale_image(const Image* const large_img, SmallImage* const small_img) {
+    const int GRID_SIZE = SMALL_GRID_SIZE; // 16
+    const int BLOCK_SIZE = IMAGE_SIZE / GRID_SIZE; // 8
+
+    for (int sy = 0; sy < GRID_SIZE; sy++) {
+        for (int sx = 0; sx < GRID_SIZE; sx++) {
+            long sum = 0;
+            const int block_pixels = BLOCK_SIZE * BLOCK_SIZE;
+
+            // Define starting pixel in 128x128 grid
+            const int start_y = sy * BLOCK_SIZE;
+            const int start_x = sx * BLOCK_SIZE;
+
+            for (int dy = 0; dy < BLOCK_SIZE; dy++) {
+                const int ly = start_y + dy;
+                for (int dx = 0; dx < BLOCK_SIZE; dx++) {
+                    const int lx = start_x + dx;
+                    
+                    // Access is safe: max ly/lx is 120 + 7 = 127.
+                    sum += large_img->data[ly * IMAGE_SIZE + lx];
+                }
+            }
+            
+            // Set the target pixel to the average value
+            (*small_img)[sy * GRID_SIZE + sx] = (Pixel)(sum / block_pixels);
+        }
+    }
+}
+
+/**
+ * @brief Loads a JPEG file, resizes it, and optionally inverts colors to ensure black lines on white background.
  */
 static Image* load_and_resize_target(const char* filename) {
+    // ... (JPEG loading logic remains the same) ...
     struct jpeg_decompress_struct cinfo;
     struct my_error_mgr jerr;
     FILE *infile;
@@ -175,9 +211,9 @@ static Image* load_and_resize_target(const char* filename) {
     raw_img.width = cinfo.output_width;
     raw_img.height = cinfo.output_height;
     raw_img.components = cinfo.output_components;
-    long total_pixels = (long)raw_img.width * raw_img.height * raw_img.components;
+    long total_pixels_raw = (long)raw_img.width * raw_img.height * raw_img.components;
 
-    raw_img.data = (Pixel*)malloc(total_pixels * sizeof(Pixel));
+    raw_img.data = (Pixel*)malloc(total_pixels_raw * sizeof(Pixel));
     if (!raw_img.data) {
         perror("[ERROR] Failed to allocate memory for raw image data");
         longjmp(jerr.setjmp_buffer, 1);
@@ -198,7 +234,8 @@ static Image* load_and_resize_target(const char* filename) {
     target_img = create_image();
     const float scale_x = (float)raw_img.width / IMAGE_SIZE;
     const float scale_y = (float)raw_img.height / IMAGE_SIZE;
-
+    
+    // Resize with averaging
     for (int ty = 0; ty < IMAGE_SIZE; ty++) {
         for (int tx = 0; tx < IMAGE_SIZE; tx++) {
             long sum = 0;
@@ -223,44 +260,33 @@ static Image* load_and_resize_target(const char* filename) {
         }
     }
     
+    // --- COLOR INVERSION LOGIC ---
+    // Check if the average brightness of the resized image suggests a light background
+    long total_brightness = 0;
+    const int total_pixels_resized = IMAGE_SIZE * IMAGE_SIZE;
+    for (int i = 0; i < total_pixels_resized; i++) {
+        total_brightness += target_img->data[i];
+    }
+    const long average_brightness = total_brightness / total_pixels_resized;
+
+    if (average_brightness < PIXEL_MAX / 2) {
+        // Average brightness is low (dark image), no inversion needed.
+        printf("[INFO] Image is dark-on-light, no inversion.\n");
+    } else {
+        // Average brightness is high (light image, likely white background), INVERT!
+        for (int i = 0; i < total_pixels_resized; i++) {
+            target_img->data[i] = PIXEL_MAX - target_img->data[i];
+        }
+        printf("[INFO] Image is light-on-dark. Colors inverted for black-on-white target.\n");
+    }
+    // --- END COLOR INVERSION LOGIC ---
+
+
     printf("[INFO] Successfully loaded and resized %s from %dx%d (Grayscale) to %dx%d.\n",
            filename, raw_img.width, raw_img.height, IMAGE_SIZE, IMAGE_SIZE);
 
     free(raw_img.data);
     return target_img;
-}
-
-/**
- * @brief Downscales a 128x128 image to a 16x16 grid using simple averaging.
- * NOTE: Refactored to use explicit start/offset to prevent heap-buffer-overflow.
- */
-static void downscale_image(const Image* const large_img, SmallImage* const small_img) {
-    const int GRID_SIZE = SMALL_GRID_SIZE; // 16
-    const int BLOCK_SIZE = IMAGE_SIZE / GRID_SIZE; // 8
-
-    for (int sy = 0; sy < GRID_SIZE; sy++) {
-        for (int sx = 0; sx < GRID_SIZE; sx++) {
-            long sum = 0;
-            const int block_pixels = BLOCK_SIZE * BLOCK_SIZE;
-
-            // Define starting pixel in 128x128 grid
-            const int start_y = sy * BLOCK_SIZE;
-            const int start_x = sx * BLOCK_SIZE;
-
-            for (int dy = 0; dy < BLOCK_SIZE; dy++) {
-                const int ly = start_y + dy;
-                for (int dx = 0; dx < BLOCK_SIZE; dx++) {
-                    const int lx = start_x + dx;
-                    
-                    // Access is safe: max ly/lx is 120 + 7 = 127.
-                    sum += large_img->data[ly * IMAGE_SIZE + lx];
-                }
-            }
-            
-            // Set the target pixel to the average value
-            (*small_img)[sy * GRID_SIZE + sx] = (Pixel)(sum / block_pixels);
-        }
-    }
 }
 
 // --- 4. Core Graphics Primitives (Drawing & Rendering) ---
@@ -310,11 +336,14 @@ static Image* render_drawing(const Drawing* const drawing) {
                 current_pos = instr->p;
                 break;
             case INSTR_LINE:
-                draw_line(img, current_pos, instr->p, intensity);
+                // Only LINE instructions have non-zero intensity
+                if (intensity > 0) { 
+                    draw_line(img, current_pos, instr->p, intensity);
+                }
                 current_pos = instr->p;
                 break;
             case INSTR_TYPE_COUNT:
-                break; // Should not happen
+                break; 
         }
     }
     return img;
@@ -551,7 +580,57 @@ static float acceptance_probability(const float old_fitness, const float new_fit
     return (float)exp((double)(old_fitness - new_fitness) / temp);
 }
 
-// --- 6. JPEG Output (Using libjpeg) ---
+// --- 6. Unit Tests ---
+
+/**
+ * @brief Unit test to verify that a simple 3-line 'A' drawing matches the hardcoded A_TEMPLATE.
+ */
+static void test_a_template_match(void) {
+    printf("\n--- Running Unit Test: A-Template Match ---\n");
+    Drawing test_drawing = {0};
+    
+    // Create a 3-line 'A' using coordinates that map to the center of the 16x16 grid:
+    // P1: Top center (x=64, y=16) -> maps to (8, 2) in 16x16
+    // P2: Bottom left (x=16, y=112) -> maps to (2, 14)
+    // P3: Bottom right (x=112, y=112) -> maps to (14, 14)
+    // P4: Crossbar start (x=32, y=80) -> maps to (4, 10)
+    // P5: Crossbar end (x=96, y=80) -> maps to (12, 10)
+
+    const Pixel intensity = 255; // Solid black lines
+
+    // 1. Left leg
+    test_drawing.instructions[test_drawing.count++] = (Instruction){INSTR_MOVE, {64, 16}, 0};
+    test_drawing.instructions[test_drawing.count++] = (Instruction){INSTR_LINE, {16, 112}, intensity};
+    
+    // 2. Right leg
+    test_drawing.instructions[test_drawing.count++] = (Instruction){INSTR_MOVE, {64, 16}, 0};
+    test_drawing.instructions[test_drawing.count++] = (Instruction){INSTR_LINE, {112, 112}, intensity};
+    
+    // 3. Crossbar
+    test_drawing.instructions[test_drawing.count++] = (Instruction){INSTR_MOVE, {32, 80}, 0};
+    test_drawing.instructions[test_drawing.count++] = (Instruction){INSTR_LINE, {96, 80}, intensity};
+
+    Image* rendered_a = render_drawing(&test_drawing);
+    float template_error = calculate_template_error(rendered_a);
+    
+    // Expected template error for a near-perfect match should be very low (close to 0).
+    const float max_acceptable_error = 0.05f; 
+
+    if (template_error < max_acceptable_error) {
+        printf("[SUCCESS] Template Match Test Passed! Error: %.4f (Expected < %.4f)\n", 
+               template_error, max_acceptable_error);
+    } else {
+        printf("[FAILURE] Template Match Test Failed! Error: %.4f (Expected < %.4f)\n", 
+               template_error, max_acceptable_error);
+        printf("  This suggests the 'A' template matching or rendering is inaccurate.\n");
+    }
+    
+    free(rendered_a);
+    printf("--------------------------------------------------\n");
+}
+
+
+// --- 7. JPEG Output (Using libjpeg) ---
 
 /**
  * @brief Saves a grayscale Image to a high-quality JPEG file using libjpeg.
@@ -613,10 +692,13 @@ static void save_jpeg_grayscale(const Image* const img, const Drawing* const bes
 }
 
 
-// --- 7. Main Program Execution ---
+// --- 8. Main Program Execution ---
 
 int main(void) {
     srand((unsigned int)time(NULL));
+
+    // Run the unit test before starting the main optimization
+    test_a_template_match();
 
     printf("--- Drawing Optimizer with 'A' Constraint ---\n");
     printf("--- Target image loading from: %s ---\n", JPEG_INPUT_FILENAME);
