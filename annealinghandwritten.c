@@ -179,7 +179,6 @@ static void downscale_image(const Image* const large_img, SmallImage* const smal
  * @brief Loads a JPEG file, resizes it, and inverts colors to ensure black lines on white background.
  */
 static Image* load_and_resize_target(const char* filename) {
-    // ... (JPEG loading and color inversion logic remains the same) ...
     struct jpeg_decompress_struct cinfo;
     struct my_error_mgr jerr;
     FILE *infile;
@@ -294,7 +293,6 @@ static Image* load_and_resize_target(const char* filename) {
  * @brief Draws a line between two points using Bresenham's algorithm.
  */
 static void draw_line(Image* const img, const Point p1, const Point p2, const Pixel intensity) {
-    // ... (Bresenham's line drawing implementation remains the same) ...
     int x1 = p1.x, y1 = p1.y, x2 = p2.x, y2 = p2.y;
     int dx = abs(x2 - x1);
     int sx = x1 < x2 ? 1 : -1;
@@ -323,7 +321,6 @@ static void draw_line(Image* const img, const Point p1, const Point p2, const Pi
  * @return A newly rendered Image.
  */
 static Image* render_drawing(const Drawing* const drawing) {
-    // ... (Rendering logic remains the same) ...
     Image* img = create_image();
     Point current_pos = {0, 0};
     int i;
@@ -484,6 +481,9 @@ static int find_connected_components(const SmallImage* const small_img, Componen
 static void simplify_component_to_lines(const Component* const component, Point* const line_p1, Point* const line_p2) {
     if (component->count == 0) return;
     if (component->count == 1) {
+        // Handle single pixel component by making a tiny line (or just setting one point)
+        // For simplicity in the initial drawing, we'll just set the line to be a single point.
+        // This component will be filtered out by the main drawing function anyway.
         *line_p1 = component->pixels[0];
         *line_p2 = component->pixels[0];
         return;
@@ -519,6 +519,7 @@ static void simplify_component_to_lines(const Component* const component, Point*
     Point p1_16 = component->pixels[best_p1_idx];
     Point p2_16 = component->pixels[best_p2_idx];
 
+    // Map the 16x16 grid coordinate (0-15) to the center of the 8x8 block in the 128x128 grid
     line_p1->x = p1_16.x * SCALE_FACTOR + offset;
     line_p1->y = p1_16.y * SCALE_FACTOR + offset;
 
@@ -581,7 +582,6 @@ static Point random_point(void) {
  * @brief Generates a neighboring state by randomly mutating the current drawing.
  */
 static Drawing mutate_drawing(const Drawing* const current) {
-    // ... (Mutation logic remains the same) ...
     Drawing next = *current;
     
     // 0: Modify, 1: Add, 2: Remove
@@ -639,57 +639,88 @@ static float acceptance_probability(const float old_fitness, const float new_fit
 // --- 7. Unit Tests ---
 
 /**
- * @brief Unit test to verify the component detection and line simplification.
+ * @brief Helper to check if a calculated line approximation matches expected 16x16 coordinates.
+ * @param p1 Calculated start point (128x128).
+ * @param p2 Calculated end point (128x128).
+ * @param expected_p1_16 Expected 16x16 start point.
+ * @param expected_p2_16 Expected 16x16 end point.
+ * @return 1 if matched, 0 otherwise.
  */
-static void test_initial_drawing_vectorization(void) {
-    printf("\n--- Running Unit Test: Component Vectorization ---\n");
+static int check_line_approx(Point p1, Point p2, Point expected_p1_16, Point expected_p2_16) {
+    const int SCALE_FACTOR = IMAGE_SIZE / SMALL_GRID_SIZE; // 8
+    const int offset = SCALE_FACTOR / 2; // 4
+
+    // Convert 128x128 back to 16x16 grid coordinate indices (0-15)
+    Point p1_16_calc = {(p1.x - offset) / SCALE_FACTOR, (p1.y - offset) / SCALE_FACTOR};
+    Point p2_16_calc = {(p2.x - offset) / SCALE_FACTOR, (p2.y - offset) / SCALE_FACTOR};
+
+    // Check both (p1, p2) and (p2, p1) because line direction is arbitrary
+    int match_1 = (p1_16_calc.x == expected_p1_16.x && p1_16_calc.y == expected_p1_16.y &&
+                   p2_16_calc.x == expected_p2_16.x && p2_16_calc.y == expected_p2_16.y);
+                   
+    int match_2 = (p1_16_calc.x == expected_p2_16.x && p1_16_calc.y == expected_p2_16.y &&
+                   p2_16_calc.x == expected_p1_16.x && p2_16_calc.y == expected_p1_16.y);
+    
+    return match_1 || match_2;
+}
+
+/**
+ * @brief Unit test to verify component detection and line simplification for various line types.
+ */
+static void test_line_simplification_accuracy(void) {
+    printf("\n--- Running Unit Test: Line Simplification Accuracy ---\n");
     SmallImage test_small_img;
     memset(test_small_img, 0, sizeof(test_small_img));
     
-    // Set up a simple 16x16 image with three clear, separate components:
-    // 1. A vertical line (Component 1)
-    for (int y = 1; y < 8; y++) test_small_img[y * 16 + 2] = 100; // x=2, y=1..7
+    // 1. Vertical Line (x=2, y=1..7) -> Component 1
+    for (int y = 1; y < 8; y++) test_small_img[y * 16 + 2] = 100;
     
-    // 2. A horizontal line (Component 2)
-    for (int x = 9; x < 15; x++) test_small_img[10 * 16 + x] = 100; // y=10, x=9..14
+    // 2. Horizontal Line (y=10, x=9..14) -> Component 2
+    for (int x = 9; x < 15; x++) test_small_img[10 * 16 + x] = 100;
+
+    // 3. Diagonal Line (x=1, y=1 to x=5, y=5) -> Component 3
+    for (int i = 0; i <= 4; i++) test_small_img[(1 + i) * 16 + (1 + i)] = 100;
     
-    // 3. A single pixel (Component 3 - should be ignored by the main function but detected here)
-    test_small_img[15 * 16 + 15] = 100; // x=15, y=15
+    // 4. Single pixel (x=15, y=15) -> Component 4 (should be ignored by main function)
+    test_small_img[15 * 16 + 15] = 100;
 
     Component components[MAX_COMPONENTS];
     const int component_count = find_connected_components(&test_small_img, components);
 
-    if (component_count == 3) {
-        printf("[SUCCESS] Component Detection Passed: Found 3 components.\n");
+    if (component_count == 4) {
+        printf("[SUCCESS] Component Detection Passed: Found 4 components.\n");
     } else {
-        printf("[FAILURE] Component Detection Failed: Found %d components (Expected 3).\n", component_count);
+        printf("[FAILURE] Component Detection Failed: Found %d components (Expected 4).\n", component_count);
     }
     
-    // Test Line Simplification for Component 1 (Vertical Line)
-    Point p1, p2;
-    if (components[0].count > 1) {
-        simplify_component_to_lines(&components[0], &p1, &p2);
-        // Expected 16x16 coordinates for Comp 1: (2, 1) and (2, 7)
-        if ((p1.x == 16+4 && p1.y == 8+4) && (p2.x == 16+4 && p2.y == 56+4)) {
-            printf("[SUCCESS] Line Simplification Comp 1: Line approximated correctly.\n");
-        } else {
-             printf("[FAILURE] Line Simplification Comp 1: Expected (2,1)-(2,7) -> Got (%d,%d)-(%d,%d) (16x16 simplified coords not matching 128x128).\n",
-                p1.x/8, p1.y/8, p2.x/8, p2.y/8);
-        }
+    Point p1_128, p2_128;
+
+    // --- Test 1: Vertical Line (16x16: (2, 1) to (2, 7)) ---
+    simplify_component_to_lines(&components[0], &p1_128, &p2_128);
+    if (check_line_approx(p1_128, p2_128, (Point){2, 1}, (Point){2, 7})) {
+        printf("[SUCCESS] Vertical Line Simplification: Correctly identified endpoints.\n");
+    } else {
+         printf("[FAILURE] Vertical Line Simplification: Expected (2,1)-(2,7). Got: (%d,%d)-(%d,%d) (16x16 indices).\n",
+            (p1_128.x-4)/8, (p1_128.y-4)/8, (p2_128.x-4)/8, (p2_128.y-4)/8);
     }
 
-    // Test Line Simplification for Component 2 (Horizontal Line)
-    if (components[1].count > 1) {
-        simplify_component_to_lines(&components[1], &p1, &p2);
-        // Expected 16x16 coordinates for Comp 2: (9, 10) and (14, 10)
-        if ((p1.x == 72+4 && p1.y == 80+4) && (p2.x == 112+4 && p2.y == 80+4)) {
-            printf("[SUCCESS] Line Simplification Comp 2: Line approximated correctly.\n");
-        } else {
-             printf("[FAILURE] Line Simplification Comp 2: Expected (9,10)-(14,10) -> Got (%d,%d)-(%d,%d) (16x16 simplified coords not matching 128x128).\n",
-                p1.x/8, p1.y/8, p2.x/8, p2.y/8);
-        }
+    // --- Test 2: Horizontal Line (16x16: (9, 10) to (14, 10)) ---
+    simplify_component_to_lines(&components[1], &p1_128, &p2_128);
+    if (check_line_approx(p1_128, p2_128, (Point){9, 10}, (Point){14, 10})) {
+        printf("[SUCCESS] Horizontal Line Simplification: Correctly identified endpoints.\n");
+    } else {
+         printf("[FAILURE] Horizontal Line Simplification: Expected (9,10)-(14,10). Got: (%d,%d)-(%d,%d) (16x16 indices).\n",
+            (p1_128.x-4)/8, (p1_128.y-4)/8, (p2_128.x-4)/8, (p2_128.y-4)/8);
     }
 
+    // --- Test 3: Diagonal Line (16x16: (1, 1) to (5, 5)) ---
+    simplify_component_to_lines(&components[2], &p1_128, &p2_128);
+    if (check_line_approx(p1_128, p2_128, (Point){1, 1}, (Point){5, 5})) {
+        printf("[SUCCESS] Diagonal Line Simplification: Correctly identified endpoints.\n");
+    } else {
+         printf("[FAILURE] Diagonal Line Simplification: Expected (1,1)-(5,5). Got: (%d,%d)-(%d,%d) (16x16 indices).\n",
+            (p1_128.x-4)/8, (p1_128.y-4)/8, (p2_128.x-4)/8, (p2_128.y-4)/8);
+    }
 
     printf("--------------------------------------------------\n");
 }
@@ -741,7 +772,6 @@ static void test_a_template_match(void) {
  * @brief Saves a grayscale Image to a high-quality JPEG file using libjpeg.
  */
 static void save_jpeg_grayscale(const Image* const img, const Drawing* const best_drawing, const float final_fitness) {
-    // ... (JPEG saving logic remains the same) ...
     struct jpeg_compress_struct cinfo;
     struct jpeg_error_mgr jerr;
     FILE *outfile;
@@ -805,7 +835,7 @@ int main(void) {
 
     // Run all unit tests
     test_a_template_match();
-    test_initial_drawing_vectorization();
+    test_line_simplification_accuracy();
 
 
     printf("--- Drawing Optimizer with 'A' Constraint ---\n");
