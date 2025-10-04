@@ -1,4 +1,4 @@
-name: INN sentences 
+name: Build annealing handwritten 
 
 on:
   push:
