@@ -12,7 +12,7 @@ jobs:
       uses: actions/checkout@v2
 
     - name: Build
-      run: clang -fsanitize=address,undefined,leak -fno-omit-frame-pointer -O0 -Wall -g -std=c99 voronoi.c -lm -ljpeg -o voronoi 
+      run: clang -fsanitize=address,undefined,leak -fno-omit-frame-pointer -O0 -Wall -g -std=c99 voronoi.c -lm -o voronoi 
 
     - name: Run the program
       run: ./voronoi 
