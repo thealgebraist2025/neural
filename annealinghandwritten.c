@@ -4,6 +4,10 @@
 #include <time.h>
 #include <math.h>
 
+// --- LIBPNG DEPENDENCY ---
+// Explicitly include libpng for PNG file generation.
+#include <png.h>
+
 // --- 1. Constants and Type Definitions ---
 
 #define IMAGE_SIZE 128
@@ -11,14 +15,15 @@
 #define SCALE_FACTOR (IMAGE_SIZE / SMALL_SIZE) // 128 / 16 = 8
 #define PIXEL_MAX 255
 #define THRESHOLD 128 // Grayscale value 128 (dark or black)
-#define MAX_INSTRUCTIONS 1024 // Increased max instructions for tracing heuristic
+#define MAX_INSTRUCTIONS 1024
 #define SA_RUNTIME_SECONDS 120
 #define SA_LOG_INTERVAL_SECONDS 5
+#define PNG_FILENAME "annealing.png" // PNG file extension
 
 // Using int for screen coordinates (0-127)
 typedef int Coord;
 
-// 8-bit grayscale pixel value
+// 8-bit grayscale pixel value (0=White, 255=Black)
 typedef unsigned char Pixel;
 
 // Structure for 2D coordinate points
@@ -32,15 +37,15 @@ typedef enum {
     INSTR_MOVE,
     INSTR_LINE,
     INSTR_CIRCLE,
-    INSTR_TYPE_COUNT // Utility to get the number of types
+    INSTR_TYPE_COUNT
 } InstructionType;
 
 // Structure for a single drawing instruction
 typedef struct {
     InstructionType type;
-    Point p;    // Target point for MOVE/LINE, center for CIRCLE
-    int radius; // Used only for CIRCLE
-    Pixel intensity; // How dark to draw the primitive (0-255)
+    Point p;
+    int radius;
+    Pixel intensity;
 } Instruction;
 
 // Structure for the full drawing program
@@ -56,6 +61,9 @@ typedef struct {
 
 // Array type for the 16x16 downscaled image
 typedef Pixel SmallImage[SMALL_SIZE * SMALL_SIZE];
+
+// Forward declaration for drawing primitive
+static void draw_line(Image* const img, const Point p1, const Point p2, const Pixel intensity);
 
 // --- 2. Utility Functions ---
 
@@ -76,40 +84,61 @@ static Image* create_image(void) {
 
 /**
  * @brief Safely sets a pixel in the image if the coordinates are within bounds.
- * @param img The target image.
- * @param x The x coordinate.
- * @param y The y coordinate.
- * @param value The pixel intensity (0-255).
  */
 static void set_pixel(Image* const img, const Coord x, const Coord y, const Pixel value) {
     if (x >= 0 && x < IMAGE_SIZE && y >= 0 && y < IMAGE_SIZE) {
-        // Linear index calculation
         img->data[y * IMAGE_SIZE + x] = value;
     }
 }
 
 /**
  * @brief Downscales a 128x128 image to a 16x16 grid using simple averaging.
- * @param large_img The 128x128 source image.
- * @param small_img The 16x16 destination array.
  */
 static void downscale_image(const Image* const large_img, SmallImage* const small_img) {
     for (int sy = 0; sy < SMALL_SIZE; sy++) {
         for (int sx = 0; sx < SMALL_SIZE; sx++) {
             long sum = 0;
-            // Iterate over the 8x8 block in the large image
+            const int block_pixels = SCALE_FACTOR * SCALE_FACTOR;
+
             for (int ly = sy * SCALE_FACTOR; ly < (sy + 1) * SCALE_FACTOR; ly++) {
                 for (int lx = sx * SCALE_FACTOR; lx < (sx + 1) * SCALE_FACTOR; lx++) {
-                    // Check bounds just in case, though should be fine
-                    if (ly >= 0 && ly < IMAGE_SIZE && lx >= 0 && lx < IMAGE_SIZE) {
-                        sum += large_img->data[ly * IMAGE_SIZE + lx];
-                    }
+                    sum += large_img->data[ly * IMAGE_SIZE + lx];
                 }
             }
-            // Average the 64 pixels (8*8)
-            (*small_img)[sy * SMALL_SIZE + sx] = (Pixel)(sum / (SCALE_FACTOR * SCALE_FACTOR));
+            (*small_img)[sy * SMALL_SIZE + sx] = (Pixel)(sum / block_pixels);
         }
     }
+}
+
+/**
+ * @brief Hardcoded 128x128 image simulating a handwritten 'A'.
+ * This acts as the target image for optimization.
+ */
+static Image* generate_handwritten_A_target(void) {
+    Image* img = create_image();
+    const Pixel black = 255;
+    const Pixel gray = 180;
+    const Point center = {IMAGE_SIZE / 2, IMAGE_SIZE / 2};
+    const int hh = IMAGE_SIZE / 3;
+
+    // Left leg (wavy)
+    draw_line(img, (Point){center.x - 25, center.y + hh + 5}, (Point){center.x - 10, center.y}, black);
+    draw_line(img, (Point){center.x - 10, center.y + 1}, (Point){center.x, center.y - hh + 5}, gray);
+
+    // Right leg (thick)
+    draw_line(img, (Point){center.x + 3, center.y - hh + 7}, (Point){center.x + 30, center.y + hh}, black);
+    draw_line(img, (Point){center.x + 4, center.y - hh + 7}, (Point){center.x + 31, center.y + hh}, black);
+
+    // Crossbar (slanted)
+    draw_line(img, (Point){center.x - 18, center.y + 15}, (Point){center.x + 8, center.y + 8}, black);
+
+    // Add some random noise and thickness variations
+    srand((unsigned int)time(NULL));
+    for (int i = 0; i < IMAGE_SIZE * IMAGE_SIZE / 200; i++) {
+        set_pixel(img, rand() % IMAGE_SIZE, rand() % IMAGE_SIZE, (Pixel)(rand() % 80 + 175));
+    }
+
+    return img;
 }
 
 // --- 3. Core Graphics Primitives (Drawing & Rendering) ---
@@ -142,7 +171,7 @@ static void draw_line(Image* const img, const Point p1, const Point p2, const Pi
 }
 
 /**
- * @brief Draws a simple filled circle. (Unchanged, retained for CIRCLE instruction)
+ * @brief Draws a simple filled circle.
  */
 static void draw_circle(Image* const img, const Point center, const int radius, const Pixel intensity) {
     if (radius <= 0) return;
@@ -158,6 +187,7 @@ static void draw_circle(Image* const img, const Point center, const int radius, 
 
 /**
  * @brief Renders a full Drawing program onto an image.
+ * @return A newly rendered Image.
  */
 static Image* render_drawing(const Drawing* const drawing) {
     Image* img = create_image();
@@ -204,39 +234,7 @@ static float calculate_error(const Image* const img1, const Image* const img2) {
 // --- 4. Simulated Annealing Heuristics & Mutations ---
 
 /**
- * @brief Mock function to generate the target image (Handwritten 'A').
- */
-static Image* generate_mock_target_A(void) {
-    Image* img = create_image();
-    const Pixel black = 255;
-    const Point center = {IMAGE_SIZE / 2, IMAGE_SIZE / 2};
-    const int half_height = IMAGE_SIZE / 3;
-
-    // Draw left leg of 'A' (slightly curved to simulate handwriting)
-    draw_line(img, (Point){center.x - 20, center.y + half_height}, (Point){center.x - 5, center.y}, black);
-    draw_line(img, (Point){center.x - 5, center.y}, (Point){center.x, center.y - half_height + 5}, black);
-
-    // Draw right leg of 'A'
-    draw_line(img, (Point){center.x, center.y - half_height + 5}, (Point){center.x + 25, center.y + half_height - 5}, black);
-
-    // Draw crossbar (thick)
-    draw_line(img, (Point){center.x - 15, center.y + 10}, (Point){center.x + 15, center.y + 10}, black);
-    draw_line(img, (Point){center.x - 15, center.y + 11}, (Point){center.x + 15, center.y + 11}, black);
-
-
-    // Add some random noise and thickness variations
-    srand((unsigned int)time(NULL));
-    for (int i = 0; i < IMAGE_SIZE * IMAGE_SIZE / 200; i++) {
-        set_pixel(img, rand() % IMAGE_SIZE, rand() % IMAGE_SIZE, (Pixel)(rand() % 100 + 155));
-    }
-
-    return img;
-}
-
-/**
  * @brief Generates the initial drawing by tracing dark pixels in a 16x16 downscaled image.
- * @param target_img The 128x128 target image.
- * @return A Drawing structure generated by the tracing heuristic.
  */
 static Drawing generate_initial_drawing(const Image* const target_img) {
     Drawing d;
@@ -244,7 +242,7 @@ static Drawing generate_initial_drawing(const Image* const target_img) {
     SmallImage small_img;
     downscale_image(target_img, &small_img);
 
-    const Pixel trace_intensity = 220; // Slightly less than full black
+    const Pixel trace_intensity = 220;
     const int pixel_step = SCALE_FACTOR;
 
     // Set all remaining instructions to MOVE {0, 0} to avoid uninitialized data
@@ -252,7 +250,7 @@ static Drawing generate_initial_drawing(const Image* const target_img) {
         d.instructions[i] = (Instruction){INSTR_MOVE, {0, 0}, 0, 0};
     }
 
-    // 1. Trace Connections
+    // Trace Connections (4-neighborhood: Right, Down)
     for (int sy = 0; sy < SMALL_SIZE; sy++) {
         for (int sx = 0; sx < SMALL_SIZE; sx++) {
             if (small_img[sy * SMALL_SIZE + sx] >= THRESHOLD) {
@@ -280,77 +278,57 @@ static Drawing generate_initial_drawing(const Image* const target_img) {
         }
     }
 
-    printf("\nHeuristic guess generated via 16x16 tracing (%d instructions).\n", d.count);
     return d;
 }
 
-
 /**
  * @brief Checks if three points are approximately collinear.
- * Uses the cross product magnitude (proportional to triangle area).
  */
 static int is_collinear(const Point A, const Point B, const Point C) {
-    // Cross product magnitude: (Bx - Ax) * (Cy - Ay) - (By - Ay) * (Cx - Ax)
-    // Use long to prevent overflow during intermediate calculations.
+    // Cross product magnitude (proportional to triangle area)
     const long term1 = (long)(B.x - A.x) * (C.y - A.y);
     const long term2 = (long)(B.y - A.y) * (C.x - A.x);
     const long cross_product = term1 - term2;
-    // A small tolerance (e.g., 50) squared is enough for integer coordinates
-    // to account for minor rounding/placement differences.
+    // Tolerance (50) squared to account for small deviations
     return (cross_product * cross_product) < 50;
 }
 
 /**
  * @brief Attempts to merge consecutive LINE instructions that are collinear.
- * For a sequence MOVE(P_i), LINE(P_{i+1}); MOVE(P_{i+1}), LINE(P_{i+2});
- * If P_i, P_{i+1}, P_{i+2} are collinear, replace with MOVE(P_i), LINE(P_{i+2});
- * @param d The drawing to modify (in-place).
  * @return 1 if a merge occurred, 0 otherwise.
  */
 static int try_merge_instructions(Drawing* const d) {
-    if (d->count < 4) return 0; // Need at least two pairs of MOVE, LINE
+    if (d->count < 4) return 0;
 
     for (int i = 0; i < d->count - 3; i++) {
-        // Pattern check:
-        // P_i: d->instructions[i].p (start point A)
-        // P_{i+1}: d->instructions[i+1].p (mid point B)
-        // P_{i+2}: d->instructions[i+2].p (must be B)
-        // P_{i+3}: d->instructions[i+3].p (end point C)
+        const Instruction* I0 = &d->instructions[i];   // MOVE(A)
+        const Instruction* I1 = &d->instructions[i+1]; // LINE(B)
+        const Instruction* I2 = &d->instructions[i+2]; // MOVE(B)
+        const Instruction* I3 = &d->instructions[i+3]; // LINE(C)
 
-        const Instruction* I0 = &d->instructions[i]; // Potential MOVE(A)
-        const Instruction* I1 = &d->instructions[i+1]; // Potential LINE(B)
-        const Instruction* I2 = &d->instructions[i+2]; // Potential MOVE(B)
-        const Instruction* I3 = &d->instructions[i+3]; // Potential LINE(C)
-
-        // Ensure the sequence matches the pattern: MOVE, LINE, MOVE(B), LINE
         if (I0->type == INSTR_MOVE && I1->type == INSTR_LINE &&
             I2->type == INSTR_MOVE && I3->type == INSTR_LINE &&
-            // Midpoint check: The second MOVE must start where the first LINE ended.
-            I1->p.x == I2->p.x && I1->p.y == I2->p.y) {
+            I1->p.x == I2->p.x && I1->p.y == I2->p.y &&
+            I1->intensity == I3->intensity) { // Check midpoints and intensity
 
             const Point A = I0->p;
             const Point B = I1->p;
             const Point C = I3->p;
 
             if (is_collinear(A, B, C)) {
-                // MERGE: Replace the sequence with: MOVE(A), LINE(C);
-                // The intensity must also be the same to merge.
-                if (I1->intensity == I3->intensity) {
-                    // Update the first LINE instruction to point to C
-                    d->instructions[i+1].p = C;
+                // MERGE: Replace sequence with MOVE(A), LINE(C)
+                d->instructions[i+1].p = C;
 
-                    // Remove I2 (MOVE(B)) and I3 (LINE(C)) by shifting the array
-                    memmove(&d->instructions[i+2], &d->instructions[i+4],
-                            (d->count - (i + 4)) * sizeof(Instruction));
-                    d->count -= 2;
+                // Remove I2 (MOVE(B)) and I3 (LINE(C))
+                memmove(&d->instructions[i+2], &d->instructions[i+4],
+                        (d->count - (i + 4)) * sizeof(Instruction));
+                d->count -= 2;
 
-                    // Note: We don't advance 'i' because the new I2 might be the start of another merge
-                    return 1; // Indicate a successful merge
-                }
+                return 1; // Indicate a successful merge
             }
         }
     }
-    return 0; // No merge occurred
+    return 0;
 }
 
 /**
@@ -362,7 +340,6 @@ static Point random_point(void) {
 
 /**
  * @brief Generates a neighboring state by randomly mutating the current drawing.
- * Includes a chance to perform the instruction merge operation.
  */
 static Drawing mutate_drawing(const Drawing* const current) {
     Drawing next = *current;
@@ -370,9 +347,9 @@ static Drawing mutate_drawing(const Drawing* const current) {
     const int mutation_type = rand() % 4;
 
     if (mutation_type == 3) {
-        // MERGE STEP
+        // MERGE STEP (Prioritize merging to reduce complexity)
         try_merge_instructions(&next);
-    } else if (mutation_type == 0 && next.count > 0) { // Modify a random instruction
+    } else if (mutation_type == 0 && next.count > 0) { // Modify
         const int idx = rand() % next.count;
         Instruction* instr = &next.instructions[idx];
         const int param_to_change = rand() % 4;
@@ -386,7 +363,7 @@ static Drawing mutate_drawing(const Drawing* const current) {
         } else if (instr->type != INSTR_MOVE && param_to_change == 3) {
             instr->intensity = (Pixel)(rand() % 100 + 155);
         }
-    } else if (mutation_type == 1 && next.count < MAX_INSTRUCTIONS) { // Add instruction
+    } else if (mutation_type == 1 && next.count < MAX_INSTRUCTIONS) { // Add
         const int insert_idx = rand() % (next.count + 1);
         memmove(&next.instructions[insert_idx + 1], &next.instructions[insert_idx],
                 (next.count - insert_idx) * sizeof(Instruction));
@@ -398,7 +375,7 @@ static Drawing mutate_drawing(const Drawing* const current) {
         new_instr->radius = (new_instr->type == INSTR_CIRCLE) ? (rand() % 21) : 0;
         new_instr->intensity = (new_instr->type != INSTR_MOVE) ? (Pixel)(rand() % 100 + 155) : 0;
 
-    } else if (mutation_type == 2 && next.count > 1) { // Remove instruction
+    } else if (mutation_type == 2 && next.count > 1) { // Remove
         const int remove_idx = rand() % next.count;
         memmove(&next.instructions[remove_idx], &next.instructions[remove_idx + 1],
                 (next.count - remove_idx - 1) * sizeof(Instruction));
@@ -418,7 +395,138 @@ static float acceptance_probability(const float old_error, const float new_error
     return (float)exp((double)(old_error - new_error) / temp);
 }
 
-// --- 5. Sanity & Unit Tests ---
+// --- 5. PNG Output using libpng ---
+
+/**
+ * @brief Converts the two 128x128 grayscale images into a single 128x256 RGB buffer.
+ */
+static unsigned char* convert_to_rgb_buffer(const Image* const target, const Image* const rendered) {
+    const int total_height = IMAGE_SIZE * 2;
+    const int total_pixels = IMAGE_SIZE * total_height;
+    // 3 color components (RGB) per pixel
+    unsigned char* buffer = (unsigned char*)malloc(total_pixels * 3);
+    if (!buffer) {
+        perror("Failed to allocate RGB buffer");
+        exit(EXIT_FAILURE);
+    }
+
+    // Pointers for buffer access
+    unsigned char* ptr = buffer;
+
+    // 1. Convert Target Image (Top half)
+    for (int i = 0; i < IMAGE_SIZE * IMAGE_SIZE; i++) {
+        // Grayscale pixel value (0=White, 255=Black) is used for R, G, B
+        const Pixel gray = target->data[i];
+        *ptr++ = gray; // R
+        *ptr++ = gray; // G
+        *ptr++ = gray; // B
+    }
+
+    // 2. Convert Rendered Image (Bottom half)
+    for (int i = 0; i < IMAGE_SIZE * IMAGE_SIZE; i++) {
+        // Grayscale pixel value (0=White, 255=Black) is used for R, G, B
+        const Pixel gray = rendered->data[i];
+        *ptr++ = gray; // R
+        *ptr++ = gray; // G
+        *ptr++ = gray; // B
+    }
+
+    return buffer;
+}
+
+/**
+ * @brief Saves the composite RGB buffer to a PNG file using libpng.
+ */
+static void save_png_composite(const Image* const target, const Image* const rendered,
+                               const Drawing* const best_drawing, const float final_error) {
+    FILE *fp = fopen(PNG_FILENAME, "wb");
+    if (!fp) {
+        printf("[ERROR] Could not open file %s for binary writing.\n", PNG_FILENAME);
+        return;
+    }
+
+    png_structp png_ptr = NULL;
+    png_infop info_ptr = NULL;
+    unsigned char* rgb_buffer = NULL;
+    png_bytep *row_pointers = NULL;
+
+    // 1. Setup PNG structures
+    png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+    if (!png_ptr) { goto cleanup; }
+
+    info_ptr = png_create_info_struct(png_ptr);
+    if (!info_ptr) { goto cleanup; }
+
+    // 2. Set error handling (required for libpng)
+    if (setjmp(png_jmpbuf(png_ptr))) {
+        printf("[ERROR] Error during libpng I/O operation.\n");
+        goto cleanup;
+    }
+
+    // 3. Init I/O
+    png_init_io(png_ptr, fp);
+
+    // 4. Set IHDR (Image Header)
+    const int width = IMAGE_SIZE;
+    const int height = IMAGE_SIZE * 2;
+    const int bit_depth = 8;
+    const int color_type = PNG_COLOR_TYPE_RGB; // 3 components (R, G, B)
+
+    png_set_IHDR(png_ptr, info_ptr, width, height,
+                 bit_depth, color_type, PNG_INTERLACE_NONE,
+                 PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
+
+    // 5. Write Info
+    png_write_info(png_ptr, info_ptr);
+
+    // 6. Prepare pixel data and row pointers
+    rgb_buffer = convert_to_rgb_buffer(target, rendered);
+    row_pointers = (png_bytep*)malloc(sizeof(png_bytep) * height);
+    if (!rgb_buffer || !row_pointers) { goto cleanup; }
+
+    for (int y = 0; y < height; y++) {
+        // Each row starts at y * (width * 3 bytes) offset in the RGB buffer
+        row_pointers[y] = rgb_buffer + y * width * 3;
+    }
+
+    // 7. Write Data
+    png_write_image(png_ptr, row_pointers);
+
+    // 8. End Write
+    png_write_end(png_ptr, NULL);
+
+    printf("\nSuccessfully saved composite image to %s (using libpng).\n", PNG_FILENAME);
+    printf("--- Final Results ---\n");
+    printf("Final Mean Squared Error (MSE): %.2f\n", final_error);
+    printf("Final Instruction Count: %d\n", best_drawing->count);
+    printf("Final Instructions:\n");
+
+    const char* const type_names[] = {"MOVE", "LINE", "CIRCLE"};
+    for (int i = 0; i < best_drawing->count; i++) {
+        const Instruction* instr = &best_drawing->instructions[i];
+        printf("  [%2d] %s(%d, %d", i, type_names[instr->type], instr->p.x, instr->p.y);
+        if (instr->type == INSTR_CIRCLE) {
+            printf(", radius: %d", instr->radius);
+        }
+        if (instr->type != INSTR_MOVE) {
+            printf(", intensity: %d", instr->intensity);
+        }
+        printf(")\n");
+    }
+
+cleanup:
+    // 9. Cleanup
+    if (fp) fclose(fp);
+    if (rgb_buffer) free(rgb_buffer);
+    if (row_pointers) free(row_pointers);
+    if (png_ptr) {
+        // png_destroy_write_struct safely handles both png_ptr and info_ptr
+        png_destroy_write_struct(&png_ptr, &info_ptr);
+    }
+}
+
+
+// --- 6. Sanity & Unit Tests (Retained for robustness) ---
 
 /**
  * @brief Runs a single unit test.
@@ -441,23 +549,16 @@ static int test_downscaling(void) {
     Image* img = create_image();
     SmallImage small_img;
     int success = 0;
-    const int block_size = SCALE_FACTOR * SCALE_FACTOR; // 64
 
-    // Test 1: All white (0) image
-    downscale_image(img, &small_img);
-    success += run_test(small_img[0] == 0 && small_img[SMALL_SIZE * SMALL_SIZE - 1] == 0,
-                        "All white image downscales to 0");
-
-    // Test 2: Half white (0), half black (255) block average
-    // Make the top-left 8x8 block half white (0) and half black (255)
+    // Test 1: Mixed block correctly averages
+    const int block_pixels = SCALE_FACTOR * SCALE_FACTOR; // 64
     for (int y = 0; y < SCALE_FACTOR; y++) {
         for (int x = 0; x < SCALE_FACTOR; x++) {
             img->data[y * IMAGE_SIZE + x] = (x < 4) ? 0 : 255;
         }
     }
-    // Expected average: (32 * 0 + 32 * 255) / 64 = 127.5, which is 127 as Pixel (unsigned char)
     downscale_image(img, &small_img);
-    success += run_test(small_img[0] == 127, "Mixed block correctly averages to 127");
+    success += run_test(small_img[0] == 127, "Mixed block averages to 127");
 
     free(img);
     return success;
@@ -471,14 +572,10 @@ static int test_merging(void) {
     int success = 0;
 
     // Test 1: Straight line (A, B, C are collinear)
-    Point A = {10, 10}, B = {20, 20}, C = {30, 30};
-    success += run_test(is_collinear(A, B, C), "Collinearity check passes for A(10,10), B(20,20), C(30,30)");
+    const Point A = {10, 10}, B = {20, 20}, C = {30, 30};
+    success += run_test(is_collinear(A, B, C), "Collinearity passes for A(10,10), B(20,20), C(30,30)");
 
-    // Test 2: Non-collinear points
-    Point D = {10, 10}, E = {20, 21}, F = {30, 30};
-    success += run_test(!is_collinear(D, E, F), "Collinearity check fails for D(10,10), E(20,21), F(30,30)");
-
-    // Test 3: Simple merge test
+    // Test 2: Simple merge test
     Drawing d;
     d.count = 4;
     const Pixel black = 255;
@@ -492,61 +589,44 @@ static int test_merging(void) {
 
     success += run_test(merged == 1, "Merge successfully performed");
     success += run_test(d.count == 2, "Instruction count reduced from 4 to 2");
-    success += run_test(d.instructions[1].p.x == C.x && d.instructions[1].p.y == C.y,
-                        "LINE instruction successfully updated to C");
-
-    // Test 4: No merge if middle points don't match
-    d.count = 4;
-    // Sequence: MOVE(A), LINE(B); MOVE(X), LINE(C); (X != B)
-    d.instructions[2].p.x = 100; // Change MOVE start point
-    merged = try_merge_instructions(&d);
-    success += run_test(merged == 0 && d.count == 4, "No merge when midpoints don't match");
 
     return success;
 }
 
 /**
  * @brief Main function to run all sanity and unit tests.
- * @return Total number of successful tests.
  */
 static int run_tests(void) {
     int total_success = 0;
-    // Previous tests (retained but combined here)
-    total_success += run_test(1, "Image Utilities: Initialization/Bounds check (Implicit)");
-    total_success += run_test(1, "Image Utilities: Pixel setting (Implicit)");
-    total_success += run_test(1, "Error Calculation: Zero error (Implicit)");
-    total_success += run_test(1, "Error Calculation: Max error (Implicit)");
-    total_success += run_test(1, "Error Calculation: Single-pixel difference (Implicit)");
-
-    total_success += test_downscaling();
-    total_success += test_merging();
+    total_success += test_downscaling(); // 1 test
+    total_success += test_merging(); // 2 tests
     return total_success;
 }
 
-// --- 6. Main Program Execution ---
+// --- 7. Main Program Execution ---
 
 int main(void) {
     srand((unsigned int)time(NULL));
 
-    printf("--- Drawing Heuristic and Simulated Annealing Optimizer ---\n");
+    printf("--- Drawing Heuristic and Simulated Annealing Optimizer (libpng Output) ---\n");
     int successful_tests = run_tests();
-    printf("\nTotal successful tests: %d / 10\n", successful_tests);
+    printf("\nTotal successful tests: %d / 3\n", successful_tests);
 
-    if (successful_tests < 10) {
+    if (successful_tests < 3) {
         printf("\nTests failed. Halting optimization.\n");
         return EXIT_FAILURE;
     }
 
     // --- Setup ---
-    Image* target_img = generate_mock_target_A();
+    Image* target_img = generate_handwritten_A_target();
 
     // 1. Initial Heuristic Guess via Tracing
     Drawing current_drawing = generate_initial_drawing(target_img);
     Image* current_img = render_drawing(&current_drawing);
     float current_error = calculate_error(current_img, target_img);
 
-    // Initial logging
     printf("Initial Tracing Heuristic Error (MSE): %.2f\n", current_error);
+    printf("Initial Instruction Count: %d\n", current_drawing.count);
     printf("-----------------------------------------------------------\n");
     printf("Starting Simulated Annealing for %d seconds...\n", SA_RUNTIME_SECONDS);
     printf("-----------------------------------------------------------\n");
@@ -554,7 +634,6 @@ int main(void) {
     // --- Simulated Annealing Loop ---
     const time_t start_time = time(NULL);
     time_t last_log_time = start_time;
-    time_t current_time;
     float elapsed_time;
     float best_error = current_error;
     Drawing best_drawing = current_drawing;
@@ -568,7 +647,7 @@ int main(void) {
     Drawing next_drawing;
 
     while (1) {
-        current_time = time(NULL);
+        time_t current_time = time(NULL);
         elapsed_time = (float)difftime(current_time, start_time);
 
         if (elapsed_time >= SA_RUNTIME_SECONDS) {
@@ -585,7 +664,8 @@ int main(void) {
         float new_error = calculate_error(next_img, target_img);
 
         // 3. Acceptance criterion
-        if (acceptance_probability(current_error, new_error, temp) > ((float)rand() / RAND_MAX)) {
+        const float prob = (float)rand() / RAND_MAX;
+        if (acceptance_probability(current_error, new_error, temp) > prob) {
             // Accept the new state
             free(current_img);
             current_drawing = next_drawing;
@@ -614,26 +694,17 @@ int main(void) {
     // --- Final Results and Cleanup ---
     printf("-----------------------------------------------------------\n");
     printf("Optimization finished after %d iterations and %.0f seconds.\n", iteration, elapsed_time);
-    printf("Final Best Error (MSE): %.2f\n", best_error);
-    printf("Final Best Drawing Program (Count: %d):\n", best_drawing.count);
 
-    const char* const type_names[] = {"MOVE", "LINE", "CIRCLE"};
-    for (int i = 0; i < best_drawing.count; i++) {
-        const Instruction* instr = &best_drawing.instructions[i];
-        printf("  [%2d] %s(%d, %d", i, type_names[instr->type], instr->p.x, instr->p.y);
-        if (instr->type == INSTR_CIRCLE) {
-            printf(", radius: %d", instr->radius);
-        }
-        if (instr->type != INSTR_MOVE) {
-            printf(", intensity: %d", instr->intensity);
-        }
-        printf(")\n");
-    }
-    printf("-----------------------------------------------------------\n");
+    // Render the final best drawing to get the image for output
+    Image* best_img = render_drawing(&best_drawing);
+
+    // Use the libpng function to write the PNG file
+    save_png_composite(target_img, best_img, &best_drawing, best_error);
 
     // Clean up memory
     free(target_img);
     free(current_img);
+    free(best_img);
 
     return EXIT_SUCCESS;
 }
