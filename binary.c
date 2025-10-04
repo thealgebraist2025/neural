@@ -98,32 +98,32 @@ void rotate_image_45_degrees(void) {
 
         __asm__ volatile (
             // 1. Setup Source Bit Index (i) and Destination Bit Index (dest_index)
-            // FIX: Changed %3 -> %0
-            "movl %0, %%edx\n\t"        // RDX = i (source bit index)
-            // FIX: Changed %4 -> %3
-            "movl %3, %%edi\n\t"        // RDI = dest_index
+            // FIX 1: Use MOVQ instead of MOVL to avoid invalid operand error,
+            // as Clang might assign the input variable (%0) to a 64-bit register.
+            "movq %0, %%rdx\n\t"        // RDX = i (source bit index 0-4095)
+            "movq %3, %%rdi\n\t"        // RDI = dest_index (destination bit index 0-4095)
 
-            // --- Get Source Bit Value (using BT) ---
+            // --- Get Source Bit Value (using BTQ) ---
             // Calculate R_src offset: R_src = i / 64 (i >> 6). R8 = 8 * R_src.
             "movq %%rdx, %%r8\n\t"
-            "shrq $6, %%r8\n\t"         // R8 holds R_src
+            "shrq $6, %%r8\n\t"         // R8 holds R_src (Row Index)
             "imulq $8, %%r8, %%r8\n\t"  // R8 holds byte offset of the source word
             
-            // BT instruction: Test bit i % 64 in the memory location (Source Image + R8)
-            "bt (%1, %%r8), %%dl\n\t"   // %1 is src_ptr. %%dl is i % 64.
+            // FIX 2: Use BTQ for the 64-bit memory operand. RDX holds the full index,
+            // but BTQ implicitly uses the index modulo 64.
+            "btq (%1, %%r8), %%rdx\n\t"   // %1 is src_ptr.
             
-            // --- Check and Set Destination Bit Value (using JNC/BTS) ---
+            // --- Check and Set Destination Bit Value (using JNC/BTSQ) ---
             "jnc 1f\n\t"                // Jump if Carry Flag is NOT set (bit was 0)
 
             // Bit was 1, so we must set the destination bit.
             // Calculate R_dst offset: R_dst = D_idx / 64 (D_idx >> 6). R9 = 8 * R_dst.
             "movq %%rdi, %%r9\n\t"
-            "shrq $6, %%r9\n\t"         // R9 holds R_dst
+            "shrq $6, %%r9\n\t"         // R9 holds R_dst (Row Index)
             "imulq $8, %%r9, %%r9\n\t"  // R9 holds byte offset of the destination word
             
-            // BTS instruction: Test bit D_idx % 64 in the destination memory (Dest Image + R9)
-            // and SETS it unconditionally.
-            "bts (%2, %%r9), %%dil\n\t" // %2 is dst_ptr. %%dil is D_idx % 64.
+            // FIX 3: Use BTSQ for the 64-bit memory operand. RDI holds the index.
+            "btsq (%2, %%r9), %%rdi\n\t" 
 
             "1:\n\t" // Label for jump instruction (if bit was 0)
 
@@ -132,7 +132,7 @@ void rotate_image_45_degrees(void) {
               "r" (src_ptr), // %1 Source pointer
               "r" (dst_ptr), // %2 Destination pointer
               "r" (dest_index) // %3 Destination index (dest_index)
-            : "rdx", "rdi", "r8", "r9", "cc", "memory" // Clobbered: CC for Carry Flag
+            : "rdx", "rdi", "r8", "r9", "cc", "memory" // Clobbered: CC for Carry Flag and memory
         );
     }
 }
