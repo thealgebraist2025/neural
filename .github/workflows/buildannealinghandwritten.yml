@@ -15,7 +15,7 @@ jobs:
       run: sudo apt-get install -y libpng-dev 
 
     - name: Build
-      run: clang -fsanitize=memory -fno-omit-frame-pointer -O0 -Wall -g -std=c99 annealinghandwritten.c -lm -o annealing
+      run: clang -fsanitize=memory -fno-omit-frame-pointer -O0 -Wall -g -std=c99 annealinghandwritten.c -lm -lpng -o annealing
 
     - name: Run the inn program
       run: ./annealing
