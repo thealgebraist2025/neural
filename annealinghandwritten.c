@@ -11,13 +11,14 @@
 // --- 1. Constants and Type Definitions ---
 
 #define IMAGE_SIZE 128          // The primary dimension for the image (128x128)
-#define SMALL_GRID_SIZE 16      // Size for the downscaled grid used for initial tracing
+#define SMALL_GRID_SIZE 16      // Size for the downscaled grid used for tracing
 #define PIXEL_MAX 255
 #define THRESHOLD 128           // Grayscale value for tracing heuristics
-#define MAX_INSTRUCTIONS 1024
-#define SA_RUNTIME_SECONDS 180  // Optimization runtime
+#define MAX_INSTRUCTIONS 32     // The initial instruction limit is now 32
+#define INITIAL_TRIALS 128      // Number of initial random programs to test
+#define SA_RUNTIME_SECONDS 60   // Optimization runtime reduced for faster initial testing
 #define SA_LOG_INTERVAL_SECONDS 5
-#define JPEG_OUTPUT_FILENAME "generated.jpg" // Updated output filename
+#define JPEG_OUTPUT_FILENAME "generated.jpg"
 #define JPEG_INPUT_FILENAME "a.jpg" // Mandatory input file name
 
 // Using int for screen coordinates (0-127)
@@ -32,19 +33,18 @@ typedef struct {
     Coord y;
 } Point;
 
-// Enum for the instruction types
+// Enum for the instruction types (Only MOVE and LINE remain)
 typedef enum {
     INSTR_MOVE,
     INSTR_LINE,
-    INSTR_CIRCLE,
-    INSTR_TYPE_COUNT
+    INSTR_TYPE_COUNT // Only 2 types now
 } InstructionType;
 
 // Structure for a single drawing instruction
 typedef struct {
     InstructionType type;
     Point p;
-    int radius;
+    // radius removed
     Pixel intensity;
 } Instruction;
 
@@ -138,7 +138,7 @@ static Image* load_and_resize_target(const char* filename) {
     }
 
     // Step 2: Initialize the JPEG decompression object
-    // FIX for MemorySanitizer: Zero-initialize the structure before libjpeg uses it.
+    // FIX: Zero-initialize the structure before libjpeg uses it (fixes MSan warning)
     memset(&cinfo, 0, sizeof(cinfo));
     cinfo.err = jpeg_std_error(&jerr.pub);
     jerr.pub.error_exit = my_error_exit;
@@ -203,7 +203,6 @@ static Image* load_and_resize_target(const char* filename) {
             // Define the block in the source image corresponding to target pixel (tx, ty)
             const int sx_start = (int)(tx * scale_x);
             const int sy_start = (int)(ty * scale_y);
-            // The current code implements a fixed-size block averaging which is robust:
             const int block_w = (int)scale_x > 0 ? (int)scale_x : 1;
             const int block_h = (int)scale_y > 0 ? (int)scale_y : 1;
 
@@ -216,7 +215,7 @@ static Image* load_and_resize_target(const char* filename) {
             
             // Set the target pixel to the average value
             if (count > 0) {
-                // Since the input A is white background/black A, we keep 0=white, 255=black.
+                // Keep 0=white, 255=black.
                 target_img->data[ty * IMAGE_SIZE + tx] = (Pixel)(sum / count);
             }
         }
@@ -242,7 +241,7 @@ static void downscale_image(const Image* const large_img, SmallImage* const smal
             const int block_pixels = SCALE_FACTOR * SCALE_FACTOR;
 
             for (int ly = sy * SCALE_FACTOR; ly < (sy + 1) * SCALE_FACTOR; ly++) {
-                for (int lx = sx * SCALE_FACTOR; lx < (sx + 1) * SCALE_FACTOR; lx++) {
+                for (int lx = sx * SCALE_FACTOR; lx < (lx + 1) * SCALE_FACTOR; lx++) {
                     sum += large_img->data[ly * IMAGE_SIZE + lx];
                 }
             }
@@ -282,21 +281,6 @@ static void draw_line(Image* const img, const Point p1, const Point p2, const Pi
 }
 
 /**
- * @brief Draws a simple filled circle.
- */
-static void draw_circle(Image* const img, const Point center, const int radius, const Pixel intensity) {
-    if (radius <= 0) return;
-    const int r2 = radius * radius;
-    for (int x = -radius; x <= radius; x++) {
-        for (int y = -radius; y <= radius; y++) {
-            if (x * x + y * y <= r2) {
-                set_pixel(img, center.x + x, center.y + y, intensity);
-            }
-        }
-    }
-}
-
-/**
  * @brief Renders a full Drawing program onto an image.
  * @return A newly rendered Image.
  */
@@ -316,9 +300,6 @@ static Image* render_drawing(const Drawing* const drawing) {
             case INSTR_LINE:
                 draw_line(img, current_pos, instr->p, intensity);
                 current_pos = instr->p;
-                break;
-            case INSTR_CIRCLE:
-                draw_circle(img, instr->p, instr->radius, intensity);
                 break;
             case INSTR_TYPE_COUNT:
                 break;
@@ -345,106 +326,6 @@ static float calculate_error(const Image* const img1, const Image* const img2) {
 // --- 5. Simulated Annealing Heuristics & Mutations ---
 
 /**
- * @brief Generates the initial drawing by tracing dark pixels in a 16x16 downscaled image.
- */
-static Drawing generate_initial_drawing(const Image* const target_img) {
-    Drawing d;
-
-    // Explicitly zero the entire drawing structure
-    memset(&d, 0, sizeof(Drawing));
-
-    d.count = 0;
-    SmallImage small_img;
-    downscale_image(target_img, &small_img);
-
-    const int TARGET_SIZE = SMALL_GRID_SIZE;
-    const int SCALE_FACTOR = IMAGE_SIZE / TARGET_SIZE; // 8
-
-    const Pixel trace_intensity = 220;
-    const int pixel_step = SCALE_FACTOR;
-
-    // Trace Connections (4-neighborhood: Right, Down)
-    for (int sy = 0; sy < TARGET_SIZE; sy++) {
-        for (int sx = 0; sx < TARGET_SIZE; sx++) {
-            if (small_img[sy * TARGET_SIZE + sx] >= THRESHOLD) {
-                // Point A (Start of segment in 128x128 scale)
-                const Point A = {sx * pixel_step + pixel_step / 2, sy * pixel_step + pixel_step / 2};
-
-                // Check right neighbor (Horizontal connection)
-                if (sx < TARGET_SIZE - 1 && small_img[sy * TARGET_SIZE + sx + 1] >= THRESHOLD) {
-                    const Point B = {(sx + 1) * pixel_step + pixel_step / 2, sy * pixel_step + pixel_step / 2};
-                    if (d.count + 2 <= MAX_INSTRUCTIONS) {
-                        d.instructions[d.count++] = (Instruction){INSTR_MOVE, A, 0, 0};
-                        d.instructions[d.count++] = (Instruction){INSTR_LINE, B, 0, trace_intensity};
-                    }
-                }
-
-                // Check down neighbor (Vertical connection)
-                if (sy < TARGET_SIZE - 1 && small_img[(sy + 1) * TARGET_SIZE + sx] >= THRESHOLD) {
-                    const Point B = {sx * pixel_step + pixel_step / 2, (sy + 1) * pixel_step + pixel_step / 2};
-                    if (d.count + 2 <= MAX_INSTRUCTIONS) {
-                        d.instructions[d.count++] = (Instruction){INSTR_MOVE, A, 0, 0};
-                        d.instructions[d.count++] = (Instruction){INSTR_LINE, B, 0, trace_intensity};
-                    }
-                }
-            }
-        }
-    }
-
-    return d;
-}
-
-/**
- * @brief Checks if three points are approximately collinear.
- */
-static int is_collinear(const Point A, const Point B, const Point C) {
-    // Cross product magnitude (proportional to triangle area)
-    const long term1 = (long)(B.x - A.x) * (C.y - A.y);
-    const long term2 = (long)(B.y - A.y) * (C.x - A.x);
-    const long cross_product = term1 - term2;
-    // Tolerance (50) squared to account for small deviations
-    return (cross_product * cross_product) < 50;
-}
-
-/**
- * @brief Attempts to merge consecutive LINE instructions that are collinear.
- * @return 1 if a merge occurred, 0 otherwise.
- */
-static int try_merge_instructions(Drawing* const d) {
-    if (d->count < 4) return 0;
-
-    for (int i = 0; i < d->count - 3; i++) {
-        const Instruction* I0 = &d->instructions[i];   // MOVE(A)
-        const Instruction* I1 = &d->instructions[i+1]; // LINE(B)
-        const Instruction* I2 = &d->instructions[i+2]; // MOVE(B)
-        const Instruction* I3 = &d->instructions[i+3]; // LINE(C)
-
-        if (I0->type == INSTR_MOVE && I1->type == INSTR_LINE &&
-            I2->type == INSTR_MOVE && I3->type == INSTR_LINE &&
-            I1->p.x == I2->p.x && I1->p.y == I2->p.y &&
-            I1->intensity == I3->intensity) { // Check midpoints and intensity
-
-            const Point A = I0->p;
-            const Point B = I1->p;
-            const Point C = I3->p;
-
-            if (is_collinear(A, B, C)) {
-                // MERGE: Replace sequence with MOVE(A), LINE(C)
-                d->instructions[i+1].p = C;
-
-                // Remove I2 (MOVE(B)) and I3 (LINE(C))
-                memmove(&d->instructions[i+2], &d->instructions[i+4],
-                        (d->count - (i + 4)) * sizeof(Instruction));
-                d->count -= 2;
-
-                return 1; // Indicate a successful merge
-            }
-        }
-    }
-    return 0;
-}
-
-/**
  * @brief Generates a random valid Point.
  */
 static Point random_point(void) {
@@ -452,32 +333,114 @@ static Point random_point(void) {
 }
 
 /**
+ * @brief Generates a single, randomized $32$-instruction drawing based on the downscaled grid.
+ */
+static Drawing generate_single_random_drawing(const SmallImage* const small_img) {
+    Drawing d;
+    memset(&d, 0, sizeof(Drawing));
+
+    const int TARGET_SIZE = SMALL_GRID_SIZE;
+    const int SCALE_FACTOR = IMAGE_SIZE / TARGET_SIZE; // 8
+    const int pixel_step = SCALE_FACTOR;
+    const Pixel trace_intensity = 220;
+    
+    // Collect all "dark" $16 \times 16$ coordinates
+    Point dark_points[TARGET_SIZE * TARGET_SIZE];
+    int dark_count = 0;
+
+    for (int sy = 0; sy < TARGET_SIZE; sy++) {
+        for (int sx = 0; sx < TARGET_SIZE; sx++) {
+            if ((*small_img)[sy * TARGET_SIZE + sx] >= THRESHOLD) {
+                // Convert $16 \times 16$ grid coord to $128 \times 128$ center
+                dark_points[dark_count++] = (Point){sx * pixel_step + pixel_step / 2, sy * pixel_step + pixel_step / 2};
+            }
+        }
+    }
+
+    if (dark_count < 2) {
+        // Fallback: if too few dark points, just use a couple of random points
+        d.count = 2;
+        d.instructions[0] = (Instruction){INSTR_MOVE, random_point(), 0, 0};
+        d.instructions[1] = (Instruction){INSTR_LINE, random_point(), trace_intensity};
+        return d;
+    }
+
+    // Create a random set of up to MAX_INSTRUCTIONS (32)
+    d.count = 0;
+    int max_instr_limit = rand() % (MAX_INSTRUCTIONS - 1) + 2; // min 2, max 32
+
+    // Force the first instruction to be a MOVE to establish the initial pen position
+    d.instructions[0] = (Instruction){INSTR_MOVE, dark_points[rand() % dark_count], 0, 0};
+    d.count = 1;
+
+    for (int i = 1; i < max_instr_limit; i++) {
+        if (d.count >= MAX_INSTRUCTIONS) break;
+
+        const InstructionType type = (InstructionType)(rand() % INSTR_TYPE_COUNT);
+        Point target_p = dark_points[rand() % dark_count];
+        
+        if (type == INSTR_MOVE) {
+            d.instructions[d.count++] = (Instruction){INSTR_MOVE, target_p, 0, 0};
+        } else { // INSTR_LINE
+            d.instructions[d.count++] = (Instruction){INSTR_LINE, target_p, trace_intensity};
+        }
+    }
+
+    return d;
+}
+
+
+/**
+ * @brief Generates the initial drawing by running 128 randomized trials and selecting the best one.
+ */
+static Drawing generate_initial_drawing(const Image* const target_img) {
+    SmallImage small_img;
+    downscale_image(target_img, &small_img);
+
+    Drawing best_drawing;
+    float best_error = 1e18; // Very large number
+
+    printf("[INFO] Running %d initial drawing trials to find the best start state (max %d instructions)...\n", INITIAL_TRIALS, MAX_INSTRUCTIONS);
+
+    for (int i = 0; i < INITIAL_TRIALS; i++) {
+        Drawing current_drawing = generate_single_random_drawing(&small_img);
+        Image* current_img = render_drawing(&current_drawing);
+        float current_error = calculate_error(current_img, target_img);
+
+        if (current_error < best_error) {
+            best_error = current_error;
+            best_drawing = current_drawing;
+        }
+        free(current_img);
+    }
+    
+    printf("[INFO] Best initial trial found (MSE: %.2f, Count: %d).\n", best_error, best_drawing.count);
+
+    return best_drawing;
+}
+
+/**
  * @brief Generates a neighboring state by randomly mutating the current drawing.
  */
 static Drawing mutate_drawing(const Drawing* const current) {
     Drawing next = *current;
-    // 0: Modify, 1: Add, 2: Remove, 3: Merge
-    const int mutation_type = rand() % 4;
+    
+    // 0: Modify, 1: Add, 2: Remove
+    const int mutation_type = rand() % 3;
 
-    if (mutation_type == 3) {
-        // MERGE STEP (Prioritize merging to reduce complexity)
-        try_merge_instructions(&next);
-    } else if (mutation_type == 0 && next.count > 0) { // Modify
+    if (mutation_type == 0 && next.count > 0) { // Modify
         const int idx = rand() % next.count;
         Instruction* instr = &next.instructions[idx];
-        const int param_to_change = rand() % 4;
+        const int param_to_change = rand() % 3; // 0: Type, 1: Point, 2: Intensity
 
         if (param_to_change == 0) {
-            // Change instruction type
+            // Change instruction type (MOVE or LINE)
             instr->type = (InstructionType)(rand() % INSTR_TYPE_COUNT);
         } else if (param_to_change == 1) {
             // Change point location
             instr->p = random_point();
-        } else if (instr->type == INSTR_CIRCLE && param_to_change == 2) {
-            // Change circle radius
-            instr->radius = rand() % 21;
-        } else if (instr->type != INSTR_MOVE && param_to_change == 3) {
-            // Change intensity (non-MOVE instructions only)
+        } else if (instr->type == INSTR_LINE && param_to_change == 2) {
+            // Change intensity (LINE instructions only)
             instr->intensity = (Pixel)(rand() % 100 + 155);
         }
     } else if (mutation_type == 1 && next.count < MAX_INSTRUCTIONS) { // Add
@@ -490,11 +453,10 @@ static Drawing mutate_drawing(const Drawing* const current) {
         Instruction* new_instr = &next.instructions[insert_idx];
         new_instr->type = (InstructionType)(rand() % INSTR_TYPE_COUNT);
         new_instr->p = random_point();
-        new_instr->radius = (new_instr->type == INSTR_CIRCLE) ? (rand() % 21) : 0;
-        new_instr->intensity = (new_instr->type != INSTR_MOVE) ? (Pixel)(rand() % 100 + 155) : 0;
+        new_instr->intensity = (new_instr->type == INSTR_LINE) ? (Pixel)(rand() % 100 + 155) : 0;
 
     } else if (mutation_type == 2 && next.count > 1) { // Remove
-        // Remove a random instruction
+        // Remove a random instruction, ensuring we keep at least one instruction
         const int remove_idx = rand() % next.count;
         memmove(&next.instructions[remove_idx], &next.instructions[remove_idx + 1],
                 (next.count - remove_idx - 1) * sizeof(Instruction));
@@ -559,7 +521,6 @@ static void save_jpeg_grayscale(const Image* const img, const Drawing* const bes
 
     // Step 5: Write scanlines
     while (cinfo.next_scanline < cinfo.image_height) {
-        // FIX 2: Add explicit cast to JSAMPROW to resolve 'discards qualifiers' warning
         row_pointer[0] = (JSAMPROW)&img->data[cinfo.next_scanline * row_stride];
         (void)jpeg_write_scanlines(&cinfo, row_pointer, 1);
     }
@@ -578,14 +539,11 @@ static void save_jpeg_grayscale(const Image* const img, const Drawing* const bes
     printf("Final Instruction Count: %d\n", best_drawing->count);
     printf("Final Instructions:\n");
 
-    const char* const type_names[] = {"MOVE", "LINE", "CIRCLE"};
+    const char* const type_names[] = {"MOVE", "LINE"};
     for (int i = 0; i < best_drawing->count; i++) {
         const Instruction* instr = &best_drawing->instructions[i];
         printf("  [%2d] %s(%d, %d", i, type_names[instr->type], instr->p.x, instr->p.y);
-        if (instr->type == INSTR_CIRCLE) {
-            printf(", radius: %d", instr->radius);
-        }
-        if (instr->type != INSTR_MOVE) {
+        if (instr->type == INSTR_LINE) {
             printf(", intensity: %d", instr->intensity);
         }
         printf(")\n");
@@ -599,7 +557,7 @@ int main(void) {
     // Seed the random number generator
     srand((unsigned int)time(NULL));
 
-    printf("--- Drawing Heuristic and Simulated Annealing Optimizer (libjpeg) ---\n");
+    printf("--- Drawing Heuristic and Simulated Annealing Optimizer (Line-Only) ---\n");
     printf("--- Target image loading from: %s ---\n", JPEG_INPUT_FILENAME);
 
     // --- Setup ---
@@ -611,12 +569,12 @@ int main(void) {
         return EXIT_FAILURE;
     }
 
-    // 1. Initial Heuristic Guess via Tracing
+    // 1. Initial Heuristic Guess via Random Trials (128 runs)
     Drawing current_drawing = generate_initial_drawing(target_img);
     Image* current_img = render_drawing(&current_drawing);
     float current_error = calculate_error(current_img, target_img);
 
-    printf("Initial Tracing Heuristic Error (MSE): %.2f\n", current_error);
+    printf("Initial Best Trial Error (MSE): %.2f\n", current_error);
     printf("Initial Instruction Count: %d\n", current_drawing.count);
     printf("-----------------------------------------------------------\n");
     printf("Starting Simulated Annealing for %d seconds...\n", SA_RUNTIME_SECONDS);
