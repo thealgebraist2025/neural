@@ -158,7 +158,8 @@ static Image* load_and_resize_target(const char* filename) {
 
     // Force output to grayscale for simplicity (1 component)
     cinfo.out_color_space = JCS_GRAYSCALE;
-    cinfo.desired_number_of_color_components = 1;
+    // FIX 1: The 'desired_number_of_color_components' field may not exist.
+    // Setting cinfo.out_color_space to JCS_GRAYSCALE is sufficient to get 1 component.
     
     // Step 4: Start decompressor
     (void)jpeg_start_decompress(&cinfo);
@@ -202,14 +203,24 @@ static Image* load_and_resize_target(const char* filename) {
             // Define the block in the source image corresponding to target pixel (tx, ty)
             const int sx_start = (int)(tx * scale_x);
             const int sy_start = (int)(ty * scale_y);
-            const int sx_end = (int)((tx + 1) * scale_x);
-            const int sy_end = (int)((ty + 1) * scale_y);
+            // Note: Fixed logic error here in loop bounds which could cause out-of-bounds access
+            // The sx_end and sy_end calculations below are slightly incorrect for block averaging.
+            // The original code was using sx_end for the sy loop and vice-versa.
+            // However, the original logic in the previous response was trying to sample a block:
+            /*
+             * for (int sy = sy_start; sy < sx_end; sy++) {
+             * ...
+             * for (int sx = sx_start; sx < sy_end; sx++) {
+             * ...
+             * }
+             * }
+            */
+            // The current code implements a fixed-size block averaging which is robust:
+            const int block_w = (int)scale_x > 0 ? (int)scale_x : 1;
+            const int block_h = (int)scale_y > 0 ? (int)scale_y : 1;
 
-            // Iterate over the source block and sum the pixel values
-            for (int sy = sy_start; sy < sx_end; sy++) {
-                if (sy >= raw_img.height) continue;
-                for (int sx = sx_start; sx < sy_end; sx++) {
-                    if (sx >= raw_img.width) continue;
+            for (int sy = sy_start; sy < sy_start + block_h && sy < raw_img.height; sy++) {
+                for (int sx = sx_start; sx < sx_start + block_w && sx < raw_img.width; sx++) {
                     sum += raw_img.data[sy * raw_img.width + sx];
                     count++;
                 }
@@ -217,6 +228,7 @@ static Image* load_and_resize_target(const char* filename) {
             
             // Set the target pixel to the average value
             if (count > 0) {
+                // Since the input A is white background/black A, we keep 0=white, 255=black.
                 target_img->data[ty * IMAGE_SIZE + tx] = (Pixel)(sum / count);
             }
         }
@@ -546,7 +558,7 @@ static void save_jpeg_grayscale(const Image* const img, const Drawing* const bes
     cinfo.input_components = 1; // Grayscale image
     cinfo.in_color_space = JCS_GRAYSCALE;
 
-    // FIX FOR MEMORY SANITIZER: Calculate row_stride before starting compression
+    // Calculate row_stride
     row_stride = IMAGE_SIZE * cinfo.input_components; // Bytes per row for grayscale (1 byte/pixel)
 
     jpeg_set_defaults(&cinfo);
@@ -557,7 +569,8 @@ static void save_jpeg_grayscale(const Image* const img, const Drawing* const bes
 
     // Step 5: Write scanlines
     while (cinfo.next_scanline < cinfo.image_height) {
-        row_pointer[0] = &img->data[cinfo.next_scanline * row_stride];
+        // FIX 2: Add explicit cast to JSAMPROW to resolve 'discards qualifiers' warning
+        row_pointer[0] = (JSAMPROW)&img->data[cinfo.next_scanline * row_stride];
         (void)jpeg_write_scanlines(&cinfo, row_pointer, 1);
     }
 
@@ -652,7 +665,8 @@ int main(void) {
         float new_error = calculate_error(next_img, target_img);
 
         // 3. Acceptance criterion
-        const float prob = (float)rand() / RAND_MAX;
+        // FIX 3: Cast RAND_MAX to float to avoid implicit conversion warning
+        const float prob = (float)rand() / (float)RAND_MAX;
         if (acceptance_probability(current_error, new_error, temp) > prob) {
             // Accept the new state (Accept a better state, or a worse state based on probability)
             free(current_img);
