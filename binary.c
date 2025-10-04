@@ -105,42 +105,44 @@ void rotate_image_45_degrees(void) {
             // 1. Setup Source Bit Index (i) and Destination Bit Index (dest_index)
             "movq %0, %%rdx\n\t"        // RDX = i_64 (source bit index 0-4095)
             "movq %3, %%rdi\n\t"        // RDI = dest_index_64 (destination bit index 0-4095)
+            
+            // FIX: Explicitly move pointers to standard base registers to prevent LEAQ errors
+            "movq %1, %%rcx\n\t"        // RCX = src_ptr (Base for source)
+            "movq %2, %%rsi\n\t"        // RSI = dst_ptr (Base for destination)
 
             // --- Get Source Bit Value (using BTQ) ---
-            // Calculate R8 (byte offset): R8 = (RDX / 64) * 8
+            // Calculate R8 (row index): R8 = RDX / 64
             "movq %%rdx, %%r8\n\t"
             "shrq $6, %%r8\n\t"         // R8 holds R_src (Row Index)
             
-            // FIX 1: Use LEAQ to calculate the final memory address of the 64-bit word
-            "leaq (%1, %%r8, 8), %%r10\n\t"  // R10 = src_ptr + R8 * 8 (R8 is the row index, 8 is the scale/byte size)
+            // Use LEAQ to calculate the final memory address of the source word: RCX + R8 * 8
+            "leaq (%%rcx, %%r8, 8), %%r10\n\t"  // R10 = Address of the source word
             
-            // BTQ requires a 64-bit memory operand. RDX holds the index (implicit modulo 64).
-            // Test bit RDX % 64 at address R10.
+            // BTQ requires a 64-bit memory operand. Test bit RDX % 64 at address R10.
             "btq (%%r10), %%rdx\n\t"   
             
             // --- Check and Set Destination Bit Value (using JNC/BTSQ) ---
             "jnc 1f\n\t"                // Jump if Carry Flag is NOT set (bit was 0)
 
             // Bit was 1, so we must set the destination bit.
-            // Calculate R9 (byte offset): R9 = (RDI / 64) * 8
+            // Calculate R9 (row index): R9 = RDI / 64
             "movq %%rdi, %%r9\n\t"
             "shrq $6, %%r9\n\t"         // R9 holds R_dst (Row Index)
             
-            // FIX 2: Use LEAQ to calculate the final memory address of the 64-bit word
-            "leaq (%2, %%r9, 8), %%r11\n\t"  // R11 = dst_ptr + R9 * 8
+            // Use LEAQ to calculate the final memory address of the destination word: RSI + R9 * 8
+            "leaq (%%rsi, %%r9, 8), %%r11\n\t"  // R11 = Address of the destination word
             
-            // BTSQ requires a 64-bit memory operand. RDI holds the index (implicit modulo 64).
-            // Set bit RDI % 64 at address R11.
+            // BTSQ requires a 64-bit memory operand. Set bit RDI % 64 at address R11.
             "btsq (%%r11), %%rdi\n\t" 
 
             "1:\n\t" // Label for jump instruction (if bit was 0)
 
             : // No outputs modified in this block
             : "r" (i_64),           // %0 Source index (i)
-              "r" (src_ptr),        // %1 Source pointer
-              "r" (dst_ptr),        // %2 Destination pointer
+              "r" (src_ptr),        // %1 Source pointer (will be assigned to a register by Clang)
+              "r" (dst_ptr),        // %2 Destination pointer (will be assigned to a register by Clang)
               "r" (dest_index_64)   // %3 Destination index (dest_index)
-            : "rdx", "rdi", "r8", "r9", "r10", "r11", "cc", "memory" // Clobbered: Added R10/R11 and CC for Carry Flag and memory
+            : "rdx", "rdi", "r8", "r9", "r10", "r11", "rcx", "rsi", "cc", "memory" // Clobbered: Added RCX/RSI and memory
         );
     }
 }
