@@ -242,7 +242,7 @@ static void downscale_image(const Image* const large_img, SmallImage* const smal
             const int block_pixels = SCALE_FACTOR * SCALE_FACTOR;
 
             for (int ly = sy * SCALE_FACTOR; ly < (sy + 1) * SCALE_FACTOR; ly++) {
-                for (int lx = sx * SCALE_FACTOR; lx < (lx + 1) * SCALE_FACTOR; lx++) {
+                for (int lx = sx * SCALE_FACTOR; lx < (sx + 1) * SCALE_FACTOR; lx++) {
                     sum += large_img->data[ly * IMAGE_SIZE + lx];
                 }
             }
