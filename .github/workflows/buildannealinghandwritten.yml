@@ -12,7 +12,7 @@ jobs:
       uses: actions/checkout@v2
 
     - name: Install development Libraries
-      run: sudo apt-get install -y libpng-dev libpng
+      run: sudo apt-get install -y libpng12-dev 
 
     - name: Build
       run: clang -fsanitize=memory -fno-omit-frame-pointer -O0 -Wall -g -std=c99 annealinghandwritten.c -lm -o annealing
