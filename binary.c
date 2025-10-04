@@ -3,6 +3,10 @@
 #include <stdlib.h>
 #include <limits.h>
 
+// Note: Including <immintrin.h> is often required for AVX intrinsics,
+// but for pure inline assembly with Clang/GCC, we rely on the compiler 
+// being informed via compilation flags (like -mavx2).
+
 // Define image dimensions
 #define ROWS 64
 #define BITS_PER_ROW 64 // 64 bits = 8 bytes
@@ -46,56 +50,90 @@ void initialize_synthetic_data(void) {
 }
 
 /**
- * @brief Calculates the Hamming distance for 8 1D horizontal deformations per row.
- *
- * This function applies the shift to the HANDWRITTEN_IMAGE row.
+ * @brief Calculates the Hamming distance for 8 1D horizontal deformations per row,
+ * using AVX (256-bit) assembly to process 4 rows in parallel.
+ * * Note: AVX instructions are prefixed with 'v' (e.g., vmovdqu, vpxor).
  */
 void calculate_1d_distances(void) {
     int result_index = 0;
     // Shifts allowed: -4, -3, -2, -1 (Left), 1, 2, 3, 4 (Right)
     const int shifts[] = { -4, -3, -2, -1, 1, 2, 3, 4 };
     
-    for (int i = 0; i < ROWS; ++i) {
-        uint64_t handwritten_row = HANDWRITTEN_IMAGE[i];
-        uint64_t reference_row = REFERENCE_IMAGE[i];
+    // We iterate in chunks of 4 rows, since AVX 256-bit registers hold 4 x 64-bit integers.
+    // ROWS (64) is divisible by 4, so no cleanup loop is needed.
+    for (int i = 0; i < ROWS; i += 4) {
+        // Pointers to the current block of 4 rows
+        const uint64_t *h_ptr = &HANDWRITTEN_IMAGE[i];
+        const uint64_t *r_ptr = &REFERENCE_IMAGE[i];
+        
+        // Array to hold the 4 resulting 64-bit XOR results from the YMM register
+        uint64_t four_xored_results[4]; 
 
         for (int j = 0; j < NUM_1D_SHIFTS; ++j) {
             int shift_amount = shifts[j];
-            uint64_t distance_val = 0; // POPCNT output will be stored here
-
+            
             if (shift_amount < 0) {
-                // --- ASSEMBLY BLOCK for LEFT SHIFT (SHL) of Handwritten Row ---
+                // --- AVX ASSEMBLY BLOCK for Parallel LEFT SHIFT (vpsllq) ---
                 int absolute_shift = -shift_amount;
                 
                 __asm__ volatile (
-                    "movq %1, %%rax\n\t"   // Load handwritten_row into RAX 
-                    "shlq %%cl, %%rax\n\t" // Left Shift RAX by absolute_shift (in CL)
-                    "xorq %2, %%rax\n\t"   // XOR RAX with reference_row
-                    "popcntq %%rax, %0\n\t"// Count set bits, store in distance_val
-                    : "=r" (distance_val)
-                    : "r" (handwritten_row),
-                      "r" (reference_row),
-                      "c" ((uint8_t)absolute_shift) 
-                    : "rax"
+                    // Load 4 handwritten rows into YMM0 (256 bits)
+                    "vmovdqu %1, %%ymm0\n\t"
+                    // Load 4 reference rows into YMM1
+                    "vmovdqu %2, %%ymm1\n\t"
+                    
+                    // Parallel Shift Left (vpsllq shifts all 4 x 64-bit elements by CL)
+                    // The shift count must be placed in CL for vpsllq
+                    "vpsllq %%cl, %%ymm0, %%ymm0\n\t" 
+                    
+                    // Parallel XOR (YMM0 = YMM0 XOR YMM1)
+                    "vpxor %%ymm1, %%ymm0, %%ymm0\n\t"
+                    
+                    // Store the 4 x 64-bit XOR results back to memory
+                    "vmovdqu %%ymm0, %0\n\t"
+                    
+                    : "=m" (four_xored_results[0]) // Output: write the 4 results to memory
+                    : "m" (h_ptr[0]), // Input 1: Address of the 4 handwritten rows
+                      "m" (r_ptr[0]), // Input 2: Address of the 4 reference rows
+                      "c" ((uint8_t)absolute_shift) // Input 3: Shift amount in CL
+                    : "ymm0", "ymm1" // Clobbered registers
                 );
 
             } else {
-                // --- ASSEMBLY BLOCK for RIGHT SHIFT (SHR) of Handwritten Row ---
+                // --- AVX ASSEMBLY BLOCK for Parallel RIGHT SHIFT (vpsrlq) ---
                 
                 __asm__ volatile (
-                    "movq %1, %%rax\n\t"   // Load handwritten_row into RAX 
-                    "shrq %%cl, %%rax\n\t" // Logical Right Shift RAX by shift_amount (in CL)
-                    "xorq %2, %%rax\n\t"   // XOR RAX with reference_row
-                    "popcntq %%rax, %0\n\t"// Count set bits, store in distance_val
-                    : "=r" (distance_val)
-                    : "r" (handwritten_row),
-                      "r" (reference_row),
+                    "vmovdqu %1, %%ymm0\n\t"
+                    "vmovdqu %2, %%ymm1\n\t"
+                    
+                    // Parallel Shift Right (vpsrlq shifts all 4 x 64-bit elements by CL)
+                    "vpsrlq %%cl, %%ymm0, %%ymm0\n\t" 
+                    
+                    "vpxor %%ymm1, %%ymm0, %%ymm0\n\t"
+                    
+                    "vmovdqu %%ymm0, %0\n\t"
+                    
+                    : "=m" (four_xored_results[0])
+                    : "m" (h_ptr[0]),
+                      "m" (r_ptr[0]),
                       "c" ((uint8_t)shift_amount) 
-                    : "rax"
+                    : "ymm0", "ymm1"
                 );
             }
 
-            distances_1d[result_index++] = (uint32_t)distance_val;
+            // After parallel shift and XOR, we perform the scalar POPCNT on the 4 results.
+            // This is done 4 times per AVX operation.
+            for (int k = 0; k < 4; ++k) {
+                uint64_t distance_val = 0;
+                
+                // --- Scalar POPCNT ASSEMBLY BLOCK ---
+                __asm__ volatile (
+                    "popcntq %1, %0\n\t" // Count bits in the 64-bit element
+                    : "=r" (distance_val)
+                    : "r" (four_xored_results[k])
+                );
+                distances_1d[result_index++] = (uint32_t)distance_val;
+            }
         }
     }
 }
@@ -104,8 +142,7 @@ void calculate_1d_distances(void) {
 /**
  * @brief Calculates the Hamming distance for 8 2D shifts (Up, Down, Diagonals, etc.).
  *
- * The deformation is achieved by comparing handwritten row H[i] against 
- * reference row R[i + dy] which is horizontally shifted by dx.
+ * This function remains scalar (non-SIMD) for comparison.
  */
 void calculate_2d_distances(void) {
     int result_index = 0;
@@ -222,10 +259,10 @@ void print_stats(void) {
     printf("========================================================\n");
     
     // --- 1D Shift Results ---
-    summarize_stats("1D Horizontal Row Shifts", distances_1d, TOTAL_COMPARISONS_1D);
+    summarize_stats("1D Horizontal Row Shifts (AVX Vectorized)", distances_1d, TOTAL_COMPARISONS_1D);
 
     // --- 2D Shift Results ---
-    summarize_stats("2D Local/Global Translation Shifts", distances_2d, TOTAL_COMPARISONS_2D);
+    summarize_stats("2D Local/Global Translation Shifts (Scalar)", distances_2d, TOTAL_COMPARISONS_2D);
 
     printf("\n--- Detailed 2D Test Results (First 4 Rows) ---\n");
     const char *shift_names[] = {"R+1", "L-1", "U-1", "D+1", "UR", "UL", "DR", "DL"};
@@ -237,7 +274,8 @@ void print_stats(void) {
         }
     }
     
-    printf("\nNote: All calculations (Shift, XOR, POPCNT) use embedded x86-64 assembly.\n");
+    printf("\nNote: 1D calculation uses AVX (256-bit) SIMD instructions for parallel XOR and Shift.\n");
+    printf("Compilation requires AVX and POPCNT support (e.g., -mavx2 -msse4.2 flags).\n");
 }
 
 int main() {
