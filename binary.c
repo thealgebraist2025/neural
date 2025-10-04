@@ -91,38 +91,38 @@ void rotate_image_45_degrees(void) {
 
         // --- Optimized Assembly Block (Minimal Bitwise Operations) ---
         // Constraint mapping (Input list starts at %0):
-        // %0: i (source index)
+        // %0: i (source index, int)
         // %1: src_ptr (Source pointer)
         // %2: dst_ptr (Destination pointer)
-        // %3: dest_index (Destination index)
+        // %3: dest_index (Destination index, uint16_t)
 
         __asm__ volatile (
             // 1. Setup Source Bit Index (i) and Destination Bit Index (dest_index)
-            // FIX 1: Use MOVQ instead of MOVL to avoid invalid operand error,
-            // as Clang might assign the input variable (%0) to a 64-bit register.
-            "movq %0, %%rdx\n\t"        // RDX = i (source bit index 0-4095)
-            "movq %3, %%rdi\n\t"        // RDI = dest_index (destination bit index 0-4095)
+            // FIX 1: Use MOVL. This loads the 32-bit value and implicitly zero-extends 
+            // the full 64-bit register (RDX/RDI), resolving the 'invalid operand' error 
+            // caused by MOVQ expecting a 64-bit source.
+            "movl %0, %%edx\n\t"        // EDX = i. RDX = 0 | EDX.
+            "movl %3, %%edi\n\t"        // EDI = dest_index. RDI = 0 | EDI.
 
             // --- Get Source Bit Value (using BTQ) ---
-            // Calculate R_src offset: R_src = i / 64 (i >> 6). R8 = 8 * R_src.
+            // Calculate R_src offset: R_src = RDX / 64. R8 = 8 * R_src.
             "movq %%rdx, %%r8\n\t"
             "shrq $6, %%r8\n\t"         // R8 holds R_src (Row Index)
             "imulq $8, %%r8, %%r8\n\t"  // R8 holds byte offset of the source word
             
-            // FIX 2: Use BTQ for the 64-bit memory operand. RDX holds the full index,
-            // but BTQ implicitly uses the index modulo 64.
-            "btq (%1, %%r8), %%rdx\n\t"   // %1 is src_ptr.
+            // BTQ requires a 64-bit memory operand. RDX holds the index modulo 64.
+            "btq (%1, %%r8), %%rdx\n\t"   // Test bit RDX % 64 at address src_ptr + R8
             
             // --- Check and Set Destination Bit Value (using JNC/BTSQ) ---
             "jnc 1f\n\t"                // Jump if Carry Flag is NOT set (bit was 0)
 
             // Bit was 1, so we must set the destination bit.
-            // Calculate R_dst offset: R_dst = D_idx / 64 (D_idx >> 6). R9 = 8 * R_dst.
+            // Calculate R_dst offset: R_dst = RDI / 64. R9 = 8 * R_dst.
             "movq %%rdi, %%r9\n\t"
             "shrq $6, %%r9\n\t"         // R9 holds R_dst (Row Index)
             "imulq $8, %%r9, %%r9\n\t"  // R9 holds byte offset of the destination word
             
-            // FIX 3: Use BTSQ for the 64-bit memory operand. RDI holds the index.
+            // BTSQ requires a 64-bit memory operand. RDI holds the index modulo 64.
             "btsq (%2, %%r9), %%rdi\n\t" 
 
             "1:\n\t" // Label for jump instruction (if bit was 0)
