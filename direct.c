@@ -9,7 +9,7 @@
 // --- Global Configuration ---
 #define GRID_SIZE 16
 #define NUM_DEFORMATIONS 2  // alpha_1 (Slant), alpha_2 (Curvature)
-#define NUM_FEATURES 32     // 32 directional projection features
+#define NUM_FEATURES 128    // CHANGED TO 128 directional projection features
 #define NUM_POINTS 200
 #define ITERATIONS 1000     // ITERATIONS SET TO 1000
 #define GRADIENT_EPSILON 0.01 
@@ -399,10 +399,10 @@ void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img, const
 // --- Feature Extraction and Loss ---
 
 /**
- * @brief Extracts 32 geometric projection features from the image (Directional Moments).
+ * @brief Extracts 128 geometric projection features from the image (Directional Moments).
  */
 void extract_geometric_features(const Generated_Image img, Feature_Vector features_out) {
-    // Generate 32 normalized unit vectors (length 1)
+    // Generate 128 normalized unit vectors (length 1)
     double vectors[NUM_FEATURES][2];
     for (int k = 0; k < NUM_FEATURES; k++) {
         const double angle = 2.0 * M_PI * k / NUM_FEATURES;
@@ -428,7 +428,7 @@ void extract_geometric_features(const Generated_Image img, Feature_Vector featur
             const double vx = (double)j - center;
             const double vy = (double)i - center;
             
-            // Project the mass vector onto all 32 basis vectors
+            // Project the mass vector onto all 128 basis vectors
             for (int k = 0; k < NUM_FEATURES; k++) {
                 // Dot product: projection = (vx * basis_x + vy * basis_y) * intensity
                 const double projection = (vx * vectors[k][0] + vy * vectors[k][1]) * intensity;
@@ -439,7 +439,7 @@ void extract_geometric_features(const Generated_Image img, Feature_Vector featur
 }
 
 /**
- * @brief Calculates the L2 Loss (Squared Error) between 32-dimensional feature vectors.
+ * @brief Calculates the L2 Loss (Squared Error) between 128-dimensional feature vectors.
  */
 double calculate_feature_loss(const Feature_Vector generated, const Feature_Vector observed) {
     double loss = 0.0;
@@ -666,6 +666,7 @@ void summarize_results_console() {
     // Print data for the first DETAILED_SUMMARY_LIMIT tests
     for (int k = 0; k < DETAILED_SUMMARY_LIMIT; k++) {
         TestResult *r = &all_results[k];
+        // Note: The Feature Loss scale will be different now (higher) due to 128 features.
         printf("%4d | %4s | %4s | %14.4f |", 
                r->id, CHAR_NAMES[r->true_char_index], CHAR_NAMES[r->best_match_index],
                r->classification_results[r->best_match_index].final_loss);
