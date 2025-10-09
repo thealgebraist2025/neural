@@ -13,11 +13,10 @@
 #define NUM_POINTS 200
 #define ITERATIONS 5000     // 5000 iterations for stable convergence
 #define GRADIENT_EPSILON 0.01 
-#define NUM_IDEAL_CHARS 5   // J, 1, 2, 3, 4
+#define NUM_IDEAL_CHARS 36  // A-Z and 0-9 (36 total)
 
-// The number of tests will automatically be 5, one for each character,
-// but the user can modify this if needed.
-#define NUM_TESTS 5         
+// The number of tests is set equal to the number of ideal characters
+#define NUM_TESTS 36        
 
 // 8 segments require 9 control points (P0 to P8)
 #define NUM_CONTROL_POINTS 9 
@@ -50,13 +49,13 @@ typedef struct {
 // Structure to hold results for one full test case (classification results)
 typedef struct {
     int id;
-    int true_char_index; // Index of the true character (0='J', 1='1', ...)
+    int true_char_index; // Index of the true character (0='A', 1='B', ...)
     int best_match_index; // Index of the character with the minimum loss
     double true_alpha[NUM_DEFORMATIONS];
     double true_image[GRID_SIZE][GRID_SIZE];
     double observed_image[GRID_SIZE][GRID_SIZE];
     
-    // Stores the results of running the observation against all 5 ideal templates
+    // Stores the results of running the observation against all 36 ideal templates
     EstimationResult classification_results[NUM_IDEAL_CHARS]; 
     
     // The final estimated image and diff image based on the BEST MATCH
@@ -67,53 +66,235 @@ typedef struct {
 // Global storage for all test results
 TestResult all_results[NUM_TESTS];
 
-// --- Fixed Ideal Curves ('J', '1', '2', '3', '4') ---
+// --- Fixed Ideal Curves (A-Z, 0-9) ---
 
-// Lookup table for character names
-const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {"J", "1", "2", "3", "4"};
+// Lookup table for character names (A-Z, 0-9)
+const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {
+    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", 
+    "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", 
+    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"
+};
 
-// Updated Ideal Templates using 9 control points (8 segments)
+// Ideal Templates using 9 control points (8 segments)
 const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
-    // 0: 'J' (Curved stroke down, hook left at bottom) - FINAL IMPROVED CURVATURE
+    // 0: 'A' (Diagonal V with a crossbar)
     [0] = {.control_points = {
-        {.x = 0.6, .y = 0.1}, // P0: Top
-        {.x = 0.6, .y = 0.2}, 
-        {.x = 0.6, .y = 0.4}, 
-        {.x = 0.6, .y = 0.5}, // P3: Mid-stem (Vertical section ends)
-        {.x = 0.5, .y = 0.6}, // P4: Transition point, moving left
-        {.x = 0.4, .y = 0.75},// P5: Beginning of the deep curve
-        {.x = 0.3, .y = 0.9}, // P6: Absolute lowest and farthest left point
-        {.x = 0.4, .y = 0.85},// P7: Curling back up and right slightly
-        {.x = 0.5, .y = 0.8}  // P8: Final position, creating a wide, open hook
+        {.x = 0.5, .y = 0.1}, {.x = 0.3, .y = 0.3}, {.x = 0.2, .y = 0.5}, {.x = 0.3, .y = 0.6}, 
+        {.x = 0.7, .y = 0.6}, {.x = 0.8, .y = 0.5}, {.x = 0.7, .y = 0.3}, {.x = 0.5, .y = 0.1}, 
+        {.x = 0.7, .y = 0.9} 
+    }},
+    // 1: 'B' (Vertical stem, two right curves)
+    [1] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.2, .y = 0.5}, 
+        {.x = 0.8, .y = 0.5}, {.x = 0.8, .y = 0.7}, {.x = 0.6, .y = 0.9}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.2, .y = 0.1} 
+    }},
+    // 2: 'C' (Open curve)
+    [2] = {.control_points = {
+        {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.1, .y = 0.5}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.7}, {.x = 0.1, .y = 0.5}, {.x = 0.2, .y = 0.3}, 
+        {.x = 0.8, .y = 0.1} 
+    }},
+    // 3: 'D' (Vertical stem, large right curve)
+    [3] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.7, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.8, .y = 0.5}, 
+        {.x = 0.8, .y = 0.7}, {.x = 0.7, .y = 0.9}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.5}, 
+        {.x = 0.2, .y = 0.1} 
+    }},
+    // 4: 'E' (Vertical stem, three horizontal bars)
+    [4] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.5}, 
+        {.x = 0.8, .y = 0.5}, {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, 
+        {.x = 0.2, .y = 0.9} 
+    }},
+    // 5: 'F' (Vertical stem, two horizontal bars)
+    [5] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.5}, 
+        {.x = 0.6, .y = 0.5}, {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.2, .y = 0.1} 
+    }},
+    // 6: 'G' (Open curve, bar near bottom)
+    [6] = {.control_points = {
+        {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.1, .y = 0.5}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.6}, {.x = 0.4, .y = 0.6}, {.x = 0.4, .y = 0.9}, 
+        {.x = 0.8, .y = 0.9} 
+    }},
+    // 7: 'H' (Two vertical stems, one crossbar)
+    [7] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, 
+        {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.5}, {.x = 0.2, .y = 0.5}, 
+        {.x = 0.8, .y = 0.5} 
+    }},
+    // 8: 'I' (Vertical stem)
+    [8] = {.control_points = {
+        {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.3}, {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.7}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.5, .y = 0.7}, {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.3}, 
+        {.x = 0.5, .y = 0.1} 
+    }},
+    // 9: 'J' (Vertical stroke down, wide hook left at bottom) - IMPROVED CURVATURE
+    [9] = {.control_points = {
+        {.x = 0.6, .y = 0.1}, {.x = 0.6, .y = 0.2}, {.x = 0.6, .y = 0.4}, {.x = 0.6, .y = 0.5}, 
+        {.x = 0.5, .y = 0.6}, {.x = 0.4, .y = 0.75}, {.x = 0.3, .y = 0.9}, {.x = 0.4, .y = 0.85}, 
+        {.x = 0.5, .y = 0.8}  
+    }},
+    // 10: 'K' (Vertical stem, two diagonal legs)
+    [10] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.1}, 
+        {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.5}, {.x = 0.5, .y = 0.7}, 
+        {.x = 0.2, .y = 0.1} 
+    }},
+    // 11: 'L' (Vertical stem, horizontal base)
+    [11] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.2, .y = 0.6}, {.x = 0.2, .y = 0.3}, {.x = 0.2, .y = 0.1}, {.x = 0.5, .y = 0.5}, 
+        {.x = 0.2, .y = 0.9} 
+    }},
+    // 12: 'M' (W shape upside down)
+    [12] = {.control_points = {
+        {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.5, .y = 0.5}, {.x = 0.8, .y = 0.1}, 
+        {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, 
+        {.x = 0.5, .y = 0.3} 
+    }},
+    // 13: 'N' (Two verticals, one diagonal)
+    [13] = {.control_points = {
+        {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.1}, 
+        {.x = 0.2, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.8, .y = 0.1} 
+    }},
+    // 14: 'O' (Circle)
+    [14] = {.control_points = {
+        {.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.8, .y = 0.7}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.2, .y = 0.7}, {.x = 0.2, .y = 0.3}, {.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.5}, 
+        {.x = 0.2, .y = 0.5} 
+    }},
+    // 15: 'P' (Vertical stem, top right curve)
+    [15] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, 
+        {.x = 0.8, .y = 0.4}, {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.7}, {.x = 0.5, .y = 0.3}, 
+        {.x = 0.2, .y = 0.1} 
+    }},
+    // 16: 'Q' (Circle with a tail)
+    [16] = {.control_points = {
+        {.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.8, .y = 0.7}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.2, .y = 0.7}, {.x = 0.2, .y = 0.3}, {.x = 0.5, .y = 0.1}, {.x = 0.6, .y = 0.7}, 
+        {.x = 0.8, .y = 0.9} 
+    }},
+    // 17: 'R' (Vertical stem, top right curve, diagonal leg)
+    [17] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, 
+        {.x = 0.8, .y = 0.4}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.5}, 
+        {.x = 0.2, .y = 0.1} 
+    }},
+    // 18: 'S' (Continuous S-curve)
+    [18] = {.control_points = {
+        {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.3}, {.x = 0.8, .y = 0.5}, 
+        {.x = 0.8, .y = 0.7}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.5}, 
+        {.x = 0.8, .y = 0.1} 
+    }},
+    // 19: 'T' (Horizontal top bar, vertical stem)
+    [19] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.5, .y = 0.5}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.5, .y = 0.1} 
+    }},
+    // 20: 'U' (Two vertical stems, bottom curve)
+    [20] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.7}, {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.7}, 
+        {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.7}, {.x = 0.8, .y = 0.7}, 
+        {.x = 0.2, .y = 0.1} 
+    }},
+    // 21: 'V' (Two diagonals meeting at bottom)
+    [21] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.1}, 
+        {.x = 0.8, .y = 0.1} 
+    }},
+    // 22: 'W' (Two V-shapes joined)
+    [22] = {.control_points = {
+        {.x = 0.1, .y = 0.1}, {.x = 0.3, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.7, .y = 0.9}, 
+        {.x = 0.9, .y = 0.1}, {.x = 0.5, .y = 0.5}, {.x = 0.1, .y = 0.1}, {.x = 0.9, .y = 0.1}, 
+        {.x = 0.5, .y = 0.9} 
+    }},
+    // 23: 'X' (Two crossing diagonals)
+    [23] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.8, .y = 0.1}, 
+        {.x = 0.2, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, 
+        {.x = 0.5, .y = 0.5} 
+    }},
+    // 24: 'Y' (Top V-fork, vertical stem)
+    [24] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.5, .y = 0.5}, {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.5}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.5, .y = 0.7}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, 
+        {.x = 0.5, .y = 0.9} 
+    }},
+    // 25: 'Z' (Horizontal top, diagonal, horizontal bottom)
+    [25] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, 
+        {.x = 0.5, .y = 0.5}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.5, .y = 0.5}, 
+        {.x = 0.2, .y = 0.1} 
     }},
     
-    // 1: '1' (Mostly vertical line)
-    [1] = {.control_points = {
+    // --- Digits (0-9) ---
+    // 26: '0' (Oval shape)
+    [26] = {.control_points = {
+        {.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.8, .y = 0.7}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.2, .y = 0.7}, {.x = 0.2, .y = 0.3}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.5}, 
+        {.x = 0.5, .y = 0.1} 
+    }},
+    // 27: '1' (Mostly vertical line)
+    [27] = {.control_points = {
         {.x = 0.4, .y = 0.1}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.2}, {.x = 0.5, .y = 0.35}, 
         {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.65}, {.x = 0.5, .y = 0.8}, {.x = 0.5, .y = 0.9}, 
         {.x = 0.5, .y = 0.9} 
     }},
-    
-    // 2: '2' (S-curve: Top arc, down-left diagonal, horizontal base)
-    [2] = {.control_points = {
+    // 28: '2' (S-curve: Top arc, down-left diagonal, horizontal base)
+    [28] = {.control_points = {
         {.x = 0.2, .y = 0.1}, {.x = 0.7, .y = 0.1}, {.x = 0.8, .y = 0.25}, {.x = 0.7, .y = 0.4}, 
         {.x = 0.3, .y = 0.55}, {.x = 0.2, .y = 0.7}, {.x = 0.3, .y = 0.8}, {.x = 0.5, .y = 0.9}, 
         {.x = 0.8, .y = 0.9} 
     }}, 
-    
-    // 3: '3' (Two right-facing curves)
-    [3] = {.control_points = {
+    // 29: '3' (Two right-facing curves)
+    [29] = {.control_points = {
         {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.4, .y = 0.5}, 
         {.x = 0.8, .y = 0.5}, {.x = 0.8, .y = 0.7}, {.x = 0.4, .y = 0.9}, {.x = 0.8, .y = 0.9}, 
         {.x = 0.2, .y = 0.9} 
     }}, 
-    
-    // 4: '4' (Down-left, then across, then vertical stem)
-    [4] = {.control_points = {
+    // 30: '4' (Down-left, then across, then vertical stem)
+    [30] = {.control_points = {
         {.x = 0.2, .y = 0.1}, {.x = 0.3, .y = 0.2}, {.x = 0.4, .y = 0.3}, {.x = 0.5, .y = 0.4}, 
         {.x = 0.2, .y = 0.55}, {.x = 0.8, .y = 0.55}, {.x = 0.8, .y = 0.7}, {.x = 0.8, .y = 0.85}, 
         {.x = 0.8, .y = 0.9} 
-    }} 
+    }}, 
+    // 31: '5' (Horizontal top, vertical down, right curve)
+    [31] = {.control_points = {
+        {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.4}, {.x = 0.6, .y = 0.4}, 
+        {.x = 0.8, .y = 0.6}, {.x = 0.7, .y = 0.8}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, 
+        {.x = 0.8, .y = 0.1} 
+    }},
+    // 32: '6' (Top curve, closed bottom loop)
+    [32] = {.control_points = {
+        {.x = 0.7, .y = 0.1}, {.x = 0.2, .y = 0.3}, {.x = 0.2, .y = 0.5}, {.x = 0.5, .y = 0.7}, 
+        {.x = 0.8, .y = 0.6}, {.x = 0.5, .y = 0.5}, {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.7, .y = 0.1} 
+    }},
+    // 33: '7' (Horizontal top, steep diagonal)
+    [33] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.3, .y = 0.9}, 
+        {.x = 0.5, .y = 0.5}, {.x = 0.6, .y = 0.7}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.8, .y = 0.1} 
+    }},
+    // 34: '8' (Two stacked circles)
+    [34] = {.control_points = {
+        {.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.5, .y = 0.4}, {.x = 0.2, .y = 0.2}, 
+        {.x = 0.5, .y = 0.4}, {.x = 0.8, .y = 0.6}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.6}, 
+        {.x = 0.5, .y = 0.1} 
+    }},
+    // 35: '9' (Closed top loop, vertical stem)
+    [35] = {.control_points = {
+        {.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.5, .y = 0.4}, {.x = 0.2, .y = 0.2}, 
+        {.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.4}, {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.7}, 
+        {.x = 0.8, .y = 0.9} 
+    }}
 };
 
 /**
@@ -278,7 +459,10 @@ void calculate_gradient(const Feature_Vector observed_features, const Deformatio
  */
 void generate_target_image(Generated_Image image_out, const double true_alpha[NUM_DEFORMATIONS], const Ideal_Curve_Params *const ideal_params, int add_noise) {
     // 1. Rasterize the TRUE deformed curve (Signal)
-    draw_curve(true_alpha, image_out, ideal_params, 0); 
+    // The previous implementation of draw_curve takes 3 arguments, not 4. 
+    // The 4th argument (int add_noise) was implicitly removed/ignored in the previous iteration.
+    // Calling the function correctly now:
+    draw_curve(true_alpha, image_out, ideal_params); 
 
     // 2. Add random noise if requested
     if (add_noise) {
@@ -337,8 +521,8 @@ void run_optimization(const Feature_Vector observed_features, int ideal_char_ind
         // Calculate Gradient 
         calculate_gradient(observed_features, &alpha_hat, loss, gradient, ideal_params);
         
-        // Print progress only every 200 iterations, and at start/end
-        if (print_trace && (t % 200 == 0 || t == ITERATIONS)) {
+        // Print progress only every 500 iterations, and at start/end
+        if (print_trace && (t % 500 == 0 || t == ITERATIONS)) {
             printf("    %04d | %8.5f | %7.8f | %8.4f | %8.4f\n", t, loss, learning_rate, alpha_hat.alpha[0], alpha_hat.alpha[1]);
         }
 
@@ -402,7 +586,8 @@ void run_classification_test(int test_id, int true_char_index, const double true
     
     for (int i = 0; i < NUM_IDEAL_CHARS; i++) {
         // Print trace only for the true character match for brevity
-        int print_trace = (i == true_char_index);
+        // We only print trace for the first 5 characters (A-E)
+        int print_trace = (i == true_char_index && i < 5); 
         
         run_optimization(observed_features, i, &result->classification_results[i], print_trace);
 
@@ -422,71 +607,65 @@ void run_classification_test(int test_id, int true_char_index, const double true
 }
 
 // --- Console Summary Function ---
+
+// The number of tests to show the full loss matrix for (e.g., A, B, C, D, E)
+#define DETAILED_SUMMARY_LIMIT 5 
+
 void summarize_results_console() {
-    printf("\n\n==================================================================\n");
-    printf("                  CLASSIFICATION SUMMARY (5 Tests)                  \n");
-    printf("==================================================================\n");
-    printf("  ID | TRUE | PRED | Classification Losses (L2 Feature Error) \n");
-    printf("     | Char | Char |   'J'    |   '1'    |   '2'    |   '3'    |   '4'    \n");
-    printf("-----|------|------|----------|----------|----------|----------|----------\n");
+    printf("\n\n================================================================================\n");
+    printf("               CLASSIFICATION SUMMARY (%d TESTS: A-Z, 0-9)                   \n", NUM_TESTS);
+    printf("================================================================================\n");
     
-    for (int k = 0; k < NUM_TESTS; k++) {
+    printf("\n--- DETAILED LOSS MATRIX (Showing ALL %d Template Losses for first %d Tests) ---\n", 
+           NUM_IDEAL_CHARS, DETAILED_SUMMARY_LIMIT);
+    
+    // Print header: A | B | C | D | ... | 9
+    printf("  ID | TRUE | PRED | Best Loss | Loss against: ");
+    for (int i = 0; i < NUM_IDEAL_CHARS; i++) {
+        printf(" %s |", CHAR_NAMES[i]);
+    }
+    printf("\n-----|------|------|-----------|");
+    for (int i = 0; i < NUM_IDEAL_CHARS; i++) {
+        printf("----|", CHAR_NAMES[i]);
+    }
+    printf("\n");
+    
+    // Print data for the first DETAILED_SUMMARY_LIMIT tests
+    for (int k = 0; k < DETAILED_SUMMARY_LIMIT; k++) {
         TestResult *r = &all_results[k];
-        printf("%4d | %4s | %4s |", 
-               r->id, CHAR_NAMES[r->true_char_index], CHAR_NAMES[r->best_match_index]);
+        printf("%4d | %4s | %4s | %9.4f |", 
+               r->id, CHAR_NAMES[r->true_char_index], CHAR_NAMES[r->best_match_index],
+               r->classification_results[r->best_match_index].final_loss);
         
         for (int i = 0; i < NUM_IDEAL_CHARS; i++) {
-            printf(" %8.4f |", r->classification_results[i].final_loss);
+            printf(" %.1f |", r->classification_results[i].final_loss);
         }
         printf("\n");
     }
-    printf("------------------------------------------------------------------\n");
+    printf("--------------------------------------------------------------------------------\n");
 
+    // Print Concise Summary for all 36 tests
+    printf("\n--- CONCISE SUMMARY (All %d Tests) ---\n", NUM_TESTS);
+    printf("  ID | TRUE | PRED | a_1 (Slant) | a_2 (Curve) | Best Loss | Correct?\n");
+    printf("-----|------|------|-------------|-------------|-----------|----------\n");
 
-    printf("\n\n======================================================\n");
-    printf("          TEST VISUAL SUMMARY (TRUE vs. BEST FIT)     \n");
-    printf("======================================================\n");
-    
+    int correct_classifications = 0;
     for (int k = 0; k < NUM_TESTS; k++) {
         TestResult *r = &all_results[k];
         EstimationResult *best_fit = &r->classification_results[r->best_match_index];
         
-        printf("\n--- TEST %02d (TRUE: '%s' | PRED: '%s') ---\n", 
-               r->id, CHAR_NAMES[r->true_char_index], CHAR_NAMES[r->best_match_index]);
-        printf("    TRUE Params (%.4f, %.4f) | BEST FIT Params (%.4f, %.4f) | Loss: %.4f\n", 
-               r->true_alpha[0], r->true_alpha[1], 
-               best_fit->estimated_alpha[0], best_fit->estimated_alpha[1], 
-               best_fit->final_loss);
-        
-        printf("| Observed Noisy Target | Best Estimated Fit | Difference (Error) |\n");
-        printf("|-----------------------|--------------------|--------------------|\n");
+        int is_correct = (r->true_char_index == r->best_match_index);
+        if (is_correct) correct_classifications++;
 
-        for (int i = 0; i < GRID_SIZE; i++) {
-            printf("| ");
-            // Observed Image (Noisy Target)
-            for (int j = 0; j < GRID_SIZE; j++) {
-                if (r->observed_image[i][j] < 0.3) printf(" ");
-                else if (r->observed_image[i][j] < 0.6) printf(":");
-                else printf("#");
-            }
-            printf(" | ");
-            // Best Estimated Image
-            for (int j = 0; j < GRID_SIZE; j++) {
-                if (r->best_estimated_image[i][j] < 0.3) printf(" ");
-                else if (r->best_estimated_image[i][j] < 0.6) printf(":");
-                else printf("#");
-            }
-            printf(" | ");
-            // Error visualization (threshold > 0.2 to filter out background noise)
-            for (int j = 0; j < GRID_SIZE; j++) {
-                if (r->best_diff_image[i][j] > 0.3) printf("*"); 
-                else if (r->best_diff_image[i][j] > 0.2) printf("+"); 
-                else printf(" "); 
-            }
-            printf(" |\n");
-        }
+        printf("%4d | %4s | %4s | %11.4f | %11.4f | %9.4f | %8s\n", 
+               r->id, CHAR_NAMES[r->true_char_index], CHAR_NAMES[r->best_match_index],
+               best_fit->estimated_alpha[0], best_fit->estimated_alpha[1], 
+               best_fit->final_loss, is_correct ? "YES" : "NO");
     }
-    printf("======================================================\n");
+    printf("--------------------------------------------------------------------------------\n");
+    printf("Overall Accuracy: %d/%d (%.2f%%)\n", correct_classifications, NUM_TESTS, 
+           (double)correct_classifications / NUM_TESTS * 100.0);
+    printf("================================================================================\n");
 }
 
 
@@ -498,9 +677,9 @@ void summarize_results_console() {
 #define IMG_SPACING 5   
 #define SET_SPACING 25  
 #define SET_WIDTH (4 * IMG_SIZE + 3 * IMG_SPACING) // 335
-// Dimensions calculated for 5 sets in a single row
-#define SVG_RENDER_LIMIT 5
-#define SVG_WIDTH (SVG_RENDER_LIMIT * SET_WIDTH + (SVG_RENDER_LIMIT - 1) * SET_SPACING + 2 * SET_SPACING) // 1805
+// Dimensions calculated for 10 sets in a single row
+#define SVG_RENDER_LIMIT 10
+#define SVG_WIDTH (SVG_RENDER_LIMIT * SET_WIDTH + (SVG_RENDER_LIMIT - 1) * SET_SPACING + 2 * SET_SPACING) // 3625
 #define SVG_HEIGHT (IMG_SIZE + 15 + 2 * SET_SPACING) // 130
 
 /**
@@ -579,16 +758,18 @@ void render_test_to_svg(FILE *fp, const TestResult *r, double x_set, double y_se
     // Add text label for the test ID and classification result
     char label[150];
     EstimationResult *best_fit = &r->classification_results[r->best_match_index];
-    sprintf(label, "T:'%s' (%.2f,%.2f) | P:'%s' L:%.2f", 
+    char correct_str[5] = (r->true_char_index == r->best_match_index) ? "YES" : "NO";
+    
+    sprintf(label, "T:'%s' (%.2f,%.2f) | P:'%s' L:%.2f (%s)", 
             CHAR_NAMES[r->true_char_index], r->true_alpha[0], r->true_alpha[1], 
-            CHAR_NAMES[r->best_match_index], best_fit->final_loss);
+            CHAR_NAMES[r->best_match_index], best_fit->final_loss, correct_str);
     
     fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"10\" fill=\"white\">%s</text>\n",
             x_set, y_set + IMG_SIZE + 10, label);
 }
 
 /**
- * @brief Generates the final SVG file with the 5 test results.
+ * @brief Generates the final SVG file with the first SVG_RENDER_LIMIT test results.
  */
 void generate_svg_file() {
     FILE *fp = fopen("network.svg", "w");
@@ -611,8 +792,9 @@ void generate_svg_file() {
     fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"12\" fill=\"white\" text-anchor=\"middle\">ERROR DIFF</text>\n", initial_x + 3 * (IMG_SIZE + IMG_SPACING), initial_y);
 
 
-    // Render the 5 test sets in a single row
-    for (int k = 0; k < NUM_TESTS; k++) {
+    // Render the first 10 test sets in a single row
+    int actual_render_limit = (NUM_TESTS < SVG_RENDER_LIMIT) ? NUM_TESTS : SVG_RENDER_LIMIT;
+    for (int k = 0; k < actual_render_limit; k++) {
         int col = k; 
         
         // Calculate top-left corner position for the current 4-image set
@@ -628,7 +810,7 @@ void generate_svg_file() {
     
     fclose(fp);
     printf("\n\n======================================================\n");
-    printf("SVG Output Complete: network.svg created (First %d tests).\n", SVG_RENDER_LIMIT);
+    printf("SVG Output Complete: network.svg created (First %d tests).\n", actual_render_limit);
     printf("======================================================\n");
 }
 
@@ -638,7 +820,7 @@ void generate_svg_file() {
 int main(void) {
     srand(42); // Seed for reproducible results
 
-    // Test data: We use one test case for each of the 5 ideal characters, 
+    // Test data: We run one test case for each of the 36 ideal characters, 
     // each with a random deformation.
     const double MIN_ALPHA = -0.15;
     const double MAX_ALPHA = 0.15;
@@ -649,13 +831,14 @@ int main(void) {
         true_alpha[0] = MIN_ALPHA + ((double)rand() / RAND_MAX) * (MAX_ALPHA - MIN_ALPHA);
         true_alpha[1] = MIN_ALPHA + ((double)rand() / RAND_MAX) * (MAX_ALPHA - MIN_ALPHA);
         
+        // true_char_index is simply i, as the tests are run in the order of the CHAR_NAMES array
         run_classification_test(i + 1, i, true_alpha, &all_results[i]);
     }
     
     // 1. Print the console-based summary
     summarize_results_console();
 
-    // 2. Generate the SVG file (only first 5 tests)
+    // 2. Generate the SVG file (only first 10 tests)
     generate_svg_file();
 
     return 0;
