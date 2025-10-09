@@ -11,7 +11,7 @@
 #define NUM_DEFORMATIONS 2  // alpha_1 (Slant), alpha_2 (Curvature)
 #define NUM_FEATURES 32     // 32 directional projection features
 #define NUM_POINTS 200
-#define ITERATIONS 5000     // 5000 iterations for stable convergence
+#define ITERATIONS 1000     // DECREASED ITERATIONS FOR FASTER RUNTIME
 #define GRADIENT_EPSILON 0.01 
 #define NUM_IDEAL_CHARS 36  // A-Z and 0-9 (36 total)
 
@@ -83,17 +83,18 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
         {.x = 0.7, .y = 0.6}, {.x = 0.8, .y = 0.5}, {.x = 0.7, .y = 0.3}, {.x = 0.5, .y = 0.1}, 
         {.x = 0.7, .y = 0.9} 
     }},
-    // 1: 'B' (Vertical stem, two right curves)
+    // 1: 'B' (Vertical stem, two right curves) - REFINED
     [1] = {.control_points = {
-        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.2, .y = 0.5}, 
-        {.x = 0.8, .y = 0.5}, {.x = 0.8, .y = 0.7}, {.x = 0.6, .y = 0.9}, {.x = 0.2, .y = 0.9}, 
-        {.x = 0.2, .y = 0.1} 
+        {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, // P0-P1: Vertical stem
+        {.x = 0.2, .y = 0.1}, // P2: Start of top hump
+        {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.2, .y = 0.5}, // P3-P5: Top hump
+        {.x = 0.8, .y = 0.5}, {.x = 0.8, .y = 0.7}, {.x = 0.2, .y = 0.9} // P6-P8: Bottom hump
     }},
-    // 2: 'C' (Open curve)
+    // 2: 'C' (Open curve) - REFINED
     [2] = {.control_points = {
-        {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.1, .y = 0.5}, {.x = 0.2, .y = 0.9}, 
-        {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.7}, {.x = 0.1, .y = 0.5}, {.x = 0.2, .y = 0.3}, 
-        {.x = 0.8, .y = 0.1} 
+        {.x = 0.8, .y = 0.1}, {.x = 0.4, .y = 0.1}, {.x = 0.1, .y = 0.3}, {.x = 0.1, .y = 0.7},
+        {.x = 0.4, .y = 0.9}, {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.75}, {.x = 0.5, .y = 0.25},
+        {.x = 0.2, .y = 0.5} 
     }},
     // 3: 'D' (Vertical stem, large right curve)
     [3] = {.control_points = {
@@ -125,23 +126,27 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
         {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.5}, {.x = 0.2, .y = 0.5}, 
         {.x = 0.8, .y = 0.5} 
     }},
-    // 8: 'I' (Vertical stem)
+    // 8: 'I' (Vertical stem) - REFINED: Single strong line
     [8] = {.control_points = {
-        {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.3}, {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.7}, 
-        {.x = 0.5, .y = 0.9}, {.x = 0.5, .y = 0.7}, {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.3}, 
-        {.x = 0.5, .y = 0.1} 
+        {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.25}, {.x = 0.5, .y = 0.4}, {.x = 0.5, .y = 0.55},
+        {.x = 0.5, .y = 0.7}, {.x = 0.5, .y = 0.9}, {.x = 0.5, .y = 0.9}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.5, .y = 0.9} 
     }},
-    // 9: 'J' (Vertical stroke down, wide hook left at bottom) - IMPROVED CURVATURE
+    // 9: 'J' (Vertical stroke down, wide hook left at bottom)
     [9] = {.control_points = {
         {.x = 0.6, .y = 0.1}, {.x = 0.6, .y = 0.2}, {.x = 0.6, .y = 0.4}, {.x = 0.6, .y = 0.5}, 
         {.x = 0.5, .y = 0.6}, {.x = 0.4, .y = 0.75}, {.x = 0.3, .y = 0.9}, {.x = 0.4, .y = 0.85}, 
         {.x = 0.5, .y = 0.8}  
     }},
-    // 10: 'K' (Vertical stem, two diagonal legs)
+    // 10: 'K' (Vertical stem, two diagonal legs) - REFINED
     [10] = {.control_points = {
-        {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.1}, 
-        {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.5}, {.x = 0.5, .y = 0.7}, 
-        {.x = 0.2, .y = 0.1} 
+        {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, // P0-P1: Vertical stem
+        {.x = 0.2, .y = 0.5}, // P2: Central joint
+        {.x = 0.8, .y = 0.1}, // P3: Top right leg
+        {.x = 0.2, .y = 0.5}, // P4: Return to joint
+        {.x = 0.8, .y = 0.9}, // P5: Bottom right leg
+        {.x = 0.2, .y = 0.5}, // P6: Return to joint
+        {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.5} // P7, P8: Extra points
     }},
     // 11: 'L' (Vertical stem, horizontal base)
     [11] = {.control_points = {
@@ -161,17 +166,19 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
         {.x = 0.2, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
         {.x = 0.8, .y = 0.1} 
     }},
-    // 14: 'O' (Circle)
+    // 14: 'O' (Circle) - REFINED: Clean 6-point oval
     [14] = {.control_points = {
-        {.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.8, .y = 0.7}, {.x = 0.5, .y = 0.9}, 
-        {.x = 0.2, .y = 0.7}, {.x = 0.2, .y = 0.3}, {.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.5}, 
-        {.x = 0.2, .y = 0.5} 
+        {.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.8, .y = 0.8}, // Top, right-top, right-bottom
+        {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.8}, {.x = 0.2, .y = 0.2}, // Bottom, left-bottom, left-top
+        {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.5} // Close the loop, plus 2 extra points
     }},
-    // 15: 'P' (Vertical stem, top right curve)
+    // 15: 'P' (Vertical stem, top right curve) - REFINED
     [15] = {.control_points = {
-        {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, 
-        {.x = 0.8, .y = 0.4}, {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.7}, {.x = 0.5, .y = 0.3}, 
-        {.x = 0.2, .y = 0.1} 
+        {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, // P0-P1: Vertical stem
+        {.x = 0.2, .y = 0.1}, // P2: Start of top arc
+        {.x = 0.7, .y = 0.1}, {.x = 0.8, .y = 0.25}, {.x = 0.8, .y = 0.4}, // P3-P5: Top right curve
+        {.x = 0.7, .y = 0.5}, {.x = 0.2, .y = 0.5}, // P6-P7: Return to stem
+        {.x = 0.2, .y = 0.5} // P8: Last point
     }},
     // 16: 'Q' (Circle with a tail)
     [16] = {.control_points = {
@@ -209,11 +216,12 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
         {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.1}, 
         {.x = 0.8, .y = 0.1} 
     }},
-    // 22: 'W' (Two V-shapes joined)
+    // 22: 'W' (Two V-shapes joined) - REFINED
     [22] = {.control_points = {
-        {.x = 0.1, .y = 0.1}, {.x = 0.3, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.7, .y = 0.9}, 
-        {.x = 0.9, .y = 0.1}, {.x = 0.5, .y = 0.5}, {.x = 0.1, .y = 0.1}, {.x = 0.9, .y = 0.1}, 
-        {.x = 0.5, .y = 0.9} 
+        {.x = 0.1, .y = 0.1}, {.x = 0.3, .y = 0.9}, {.x = 0.5, .y = 0.1}, // V1
+        {.x = 0.7, .y = 0.9}, {.x = 0.9, .y = 0.1}, // V2
+        {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.5}, // Extra points
+        {.x = 0.5, .y = 0.5}
     }},
     // 23: 'X' (Two crossing diagonals)
     [23] = {.control_points = {
@@ -283,11 +291,11 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
         {.x = 0.5, .y = 0.5}, {.x = 0.6, .y = 0.7}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
         {.x = 0.8, .y = 0.1} 
     }},
-    // 34: '8' (Two stacked circles)
+    // 34: '8' (Two stacked circles) - REFINED
     [34] = {.control_points = {
-        {.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.5, .y = 0.4}, {.x = 0.2, .y = 0.2}, 
-        {.x = 0.5, .y = 0.4}, {.x = 0.8, .y = 0.6}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.6}, 
-        {.x = 0.5, .y = 0.1} 
+        {.x = 0.5, .y = 0.1}, {.x = 0.7, .y = 0.15}, {.x = 0.7, .y = 0.35}, // Top curve, right side
+        {.x = 0.5, .y = 0.45}, {.x = 0.3, .y = 0.35}, {.x = 0.3, .y = 0.15}, // Top curve, left side
+        {.x = 0.7, .y = 0.65}, {.x = 0.5, .y = 0.9}, {.x = 0.3, .y = 0.65} // Bottom curve (P6-P8)
     }},
     // 35: '9' (Closed top loop, vertical stem)
     [35] = {.control_points = {
