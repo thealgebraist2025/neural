@@ -1085,7 +1085,7 @@ int main(void) {
     srand(42); 
 
     // Using the image from the context
-    const char *input_filename = "test1.jpg"; 
+    const char *input_filename = "1000000809.jpg"; 
     double *full_image_data = NULL;
     int full_width = 0;
     int full_height = 0;
