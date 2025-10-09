@@ -9,7 +9,7 @@
 // --- Global Configuration ---
 #define GRID_SIZE 16
 #define NUM_DEFORMATIONS 2  // alpha_1 (Slant), alpha_2 (Curvature)
-#define NUM_FEATURES 128    // CHANGED TO 128 directional projection features
+#define NUM_FEATURES 8      // CHANGED TO 8 directional projection features
 #define NUM_POINTS 200
 #define ITERATIONS 1000     // ITERATIONS SET TO 1000
 #define GRADIENT_EPSILON 0.01 
@@ -399,13 +399,15 @@ void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img, const
 // --- Feature Extraction and Loss ---
 
 /**
- * @brief Extracts 128 geometric projection features from the image (Directional Moments).
+ * @brief Extracts 8 geometric projection features (Second-Order Directional Moments) 
+ * to be more robust and sensitive to major structural points.
  */
 void extract_geometric_features(const Generated_Image img, Feature_Vector features_out) {
-    // Generate 128 normalized unit vectors (length 1)
+    // Generate 8 normalized unit vectors (length 1)
     double vectors[NUM_FEATURES][2];
-    for (int k = 0; k < NUM_FEATURES; k++) {
-        const double angle = 2.0 * M_PI * k / NUM_FEATURES;
+    for (int k = 0; k < NUM_FEATURES; k++) { // k runs from 0 to 7
+        // Angle step is 2*PI / 8 (45 degrees)
+        const double angle = 2.0 * M_PI * k / NUM_FEATURES; 
         vectors[k][0] = cos(angle); // x component
         vectors[k][1] = sin(angle); // y component
     }
@@ -428,18 +430,23 @@ void extract_geometric_features(const Generated_Image img, Feature_Vector featur
             const double vx = (double)j - center;
             const double vy = (double)i - center;
             
-            // Project the mass vector onto all 128 basis vectors
+            // Project the mass vector onto all 8 basis vectors
             for (int k = 0; k < NUM_FEATURES; k++) {
-                // Dot product: projection = (vx * basis_x + vy * basis_y) * intensity
-                const double projection = (vx * vectors[k][0] + vy * vectors[k][1]) * intensity;
-                features_out[k] += projection; 
+                // 1. Calculate the projection of the pixel's position vector onto the basis vector (dot product)
+                const double projection = (vx * vectors[k][0] + vy * vectors[k][1]);
+                
+                // 2. Second-Order Directional Moment: Square the projection and multiply by intensity.
+                // This weights points further from the center more heavily, emphasizing structure.
+                const double contribution = projection * projection * intensity;
+                
+                features_out[k] += contribution; 
             }
         }
     }
 }
 
 /**
- * @brief Calculates the L2 Loss (Squared Error) between 128-dimensional feature vectors.
+ * @brief Calculates the L2 Loss (Squared Error) between 8-dimensional feature vectors.
  */
 double calculate_feature_loss(const Feature_Vector generated, const Feature_Vector observed) {
     double loss = 0.0;
