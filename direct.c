@@ -9,7 +9,7 @@
 // --- Global Configuration ---
 #define GRID_SIZE 16
 #define NUM_DEFORMATIONS 2  // alpha_1 (Slant), alpha_2 (Curvature)
-#define NUM_VECTORS 16      // Number of directional unit vectors (Increased from 8)
+#define NUM_VECTORS 16      // Number of directional unit vectors (16 rotational features)
 #define NUM_BINS 32         // Number of histogram bins per vector
 #define NUM_FEATURES (NUM_VECTORS * NUM_BINS) // 16 * 32 = 512 total features
 #define PIXEL_LOSS_WEIGHT 5.0 // Weighting factor lambda (Combined Loss Term)
@@ -137,10 +137,12 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
         {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, 
         {.x = 0.8, .y = 0.5} 
     }},
-    // 8: 'I' (Vertical stem)
+    // 8: 'I' (Vertical stem, with top and bottom serifs/bars) - UPDATED
     [8] = {.control_points = {
-        {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.2}, {.x = 0.5, .y = 0.4}, {.x = 0.5, .y = 0.5},
-        {.x = 0.5, .y = 0.6}, {.x = 0.5, .y = 0.8}, {.x = 0.5, .y = 0.9}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.3, .y = 0.1}, {.x = 0.7, .y = 0.1}, // Top bar
+        {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, // Vertical stem
+        {.x = 0.3, .y = 0.9}, {.x = 0.7, .y = 0.9}, // Bottom bar
+        {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.1}, 
         {.x = 0.5, .y = 0.9} 
     }},
     // 9: 'J' (Vertical stroke down, wide hook left at bottom)
@@ -165,19 +167,19 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
         {.x = 0.2, .y = 0.6}, {.x = 0.2, .y = 0.3}, {.x = 0.2, .y = 0.1}, {.x = 0.5, .y = 0.5}, 
         {.x = 0.2, .y = 0.9} 
     }},
-    // 12: 'M' (W shape upside down) - UPDATED for sharpness and depth
+    // 12: 'M' (W shape upside down) - REFINED
     [12] = {.control_points = {
-        {.x = 0.1, .y = 0.9}, {.x = 0.1, .y = 0.1}, // Left stem
-        {.x = 0.5, .y = 0.7}, // Deep center V point (y=0.7 is deeper than 0.6)
-        {.x = 0.9, .y = 0.1}, // Right peak
-        {.x = 0.9, .y = 0.9}, // Right stem
-        {.x = 0.5, .y = 0.7}, {.x = 0.1, .y = 0.1}, // Back to center
+        {.x = 0.1, .y = 0.9}, {.x = 0.1, .y = 0.1}, // Left stem (Full height)
+        {.x = 0.5, .y = 0.8}, // Deep center V point (y=0.8 is even deeper)
+        {.x = 0.9, .y = 0.1}, // Right peak (Full height)
+        {.x = 0.9, .y = 0.9}, // Right stem (Full height)
+        {.x = 0.5, .y = 0.8}, {.x = 0.1, .y = 0.1}, // Back to center
         {.x = 0.9, .y = 0.9}, {.x = 0.5, .y = 0.3} 
     }},
-    // 13: 'N' (Two verticals, one diagonal) - UPDATED for clearer diagonal
+    // 13: 'N' (Two verticals, one diagonal) - REFINED
     [13] = {.control_points = {
         {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, // Left vertical
-        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, // Clear diagonal
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, // Clear, long diagonal
         {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.1}, // Right vertical
         {.x = 0.5, .y = 0.5}, {.x = 0.2, .y = 0.9}, 
         {.x = 0.8, .y = 0.1} 
@@ -202,12 +204,12 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
         {.x = 0.2, .y = 0.7}, {.x = 0.2, .y = 0.3}, {.x = 0.5, .y = 0.1}, {.x = 0.6, .y = 0.7}, 
         {.x = 0.8, .y = 0.9} 
     }},
-    // 17: 'R' (Vertical stem, top right curve, diagonal leg) - UPDATED for clearer leg start
+    // 17: 'R' (Vertical stem, top right curve, diagonal leg) - REFINED for steeper leg
     [17] = {.control_points = {
         {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, // Vertical stem
         {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, 
         {.x = 0.8, .y = 0.4}, {.x = 0.2, .y = 0.5}, // Top loop closure point
-        {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.9}, // Diagonal leg starts from middle (y=0.5)
+        {.x = 0.2, .y = 0.5}, {.x = 0.9, .y = 0.9}, // Diagonal leg starts from middle (y=0.5), ends far right (x=0.9)
         {.x = 0.2, .y = 0.1} 
     }},
     // 18: 'S' (Continuous S-curve)
@@ -400,7 +402,7 @@ void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img, const
     }
 }
 
-// --- Feature Extraction and Loss (Updated for 16 Vectors) ---
+// --- Feature Extraction and Loss (Using 16 Rotational Features) ---
 
 /**
  * @brief Extracts 512 directional features (16 vectors * 32 bins)
@@ -568,8 +570,6 @@ void run_optimization(const Generated_Image observed_image, const Feature_Vector
     };
     
     // Dynamic learning rate initialization and floor
-    // Note: Learning rate is kept the same, as the increase in feature loss magnitude 
-    // from 256 to 512 is generally offset by the initial feature normalization factor.
     double learning_rate = 0.00000005; 
     const double min_learning_rate = 0.00000000005;
     double gradient[NUM_DEFORMATIONS];
@@ -691,6 +691,18 @@ void run_classification_test(int test_id, int true_char_index, const double true
     
     // Calculate difference image
     calculate_difference_image(result->observed_image, result->best_estimated_image, result->best_diff_image);
+}
+
+/**
+ * @brief Calculates the absolute pixel-wise difference between two images.
+ */
+void calculate_difference_image_summary(const Generated_Image obs, const Generated_Image est, Generated_Image diff) {
+    for (int i = 0; i < GRID_SIZE; i++) {
+        for (int j = 0; j < GRID_SIZE; j++) {
+            // Absolute difference of intensity
+            diff[i][j] = fabs(obs[i][j] - est[i][j]);
+        }
+    }
 }
 
 // --- Console Summary Function ---
