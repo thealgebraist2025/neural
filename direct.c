@@ -72,6 +72,8 @@ typedef struct {
 // Global storage for all test results
 TestResult all_results[NUM_TESTS];
 
+// --- Fixed Ideal Curves (A-Z, 0-9) ---
+
 // Lookup table for character names (A-Z, 0-9)
 const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {
     "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", 
@@ -79,7 +81,7 @@ const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"
 };
 
-// Fixed Ideal Curve Templates (omitted for brevity, assume they are defined as before)
+// Ideal Templates using 9 control points (8 segments)
 const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
     // 0: 'A' (Diagonal V with a crossbar)
     [0] = {.control_points = {
@@ -87,7 +89,230 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
         {.x = 0.7, .y = 0.6}, {.x = 0.8, .y = 0.5}, {.x = 0.7, .y = 0.3}, {.x = 0.5, .y = 0.1}, 
         {.x = 0.7, .y = 0.9} 
     }},
-    // ... (rest of IDEAL_TEMPLATES data is assumed to be here)
+    // 1: 'B' (Vertical stem, two right curves) - REFINED: Stronger loops
+    [1] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, // P0-P1: Vertical stem
+        {.x = 0.2, .y = 0.1}, // P2: Start of top hump
+        {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.2, .y = 0.5}, // P3-P5: Top hump (closed at 0.5)
+        {.x = 0.8, .y = 0.5}, {.x = 0.8, .y = 0.7}, {.x = 0.2, .y = 0.9} // P6-P8: Bottom hump (closed at 0.9)
+    }},
+    // 2: 'C' (Open curve) - REFINED: Emphasize open ends
+    [2] = {.control_points = {
+        {.x = 0.8, .y = 0.1}, {.x = 0.4, .y = 0.1}, {.x = 0.1, .y = 0.3}, {.x = 0.1, .y = 0.7},
+        {.x = 0.4, .y = 0.9}, {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.7}, {.x = 0.8, .y = 0.3}, // Open end points
+        {.x = 0.1, .y = 0.5} 
+    }},
+    // 3: 'D' (Vertical stem, large right curve) - REFINED: Clear loop, prevent 4 confusion
+    [3] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.7, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.8, .y = 0.5}, 
+        {.x = 0.8, .y = 0.7}, {.x = 0.7, .y = 0.9}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.5}, 
+        {.x = 0.2, .y = 0.1} 
+    }},
+    // 4: 'E' (Vertical stem, three horizontal bars) - REFINED: Stronger bars for better distinction from 5
+    [4] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, // Top
+        {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.5}, // Stem up to mid
+        {.x = 0.75, .y = 0.5}, // Mid bar
+        {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.9}, // Stem down to bottom
+        {.x = 0.8, .y = 0.9}, // Bottom bar
+        {.x = 0.2, .y = 0.9} 
+    }},
+    // 5: 'F' (Vertical stem, two horizontal bars)
+    [5] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.5}, 
+        {.x = 0.6, .y = 0.5}, {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.2, .y = 0.1} 
+    }},
+    // 6: 'G' (Open curve, bar near bottom)
+    [6] = {.control_points = {
+        {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.1, .y = 0.5}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.6}, {.x = 0.4, .y = 0.6}, {.x = 0.4, .y = 0.9}, 
+        {.x = 0.8, .y = 0.9} 
+    }},
+    // 7: 'H' (Two vertical stems, one crossbar) - REFINED: Clearer vertical stems to prevent 3 confusion
+    [7] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, // Left stem
+        {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, // Crossbar
+        {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.9}, // Right stem (separate path)
+        {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, // Reiterate center bar
+        {.x = 0.8, .y = 0.5} 
+    }},
+    // 8: 'I' (Vertical stem) - REFINED: Single strong line
+    [8] = {.control_points = {
+        {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.2}, {.x = 0.5, .y = 0.4}, {.x = 0.5, .y = 0.5},
+        {.x = 0.5, .y = 0.6}, {.x = 0.5, .y = 0.8}, {.x = 0.5, .y = 0.9}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.5, .y = 0.9} 
+    }},
+    // 9: 'J' (Vertical stroke down, wide hook left at bottom)
+    [9] = {.control_points = {
+        {.x = 0.6, .y = 0.1}, {.x = 0.6, .y = 0.2}, {.x = 0.6, .y = 0.4}, {.x = 0.6, .y = 0.5}, 
+        {.x = 0.5, .y = 0.6}, {.x = 0.4, .y = 0.75}, {.x = 0.3, .y = 0.9}, {.x = 0.4, .y = 0.85}, 
+        {.x = 0.5, .y = 0.8}  
+    }},
+    // 10: 'K' (Vertical stem, two diagonal legs) - REFINED: Diagonals must meet stem at 0.5
+    [10] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, // P0-P1: Vertical stem
+        {.x = 0.2, .y = 0.5}, // P2: Central joint
+        {.x = 0.8, .y = 0.1}, // P3: Top right leg
+        {.x = 0.2, .y = 0.5}, // P4: Return to joint
+        {.x = 0.8, .y = 0.9}, // P5: Bottom right leg
+        {.x = 0.2, .y = 0.5}, // P6: Return to joint
+        {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.5} 
+    }},
+    // 11: 'L' (Vertical stem, horizontal base)
+    [11] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.2, .y = 0.6}, {.x = 0.2, .y = 0.3}, {.x = 0.2, .y = 0.1}, {.x = 0.5, .y = 0.5}, 
+        {.x = 0.2, .y = 0.9} 
+    }},
+    // 12: 'M' (W shape upside down) - REFINED: Sharper angles to prevent B confusion
+    [12] = {.control_points = {
+        {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, // Left stem
+        {.x = 0.5, .y = 0.6}, // Deep center V point
+        {.x = 0.8, .y = 0.1}, // Right peak
+        {.x = 0.8, .y = 0.9}, // Right stem
+        {.x = 0.5, .y = 0.6}, {.x = 0.2, .y = 0.1}, // Back to center
+        {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.3} 
+    }},
+    // 13: 'N' (Two verticals, one diagonal)
+    [13] = {.control_points = {
+        {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.1}, 
+        {.x = 0.2, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.8, .y = 0.1} 
+    }},
+    // 14: 'O' (Circle) - REFINED: Wider Oval (less like 0)
+    [14] = {.control_points = {
+        {.x = 0.5, .y = 0.1}, {.x = 0.85, .y = 0.3}, {.x = 0.85, .y = 0.7}, // Top, right-top, right-bottom
+        {.x = 0.5, .y = 0.9}, {.x = 0.15, .y = 0.7}, {.x = 0.15, .y = 0.3}, // Bottom, left-bottom, left-top
+        {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.5} // Close the loop
+    }},
+    // 15: 'P' (Vertical stem, top right curve) - REFINED: Tighter, smaller top loop to prevent Y confusion
+    [15] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, // P0-P1: Vertical stem
+        {.x = 0.2, .y = 0.1}, // P2: Start of top arc
+        {.x = 0.7, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.8, .y = 0.3}, // P3-P5: Top right curve
+        {.x = 0.7, .y = 0.4}, {.x = 0.2, .y = 0.4}, // P6-P7: Return to stem (tighter closure)
+        {.x = 0.2, .y = 0.4} // P8: Last point
+    }},
+    // 16: 'Q' (Circle with a tail)
+    [16] = {.control_points = {
+        {.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.8, .y = 0.7}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.2, .y = 0.7}, {.x = 0.2, .y = 0.3}, {.x = 0.5, .y = 0.1}, {.x = 0.6, .y = 0.7}, 
+        {.x = 0.8, .y = 0.9} 
+    }},
+    // 17: 'R' (Vertical stem, top right curve, diagonal leg)
+    [17] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, 
+        {.x = 0.8, .y = 0.4}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.5}, 
+        {.x = 0.2, .y = 0.1} 
+    }},
+    // 18: 'S' (Continuous S-curve)
+    [18] = {.control_points = {
+        {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.3}, {.x = 0.8, .y = 0.5}, 
+        {.x = 0.8, .y = 0.7}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.5}, 
+        {.x = 0.8, .y = 0.1} 
+    }},
+    // 19: 'T' (Horizontal top bar, vertical stem)
+    [19] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.5, .y = 0.5}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.5, .y = 0.1} 
+    }},
+    // 20: 'U' (Two vertical stems, bottom curve)
+    [20] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.7}, {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.7}, 
+        {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.7}, {.x = 0.8, .y = 0.7}, 
+        {.x = 0.2, .y = 0.1} 
+    }},
+    // 21: 'V' (Two diagonals meeting at bottom)
+    [21] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.1}, 
+        {.x = 0.8, .y = 0.1} 
+    }},
+    // 22: 'W' (Two V-shapes joined) - REFINED: Clearer separation and sharper bottom points
+    [22] = {.control_points = {
+        {.x = 0.1, .y = 0.1}, {.x = 0.3, .y = 0.9}, // First V, left side
+        {.x = 0.5, .y = 0.2}, // First V, right side (upper peak)
+        {.x = 0.7, .y = 0.9}, // Second V, left side
+        {.x = 0.9, .y = 0.1}, // Second V, right side
+        {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.5}, // Extra points
+        {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.5}
+    }},
+    // 23: 'X' (Two crossing diagonals)
+    [23] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.8, .y = 0.1}, 
+        {.x = 0.2, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, 
+        {.x = 0.5, .y = 0.5} 
+    }},
+    // 24: 'Y' (Top V-fork, vertical stem)
+    [24] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.5, .y = 0.5}, {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.5}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.5, .y = 0.7}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, 
+        {.x = 0.5, .y = 0.9} 
+    }},
+    // 25: 'Z' (Horizontal top, diagonal, horizontal bottom)
+    [25] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, 
+        {.x = 0.5, .y = 0.5}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.5, .y = 0.5}, 
+        {.x = 0.2, .y = 0.1} 
+    }},
+    
+    // --- Digits (0-9) ---
+    // 26: '0' (Oval shape) - REFINED: Taller/thinner than 'O'
+    [26] = {.control_points = {
+        {.x = 0.5, .y = 0.1}, {.x = 0.75, .y = 0.3}, {.x = 0.75, .y = 0.7}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.25, .y = 0.7}, {.x = 0.25, .y = 0.3}, 
+        {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.1} 
+    }},
+    // 27: '1' (Mostly vertical line)
+    [27] = {.control_points = {
+        {.x = 0.4, .y = 0.1}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.2}, {.x = 0.5, .y = 0.35}, 
+        {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.65}, {.x = 0.5, .y = 0.8}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.5, .y = 0.9} 
+    }},
+    // 28: '2' (S-curve: Top arc, down-left diagonal, horizontal base)
+    [28] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.7, .y = 0.1}, {.x = 0.8, .y = 0.25}, {.x = 0.7, .y = 0.4}, 
+        {.x = 0.3, .y = 0.55}, {.x = 0.2, .y = 0.7}, {.x = 0.3, .y = 0.8}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.8, .y = 0.9} 
+    }}, 
+    // 29: '3' (Two right-facing curves)
+    [29] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.4, .y = 0.5}, 
+        {.x = 0.8, .y = 0.5}, {.x = 0.8, .y = 0.7}, {.x = 0.4, .y = 0.9}, {.x = 0.8, .y = 0.9}, 
+        {.x = 0.2, .y = 0.9} 
+    }}, 
+    // 30: '4' (Down-left, then across, then vertical stem)
+    [30] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.3, .y = 0.2}, {.x = 0.4, .y = 0.3}, {.x = 0.5, .y = 0.4}, 
+        {.x = 0.2, .y = 0.55}, {.x = 0.8, .y = 0.55}, {.x = 0.8, .y = 0.7}, {.x = 0.8, .y = 0.85}, 
+        {.x = 0.8, .y = 0.9} 
+    }}, 
+    // 31: '5' (Horizontal top, vertical down, right curve)
+    [31] = {.control_points = {
+        {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.4}, {.x = 0.6, .y = 0.4}, 
+        {.x = 0.8, .y = 0.6}, {.x = 0.7, .y = 0.8}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, 
+        {.x = 0.8, .y = 0.1} 
+    }},
+    // 32: '6' (Top curve, closed bottom loop)
+    [32] = {.control_points = {
+        {.x = 0.7, .y = 0.1}, {.x = 0.2, .y = 0.3}, {.x = 0.2, .y = 0.5}, {.x = 0.5, .y = 0.7}, 
+        {.x = 0.8, .y = 0.6}, {.x = 0.5, .y = 0.5}, {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.7, .y = 0.1} 
+    }},
+    // 33: '7' (Horizontal top, steep diagonal)
+    [33] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.3, .y = 0.9}, 
+        {.x = 0.5, .y = 0.5}, {.x = 0.6, .y = 0.7}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.8, .y = 0.1} 
+    }},
+    // 34: '8' (Two stacked circles) - REFINED: Clearer, slightly smaller stacked circles
+    [34] = {.control_points = {
+        {.x = 0.5, .y = 0.15}, {.x = 0.7, .y = 0.2}, {.x = 0.7, .y = 0.35}, // Top curve, right side
+        {.x = 0.5, .y = 0.45}, {.x = 0.3, .y = 0.35}, {.x = 0.3, .y = 0.2}, // Top curve, left side
+        {.x = 0.7, .y = 0.65}, {.x = 0.5, .y = 0.85}, {.x = 0.3, .y = 0.65} // Bottom curve (P6-P8)
+    }},
     // 35: '9' (Closed top loop, vertical stem)
     [35] = {.control_points = {
         {.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.5, .y = 0.4}, {.x = 0.2, .y = 0.2}, 
@@ -95,7 +320,6 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
         {.x = 0.8, .y = 0.9} 
     }}
 };
-
 
 /**
  * @brief Applies Slant and Curvature deformation to a point.
@@ -109,7 +333,7 @@ void apply_deformation(Point *point, const double alpha[NUM_DEFORMATIONS]) {
 }
 
 /**
- * @brief Generates a point on the curve using the ideal form and deformations.
+ * @brief Generates a point on the curve using the ideal form and deformations (8-segment interpolation).
  */
 Point get_deformed_point(const double t, const Ideal_Curve_Params *const params, const double alpha[NUM_DEFORMATIONS]) {
     Point p = {.x = 0.0, .y = 0.0};
@@ -119,7 +343,7 @@ Point get_deformed_point(const double t, const Ideal_Curve_Params *const params,
 
     int segment_index = (int)floor(t / segment_length_t);
     if (segment_index >= N - 1) {
-        segment_index = N - 2; 
+        segment_index = N - 2; // Clamp to the last segment index (7)
     }
 
     const Point P_start = params->control_points[segment_index];
@@ -127,11 +351,13 @@ Point get_deformed_point(const double t, const Ideal_Curve_Params *const params,
 
     const double segment_t = (t - segment_index * segment_length_t) / segment_length_t;
 
+    // Linear interpolation
     p.x = P_start.x + (P_end.x - P_start.x) * segment_t;
     p.y = P_start.y + (P_end.y - P_start.y) * segment_t;
 
     apply_deformation(&p, alpha);
 
+    // Scale to pixel grid and clamp
     p.x = fmax(0.0, fmin(GRID_SIZE - 1.0, p.x * GRID_SIZE));
     p.y = fmax(0.0, fmin(GRID_SIZE - 1.0, p.y * GRID_SIZE));
 
@@ -154,6 +380,7 @@ void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img, const
         const double t = (double)i / NUM_POINTS;
         const Point current_p = get_deformed_point(t, ideal_params, alpha);
 
+        // Main pixel
         const int px = (int)round(current_p.x);
         const int py = (int)round(current_p.y);
 
@@ -179,14 +406,17 @@ void extract_geometric_features(const Generated_Image img, Feature_Vector featur
     // Generate 8 normalized unit vectors (length 1)
     double vectors[NUM_VECTORS][2];
     for (int k = 0; k < NUM_VECTORS; k++) { 
+        // Angle step is 2*PI / 8 (45 degrees)
         const double angle = 2.0 * M_PI * k / NUM_VECTORS; 
         vectors[k][0] = cos(angle); // x component
         vectors[k][1] = sin(angle); // y component
     }
     
-    const double center = (GRID_SIZE - 1.0) / 2.0; // 7.5 for 16x16 grid
+    // Center point for coordinate calculation
+    const double center = (GRID_SIZE - 1.0) / 2.0; 
     const double MAX_PROJECTION_MAGNITUDE = sqrt(center * center + center * center); 
 
+    // Initialize feature vector (all 256 bins)
     for (int k = 0; k < NUM_FEATURES; k++) {
         features_out[k] = 0.0;
     }
@@ -197,18 +427,26 @@ void extract_geometric_features(const Generated_Image img, Feature_Vector featur
             const double intensity = img[i][j];
             if (intensity < 0.1) continue; 
 
+            // Vector from center to pixel (j is x-axis, i is y-axis)
             const double vx = (double)j - center;
             const double vy = (double)i - center;
             
+            // Project the mass vector onto all 8 basis vectors
             for (int k = 0; k < NUM_VECTORS; k++) {
+                // 1. Calculate the projection of the pixel's position vector onto the basis vector (dot product)
                 const double projection = (vx * vectors[k][0] + vy * vectors[k][1]);
+                
+                // 2. Normalize the projection to the range [-1.0, 1.0]
                 const double normalized_projection = projection / MAX_PROJECTION_MAGNITUDE;
                 
+                // 3. Map the normalized projection [-1.0, 1.0] to a bin index [0, NUM_BINS-1]
                 int bin_index = (int)floor((normalized_projection + 1.0) * (NUM_BINS / 2.0));
                 
+                // Clamp index 
                 if (bin_index < 0) bin_index = 0;
                 if (bin_index >= NUM_BINS) bin_index = NUM_BINS - 1;
                 
+                // 4. Add the intensity contribution to the correct feature bin
                 const int feature_index = k * NUM_BINS + bin_index;
                 features_out[feature_index] += intensity;
             }
@@ -352,7 +590,7 @@ void run_optimization(const Generated_Image observed_image, const Feature_Vector
         draw_curve(alpha_hat.alpha, generated_image, ideal_params);
         extract_geometric_features(generated_image, generated_features);
         
-        // Calculate Losses
+        // Calculate Losses (Feature Loss and Combined Loss)
         current_feature_loss_only = calculate_feature_loss_L2(generated_features, observed_features);
         combined_loss = current_feature_loss_only + PIXEL_LOSS_WEIGHT * calculate_pixel_loss_L2(generated_image, observed_image);
 
@@ -389,6 +627,18 @@ void run_optimization(const Generated_Image observed_image, const Feature_Vector
 }
 
 /**
+ * @brief Calculates the absolute pixel-wise difference between two images.
+ */
+void calculate_difference_image(const Generated_Image obs, const Generated_Image est, Generated_Image diff) {
+    for (int i = 0; i < GRID_SIZE; i++) {
+        for (int j = 0; j < GRID_SIZE; j++) {
+            // Absolute difference of intensity
+            diff[i][j] = fabs(obs[i][j] - est[i][j]);
+        }
+    }
+}
+
+/**
  * @brief Runs one full classification test against all ideal characters.
  */
 void run_classification_test(int test_id, int true_char_index, const double true_alpha[NUM_DEFORMATIONS], TestResult *result) {
@@ -422,6 +672,7 @@ void run_classification_test(int test_id, int true_char_index, const double true
         int print_trace = (i == true_char_index && i < 5); 
         run_optimization(observed_image, observed_features, i, &result->classification_results[i], print_trace);
 
+        // Classification is based on the final FEATURE LOSS component
         if (result->classification_results[i].final_loss < min_feature_loss) {
             min_feature_loss = result->classification_results[i].final_loss;
             best_match_index = i;
@@ -437,14 +688,12 @@ void run_classification_test(int test_id, int true_char_index, const double true
     draw_curve(best_fit->estimated_alpha, result->best_estimated_image, &IDEAL_TEMPLATES[best_match_index]);
     
     // Calculate difference image
-    for (int i = 0; i < GRID_SIZE; i++) {
-        for (int j = 0; j < GRID_SIZE; j++) {
-            result->best_diff_image[i][j] = fabs(result->observed_image[i][j] - result->best_estimated_image[i][j]);
-        }
-    }
+    calculate_difference_image(result->observed_image, result->best_estimated_image, result->best_diff_image);
 }
 
-// --- Console Summary Function (same as before, uses final_loss which is now Feature Loss) ---
+// --- Console Summary Function ---
+
+// The number of tests to show the full loss matrix for (e.g., A, B, C, D, E)
 #define DETAILED_SUMMARY_LIMIT 5 
 
 void summarize_results_console() {
@@ -483,6 +732,7 @@ void summarize_results_console() {
 
     // Print Concise Summary for all 36 tests
     printf("\n--- CLASSIFICATION PERFORMANCE SUMMARY (All %d Tests) ---\n", NUM_TESTS);
+    // Updated header for better clarity and includes the new metric
     printf("  ID | TRUE | PRED | Best Feat Loss | a_1 (Slant) | a_2 (Curve) | **PIXEL ERROR %%** | Correct?\n");
     printf("-----|------|------|----------------|-------------|-------------|-------------------|----------\n");
 
@@ -491,7 +741,7 @@ void summarize_results_console() {
         TestResult *r = &all_results[k];
         const EstimationResult *best_fit = &r->classification_results[r->best_match_index];
         
-        // Calculate the Pixel Error Percentage (L1-norm)
+        // Calculate the new Pixel Error Percentage
         double pixel_error_sum = calculate_pixel_error_sum(r->observed_image, r->best_estimated_image);
         double pixel_error_percent = (pixel_error_sum / MAX_PIXEL_ERROR) * 100.0;
 
@@ -510,41 +760,51 @@ void summarize_results_console() {
 }
 
 
-// --- SVG Generation Functions (omitted for brevity, they remain unchanged) ---
+// --- SVG Generation Functions ---
+
+// Constants for SVG rendering
+#define PIXEL_SIZE 5    
+#define IMG_SIZE (GRID_SIZE * PIXEL_SIZE) // 80
+#define IMG_SPACING 5   
+#define SET_SPACING 25  
+#define SET_WIDTH (4 * IMG_SIZE + 3 * IMG_SPACING) // 335
+// Dimensions calculated for 10 sets in a single row
+#define SVG_RENDER_LIMIT 10
+#define SVG_WIDTH (SVG_RENDER_LIMIT * SET_WIDTH + (SVG_RENDER_LIMIT - 1) * SET_SPACING + 2 * SET_SPACING) // 3625
+#define SVG_HEIGHT (IMG_SIZE + 15 + 2 * SET_SPACING) // 130
 
 /**
- * @brief Calculates the absolute pixel-wise difference between two images.
+ * @brief Maps an intensity [0.0, 1.0] to an RGB grayscale color string.
  */
-void calculate_difference_image(const Generated_Image obs, const Generated_Image est, Generated_Image diff) {
-    for (int i = 0; i < GRID_SIZE; i++) {
-        for (int j = 0; j < GRID_SIZE; j++) {
-            // Absolute difference of intensity
-            diff[i][j] = fabs(obs[i][j] - est[i][j]);
-        }
+void get_grayscale_color(double intensity, char *color_out) {
+    double clamped_intensity = fmax(0.0, fmin(1.0, intensity));
+    // Line is white/yellow, background is black.
+    if (clamped_intensity > 0.6) {
+        sprintf(color_out, "rgb(255, 255, 100)"); // Yellowish white for high intensity
+    } else if (clamped_intensity > 0.3) {
+        sprintf(color_out, "rgb(100, 100, 100)"); // Gray for medium intensity
+    } else {
+        sprintf(color_out, "rgb(0, 0, 0)"); // Black/Invisible for low intensity
     }
 }
 
-void get_grayscale_color(double intensity, char *color_out) {
-    double clamped_intensity = fmax(0.0, fmin(1.0, intensity));
-    if (clamped_intensity > 0.6) {
-        sprintf(color_out, "rgb(255, 255, 100)"); 
-    } else if (clamped_intensity > 0.3) {
-        sprintf(color_out, "rgb(100, 100, 100)"); 
-    } else {
-        sprintf(color_out, "rgb(0, 0, 0)"); 
-    }
-}
+/**
+ * @brief Renders a single image into the SVG file at a specific offset.
+ */
 void render_single_image_to_svg(FILE *fp, const Generated_Image img, double x_offset, double y_offset) {
     char color[20];
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
+            // Check intensity to decide on background vs line drawing
             if (img[i][j] > 0.0) {
+                // Use bright color for the line itself
                 get_grayscale_color(img[i][j], color);
                 fprintf(fp, "<rect x=\"%.1f\" y=\"%.1f\" width=\"%d\" height=\"%d\" fill=\"%s\"/>\n",
                         x_offset + j * PIXEL_SIZE, 
                         y_offset + i * PIXEL_SIZE, 
                         PIXEL_SIZE, PIXEL_SIZE, color);
             } else {
+                // Draw black for the empty background grid cells
                  fprintf(fp, "<rect x=\"%.1f\" y=\"%.1f\" width=\"%d\" height=\"%d\" fill=\"black\"/>\n",
                         x_offset + j * PIXEL_SIZE, 
                         y_offset + i * PIXEL_SIZE, 
@@ -553,13 +813,23 @@ void render_single_image_to_svg(FILE *fp, const Generated_Image img, double x_of
         }
     }
 }
+
+/**
+ * @brief Renders the 4-image comparison set for one test case into the SVG file.
+ */
 void render_test_to_svg(FILE *fp, const TestResult *r, double x_set, double y_set) {
+    // 1. True Image (Clean)
     render_single_image_to_svg(fp, r->true_image, x_set, y_set);
+    
+    // 2. Target Image (Noisy)
     render_single_image_to_svg(fp, r->observed_image, x_set + IMG_SIZE + IMG_SPACING, y_set);
 
     const EstimationResult *best_fit = &r->classification_results[r->best_match_index];
+    
+    // 3. Best Estimated Image (Clean Fit from Best Match)
     render_single_image_to_svg(fp, r->best_estimated_image, x_set + 2 * (IMG_SIZE + IMG_SPACING), y_set);
 
+    // 4. Difference Image (Error Magnitude) - using a different coloring for error map
     char error_color[20];
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
@@ -578,6 +848,7 @@ void render_test_to_svg(FILE *fp, const TestResult *r, double x_set, double y_se
         }
     }
     
+    // Add text label for the test ID and classification result
     char label[150];
     char correct_str[5];
     if (r->true_char_index == r->best_match_index) {
@@ -586,6 +857,7 @@ void render_test_to_svg(FILE *fp, const TestResult *r, double x_set, double y_se
         strcpy(correct_str, "NO");
     }
     
+    // Recalculate pixel error for SVG label
     double pixel_error_sum = calculate_pixel_error_sum(r->observed_image, r->best_estimated_image);
     double pixel_error_percent = (pixel_error_sum / MAX_PIXEL_ERROR) * 100.0;
 
@@ -596,14 +868,10 @@ void render_test_to_svg(FILE *fp, const TestResult *r, double x_set, double y_se
     fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"10\" fill=\"white\">%s</text>\n",
             x_set, y_set + IMG_SIZE + 10, label);
 }
-#define PIXEL_SIZE 5    
-#define IMG_SIZE (GRID_SIZE * PIXEL_SIZE) // 80
-#define IMG_SPACING 5   
-#define SET_SPACING 25  
-#define SET_WIDTH (4 * IMG_SIZE + 3 * IMG_SPACING) // 335
-#define SVG_RENDER_LIMIT 10
-#define SVG_WIDTH (SVG_RENDER_LIMIT * SET_WIDTH + (SVG_RENDER_LIMIT - 1) * SET_SPACING + 2 * SET_SPACING) // 3625
-#define SVG_HEIGHT (IMG_SIZE + 15 + 2 * SET_SPACING) // 130
+
+/**
+ * @brief Generates the final SVG file with the first SVG_RENDER_LIMIT test results.
+ */
 void generate_svg_file() {
     FILE *fp = fopen("network.svg", "w");
     if (fp == NULL) {
@@ -611,10 +879,12 @@ void generate_svg_file() {
         return;
     }
 
+    // SVG Header
     fprintf(fp, "<svg width=\"%d\" height=\"%d\" viewBox=\"0 0 %d %d\" xmlns=\"http://www.w3.org/2000/svg\">\n",
             SVG_WIDTH, SVG_HEIGHT, SVG_WIDTH, SVG_HEIGHT);
     fprintf(fp, "<rect width=\"100%%\" height=\"100%%\" fill=\"black\"/>\n");
 
+    // Add general titles for the 4 image columns
     double initial_x = SET_SPACING + IMG_SIZE / 2.0;
     double initial_y = SET_SPACING / 2.0;
     fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"12\" fill=\"white\" text-anchor=\"middle\">TRUE CLEAN</text>\n", initial_x, initial_y);
@@ -623,14 +893,20 @@ void generate_svg_file() {
     fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"12\" fill=\"white\" text-anchor=\"middle\">ERROR DIFF</text>\n", initial_x + 3 * (IMG_SIZE + IMG_SPACING), initial_y);
 
 
+    // Render the first 10 test sets in a single row
     int actual_render_limit = (NUM_TESTS < SVG_RENDER_LIMIT) ? NUM_TESTS : SVG_RENDER_LIMIT;
     for (int k = 0; k < actual_render_limit; k++) {
         int col = k; 
+        
+        // Calculate top-left corner position for the current 4-image set
         double x_set = SET_SPACING + col * (SET_WIDTH + SET_SPACING);
+        // Offset y to leave room for the title text at the top
         double y_set = SET_SPACING + 15; 
+        
         render_test_to_svg(fp, &all_results[k], x_set, y_set);
     }
 
+    // SVG Footer
     fprintf(fp, "</svg>\n");
     
     fclose(fp);
@@ -645,6 +921,8 @@ void generate_svg_file() {
 int main(void) {
     srand(42); // Seed for reproducible results
 
+    // Test data: We run one test case for each of the 36 ideal characters, 
+    // each with a random deformation.
     const double MIN_ALPHA = -0.15;
     const double MAX_ALPHA = 0.15;
 
