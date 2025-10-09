@@ -9,9 +9,9 @@
 #define GRID_SIZE 16
 #define NUM_DEFORMATIONS 2 // alpha_1 (Slant), alpha_2 (Curvature)
 #define NUM_POINTS 200     // Number of points to sample the curve
-#define LEARNING_RATE 0.05 // ADJUSTED: Increased learning rate for faster convergence
+#define LEARNING_RATE 0.1 // ADJUSTED: Significantly increased to allow movement in the loss landscape
 #define ITERATIONS 10
-#define GRADIENT_EPSILON 1e-3 // ADJUSTED: Increased epsilon for detectable change in discrete image
+#define GRADIENT_EPSILON 0.01 // ADJUSTED: Increased step size for finite difference to force a pixel change
 
 // --- OCaml-like Immutability & Const Correctness ---
 
@@ -73,7 +73,7 @@ Point get_deformed_point(const double t, const Ideal_Curve_Params *const params,
     } else if (t < 0.8) {
         const double segment_t = (t - 0.3) / 0.5;
         p.x = params->stroke_1_mid.x;
-        p.y = params->stroke_1_mid.y + (params->stroke_1_mid.y - params->stroke_1_end.y) * segment_t;
+        p.y = params->stroke_1_mid.y + (params->stroke_1_end.y - params->stroke_1_mid.y) * segment_t; // Correction for stem direction
     } else {
         const double segment_t = (t - 0.8) / 0.2;
         p.x = params->stroke_1_mid.x + (params->stroke_1_end.x - params->stroke_1_mid.x) * segment_t;
@@ -156,6 +156,11 @@ void calculate_gradient(const Observed_Image observed, const Deformation_Coeffic
 
         // 3. Compute Gradient (Finite Difference)
         grad_out[k] = (loss_perturbed - loss_base) / epsilon;
+        
+        // Safety check to prevent NaN/Inf gradients if loss_perturbed == loss_base
+        if (fabs(grad_out[k]) < 1e-10) {
+            grad_out[k] = 0.0;
+        }
     }
 }
 
