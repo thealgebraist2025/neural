@@ -9,8 +9,8 @@
 #define GRID_SIZE 16
 #define NUM_DEFORMATIONS 2 // alpha_1 (Slant), alpha_2 (Curvature)
 #define NUM_POINTS 200     // Number of points to sample the curve
-#define LEARNING_RATE 0.01 // ADJUSTED: Reduced for stability
-#define ITERATIONS 50      // ADJUSTED: Increased for convergence
+#define LEARNING_RATE 0.001 // ADJUSTED: Significantly reduced for stability in discrete space
+#define ITERATIONS 100     // ADJUSTED: Increased to allow slower, stable steps to converge
 #define GRADIENT_EPSILON 0.01 // Step size for finite difference
 
 // --- OCaml-like Immutability & Const Correctness ---
@@ -43,9 +43,9 @@ typedef double Generated_Image[GRID_SIZE][GRID_SIZE]; // MUTABLE
 
 // Define the Ideal 'J' form in normalized coordinates [0, 1]
 const Ideal_Curve_Params IDEAL_J = {
-    .stroke_1_start = {.x = 0.5, .y = 0.1}, // Top Bar
-    .stroke_1_mid = {.x = 0.5, .y = 0.7},   // Vertical stem
-    .stroke_1_end = {.x = 0.2, .y = 0.9}    // Bottom Hook
+    .stroke_1_start = {.x = 0.5, .y = 0.1}, // Top Bar/Start of Stem
+    .stroke_1_mid = {.x = 0.5, .y = 0.7},   // End of Stem / Start of Hook
+    .stroke_1_end = {.x = 0.2, .y = 0.9}    // Bottom Hook Tip
 };
 
 // Deformation Basis Function Phi_k(t)
@@ -61,25 +61,25 @@ void apply_deformation(Point *point, const double alpha[NUM_DEFORMATIONS]) {
 
 /**
  * @brief Generates a point on the 'J' curve using the ideal form and deformations.
+ * * Implements C_final(t) = C_0(t) + Sum(alpha_k * Phi_k(t))
  */
 Point get_deformed_point(const double t, const Ideal_Curve_Params *const params, const double alpha[NUM_DEFORMATIONS]) {
     Point p = {.x = 0.0, .y = 0.0};
     
-    // Simplified J curve as a piecewise linear approximation for t in [0, 1]
-    if (t < 0.3) {
-        const double segment_t = t / 0.3;
-        p.x = params->stroke_1_start.x;
+    // REFINED C_0(t) definition: Piecewise Linear Interpolation
+    if (t < 0.5) {
+        // Segment 1: Top to Mid-stem (t in [0, 0.5) maps to segment_t in [0, 1])
+        const double segment_t = t / 0.5;
+        p.x = params->stroke_1_start.x + (params->stroke_1_mid.x - params->stroke_1_start.x) * segment_t;
         p.y = params->stroke_1_start.y + (params->stroke_1_mid.y - params->stroke_1_start.y) * segment_t;
-    } else if (t < 0.8) {
-        const double segment_t = (t - 0.3) / 0.5;
-        p.x = params->stroke_1_mid.x;
-        p.y = params->stroke_1_mid.y + (params->stroke_1_end.y - params->stroke_1_mid.y) * segment_t;
     } else {
-        const double segment_t = (t - 0.8) / 0.2;
+        // Segment 2: Mid-stem to Hook Tip (t in [0.5, 1) maps to segment_t in [0, 1])
+        const double segment_t = (t - 0.5) / 0.5;
         p.x = params->stroke_1_mid.x + (params->stroke_1_end.x - params->stroke_1_mid.x) * segment_t;
-        p.y = params->stroke_1_end.y;
+        p.y = params->stroke_1_mid.y + (params->stroke_1_end.y - params->stroke_1_mid.y) * segment_t;
     }
 
+    // Apply Deformation (Systematic Variation)
     apply_deformation(&p, alpha);
 
     // Scale to pixel grid and clamp (MUTABLE operations on p)
@@ -100,25 +100,24 @@ void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img) {
         }
     }
 
-    // 2. Sample and draw points (Simple line drawing)
+    // 2. Sample and draw points (Simple line drawing with basic anti-aliasing)
     for (int i = 0; i <= NUM_POINTS; i++) {
         const double t = (double)i / NUM_POINTS;
         const Point current_p = get_deformed_point(t, &IDEAL_J, alpha);
 
-        // Simple pixel darkening
+        // Main pixel
         const int px = (int)round(current_p.x);
         const int py = (int)round(current_p.y);
 
         if (px >= 0 && px < GRID_SIZE && py >= 0 && py < GRID_SIZE) {
-            // MUTABLE operation on img
-            img[py][px] = fmin(1.0, img[py][px] + 0.5);
+            img[py][px] = fmin(1.0, img[py][px] + 0.5); // MUTABLE
         }
 
-        // Simple neighbor smoothing (MUTABLE operations on img)
-        if (py + 1 < GRID_SIZE) img[py + 1][px] = fmin(1.0, img[py + 1][px] + 0.1);
-        if (py - 1 >= 0) img[py - 1][px] = fmin(1.0, img[py - 1][px] + 0.1);
-        if (px + 1 < GRID_SIZE) img[py][px + 1] = fmin(1.0, img[py][px + 1] + 0.1);
-        if (px - 1 >= 0) img[py][px - 1] = fmin(1.0, img[py][px - 1] + 0.1);
+        // Neighbor smoothing (basic anti-aliasing)
+        if (py + 1 < GRID_SIZE) img[py + 1][px] = fmin(1.0, img[py + 1][px] + 0.1); // MUTABLE
+        if (py - 1 >= 0) img[py - 1][px] = fmin(1.0, img[py - 1][px] + 0.1); // MUTABLE
+        if (px + 1 < GRID_SIZE) img[py][px + 1] = fmin(1.0, img[py][px + 1] + 0.1); // MUTABLE
+        if (px - 1 >= 0) img[py][px - 1] = fmin(1.0, img[py][px - 1] + 0.1); // MUTABLE
     }
 }
 
@@ -157,7 +156,7 @@ void calculate_gradient(const Observed_Image observed, const Deformation_Coeffic
         // 3. Compute Gradient (Finite Difference)
         grad_out[k] = (loss_perturbed - loss_base) / epsilon;
         
-        // Safety check to prevent zero gradient lock-up near flat areas
+        // Safety check to prevent zero gradient lock-up
         if (fabs(grad_out[k]) < 1e-10) {
             grad_out[k] = 0.0;
         }
@@ -191,8 +190,8 @@ void generate_observed_target(Generated_Image observed_out, const double true_al
     // 2. Add random noise (Stochastic Process/Error) (MUTABLE operation on observed_out)
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
-            // Re-seed rand() for each image if necessary, or just rely on global seed for simplicity
-            double noise = ((double)rand() / RAND_MAX - 0.5) * 0.3; // White noise [-0.15, 0.15]
+            // White noise [-0.15, 0.15]
+            double noise = ((double)rand() / RAND_MAX - 0.5) * 0.3; 
             observed_out[i][j] = fmax(0.0, fmin(1.0, observed_out[i][j] + noise));
         }
     }
@@ -211,7 +210,7 @@ void run_test(int test_id, const double true_alpha[NUM_DEFORMATIONS]) {
     generate_observed_target(observed_image, true_alpha);
     
     printf("\n======================================================\n");
-    printf("TEST %d: Target Slant (a_1)=%.2f, Curve (a_2)=%.2f\n", test_id, true_alpha[0], true_alpha[1]);
+    printf("TEST %d: Target Slant (a_1)=%.4f, Curve (a_2)=%.4f\n", test_id, true_alpha[0], true_alpha[1]);
     printf("======================================================\n");
     print_image("Observed Noisy Target Image (J)", observed_image); 
 
