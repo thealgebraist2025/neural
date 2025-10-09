@@ -29,7 +29,7 @@
 // Segmentation limits
 #define MAX_SEGMENTS 100 // Maximum number of letters we expect to find
 
-// PNG Rendering Constants (Vertical Layout)
+// PNG Rendering Constants
 #define PIXEL_SIZE 2    
 #define IMG_SIZE (GRID_SIZE * PIXEL_SIZE) 
 #define IMG_SPACING 5   
@@ -46,7 +46,7 @@ typedef struct { const Point control_points[NUM_CONTROL_POINTS]; } Ideal_Curve_P
 typedef struct { double alpha[NUM_DEFORMATIONS]; } Deformation_Coefficients;
 typedef double Generated_Image[GRID_SIZE][GRID_SIZE]; 
 typedef double Feature_Vector[NUM_FEATURES]; 
-typedef struct { double estimated_alpha[NUM_DEFORMATIONS]; double final_loss; double loss_history[1]; } EstimationResult; // Simplified for this context
+typedef struct { double estimated_alpha[NUM_DEFORMATIONS]; double final_loss; double loss_history[1]; } EstimationResult;
 
 typedef struct {
     int start; 
@@ -67,40 +67,220 @@ typedef struct {
 size_t total_allocated_bytes = 0;
 size_t total_freed_bytes = 0;
 
-// --- Function Prototypes (Fixes Implicit Declarations) ---
+// --- Function Prototypes ---
 void* safe_malloc(size_t size);
 void safe_free(void *ptr, size_t size);
+void apply_deformation(Point *point, const double alpha[NUM_DEFORMATIONS]);
+Point get_deformed_point(const double t, const Ideal_Curve_Params *const params, const double alpha[NUM_DEFORMATIONS]);
 void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img, const Ideal_Curve_Params *const ideal_params);
 void extract_geometric_features(const Generated_Image img, Feature_Vector features_out);
-double calculate_pixel_loss_L2(const Generated_Image generated, const Generated_Image observed);
 double calculate_feature_loss_L2(const Feature_Vector generated, const Feature_Vector observed);
+double calculate_pixel_loss_L2(const Generated_Image generated, const Generated_Image observed);
 double calculate_combined_loss(const Generated_Image generated_img, const Feature_Vector generated_features,
                                const Generated_Image observed_img, const Feature_Vector observed_features);
+void calculate_gradient(const Generated_Image observed_img, const Feature_Vector observed_features, 
+                        const Deformation_Coefficients *const alpha, const double loss_base, 
+                        double grad_out[NUM_DEFORMATIONS], const Ideal_Curve_Params *const ideal_params);
 void run_optimization(const Generated_Image observed_image, const Feature_Vector observed_features, 
                       int ideal_char_index, EstimationResult *result);
 void set_pixel(unsigned char *buffer, int x, int y, int width, int height, unsigned char r, unsigned char g, unsigned char b);
 void get_pixel_color(double intensity, int is_error_map, unsigned char *r, unsigned char *g, unsigned char *b);
 void draw_text_placeholder_box(unsigned char *buffer, int buf_width, int buf_height, int x, int y, int width, int height, unsigned char r, unsigned char g, unsigned char b);
 void render_single_image_to_png(unsigned char *buffer, int buf_width, int buf_height, const Generated_Image img, int x_offset, int y_offset, int is_error_map);
+int load_image_stb(const char *filename, double **data_out, int *width_out, int *height_out);
+void resize_segment(const double *full_data, int full_width, int full_height, 
+                    int x_start, int x_end, int y_start, int y_end, 
+                    Generated_Image segment_out);
+void project_histogram(const double *full_data, int width, int height, int orientation, double *hist_out);
+int find_zero_intervals(const double *hist, int size, int min_zero_length, double threshold, Boundary *boundaries_out);
+int segment_image_naive(const double *full_data, int full_width, int full_height, SegmentResult *segments_out);
+void recognize_segment(SegmentResult *segment);
+void generate_segment_png(const SegmentResult *segments, int num_segments, const double *full_data, int full_width, int full_height);
 
 
-// --- Fixed Ideal Curves (Omitted most for brevity but ensure 'O' is fixed) ---
+// --- Fixed Ideal Curves ---
 const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {
     "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", 
     "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", 
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"
 };
 const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
-    // A...
+    // A
     [0] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.3, .y = 0.3}, {.x = 0.2, .y = 0.5}, {.x = 0.3, .y = 0.6}, 
-        {.x = 0.7, .y = 0.6}, {.x = 0.8, .y = 0.5}, {.x = 0.7, .y = 0.3}, {.x = 0.5, .y = 0.1}, {.x = 0.7, .y = 0.9} 
+        {.x = 0.7, .y = 0.6}, {.x = 0.8, .y = 0.5}, {.x = 0.7, .y = 0.3}, {.x = 0.5, .y = 0.1}, 
+        {.x = 0.7, .y = 0.9} 
     }},
-    // O (FIXED: Duplicated closing point to prevent superfluous internal lines)
+    // B (Placeholder)
+    [1] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.8, .y = 0.5}, {.x = 0.2, .y = 0.5}, 
+        {.x = 0.8, .y = 0.6}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, 
+        {.x = 0.2, .y = 0.5} 
+    }},
+    // C (Placeholder)
+    [2] = {.control_points = {{.x = 0.8, .y = 0.3}, {.x = 0.5, .y = 0.1}, {.x = 0.2, .y = 0.3}, {.x = 0.2, .y = 0.7}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.7}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.7}, 
+        {.x = 0.2, .y = 0.3} 
+    }},
+    // D (Placeholder)
+    [3] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.7, .y = 0.2}, {.x = 0.8, .y = 0.5}, {.x = 0.7, .y = 0.8}, 
+        {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.5}, {.x = 0.2, .y = 0.5}, 
+        {.x = 0.2, .y = 0.1} 
+    }},
+    // E (Placeholder)
+    [4] = {.control_points = {{.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, 
+        {.x = 0.2, .y = 0.5}, {.x = 0.6, .y = 0.5}, {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.1}, 
+        {.x = 0.2, .y = 0.9} 
+    }},
+    // F (Placeholder)
+    [5] = {.control_points = {{.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.5}, 
+        {.x = 0.6, .y = 0.5}, {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.8, .y = 0.1} 
+    }},
+    // G (Placeholder)
+    [6] = {.control_points = {{.x = 0.8, .y = 0.3}, {.x = 0.5, .y = 0.1}, {.x = 0.2, .y = 0.3}, {.x = 0.2, .y = 0.7}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.7}, {.x = 0.8, .y = 0.5}, {.x = 0.6, .y = 0.5}, 
+        {.x = 0.8, .y = 0.7} 
+    }},
+    // H (Placeholder)
+    [7] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.1}, 
+        {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, 
+        {.x = 0.8, .y = 0.5} 
+    }},
+    // I (Placeholder)
+    [8] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.1}, 
+        {.x = 0.5, .y = 0.9} 
+    }},
+    // J (Placeholder)
+    [9] = {.control_points = {{.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.7}, 
+        {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.2, .y = 0.7} 
+    }},
+    // K (Placeholder)
+    [10] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.1}, 
+        {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.8, .y = 0.1} 
+    }},
+    // L (Placeholder)
+    [11] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.1}, 
+        {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, 
+        {.x = 0.8, .y = 0.1} 
+    }},
+    // M (Placeholder)
+    [12] = {.control_points = {{.x = 0.1, .y = 0.9}, {.x = 0.1, .y = 0.1}, {.x = 0.5, .y = 0.5}, {.x = 0.9, .y = 0.1}, 
+        {.x = 0.9, .y = 0.9}, {.x = 0.1, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.9, .y = 0.9}, 
+        {.x = 0.1, .y = 0.1} 
+    }},
+    // N (Placeholder)
+    [13] = {.control_points = {{.x = 0.1, .y = 0.9}, {.x = 0.1, .y = 0.1}, {.x = 0.9, .y = 0.9}, {.x = 0.9, .y = 0.1}, 
+        {.x = 0.1, .y = 0.9}, {.x = 0.9, .y = 0.9}, {.x = 0.1, .y = 0.1}, {.x = 0.9, .y = 0.1}, 
+        {.x = 0.9, .y = 0.9} 
+    }},
+    // O (FIXED)
     [14] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.85, .y = 0.3}, {.x = 0.85, .y = 0.7}, 
         {.x = 0.5, .y = 0.9}, {.x = 0.15, .y = 0.7}, {.x = 0.15, .y = 0.3}, 
         {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.1}  
     }},
-    // ... all 36 characters are here ...
+    // P (Placeholder)
+    [15] = {.control_points = {{.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.8, .y = 0.5}, 
+        {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.5}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.2, .y = 0.5} 
+    }},
+    // Q (Placeholder)
+    [16] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.85, .y = 0.3}, {.x = 0.85, .y = 0.7}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.15, .y = 0.7}, {.x = 0.15, .y = 0.3}, 
+        {.x = 0.5, .y = 0.1}, {.x = 0.6, .y = 0.6}, {.x = 0.8, .y = 0.9}  
+    }},
+    // R (Placeholder)
+    [17] = {.control_points = {{.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.8, .y = 0.5}, 
+        {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.2, .y = 0.5} 
+    }},
+    // S (Placeholder)
+    [18] = {.control_points = {{.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, 
+        {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.2, .y = 0.1} 
+    }},
+    // T (Placeholder)
+    [19] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.1}, 
+        {.x = 0.8, .y = 0.1} 
+    }},
+    // U (Placeholder)
+    [20] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.8}, {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.8}, 
+        {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.8}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.2, .y = 0.8} 
+    }},
+    // V (Placeholder)
+    [21] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, 
+        {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, 
+        {.x = 0.5, .y = 0.9} 
+    }},
+    // W (Placeholder)
+    [22] = {.control_points = {{.x = 0.1, .y = 0.1}, {.x = 0.3, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.7, .y = 0.9}, 
+        {.x = 0.9, .y = 0.1}, {.x = 0.1, .y = 0.1}, {.x = 0.9, .y = 0.1}, {.x = 0.5, .y = 0.5}, 
+        {.x = 0.3, .y = 0.9} 
+    }},
+    // X (Placeholder)
+    [23] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.5, .y = 0.5} 
+    }},
+    // Y (Placeholder)
+    [24] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.5, .y = 0.5}, {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.5}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.5, .y = 0.5} 
+    }},
+    // Z (Placeholder)
+    [25] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, 
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, 
+        {.x = 0.2, .y = 0.1} 
+    }},
+    // 0
+    [26] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.8, .y = 0.7}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.7}, {.x = 0.2, .y = 0.3}, 
+        {.x = 0.5, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.1}  
+    }},
+    // 1
+    [27] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, {.x = 0.3, .y = 0.2}, 
+        {.x = 0.7, .y = 0.9}, {.x = 0.3, .y = 0.9}, {.x = 0.5, .y = 0.1}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.5, .y = 0.1}, {.x = 0.3, .y = 0.2} 
+    }},
+    // 2
+    [28] = {.control_points = {{.x = 0.2, .y = 0.2}, {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.4}, 
+        {.x = 0.2, .y = 0.6}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.6}, {.x = 0.8, .y = 0.9} 
+    }},
+    // 3
+    [29] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.5, .y = 0.5}, 
+        {.x = 0.8, .y = 0.8}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.2}, 
+        {.x = 0.5, .y = 0.5}, {.x = 0.8, .y = 0.8}, {.x = 0.2, .y = 0.1} 
+    }},
+    // 4
+    [30] = {.control_points = {{.x = 0.6, .y = 0.1}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, 
+        {.x = 0.6, .y = 0.5}, {.x = 0.6, .y = 0.9}, {.x = 0.2, .y = 0.5}, 
+        {.x = 0.6, .y = 0.1}, {.x = 0.6, .y = 0.9}, {.x = 0.8, .y = 0.5} 
+    }},
+    // 5
+    [31] = {.control_points = {{.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.5}, 
+        {.x = 0.8, .y = 0.5}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.5} 
+    }},
+    // 6
+    [32] = {.control_points = {{.x = 0.7, .y = 0.1}, {.x = 0.2, .y = 0.3}, {.x = 0.2, .y = 0.7}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.7}, {.x = 0.5, .y = 0.5}, 
+        {.x = 0.2, .y = 0.7}, {.x = 0.7, .y = 0.1}, {.x = 0.5, .y = 0.9} 
+    }},
+    // 7
+    [33] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.3, .y = 0.9}, 
+        {.x = 0.7, .y = 0.9}, {.x = 0.8, .y = 0.1}, {.x = 0.3, .y = 0.9}, 
+        {.x = 0.5, .y = 0.5}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1} 
+    }},
+    // 8
+    [34] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.5, .y = 0.5}, {.x = 0.2, .y = 0.3}, 
+        {.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.7}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.7}, 
+        {.x = 0.5, .y = 0.5} 
+    }},
+    // 9
     [35] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.5, .y = 0.4}, {.x = 0.2, .y = 0.2}, 
         {.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.4}, {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.7}, 
         {.x = 0.8, .y = 0.9} 
@@ -108,7 +288,7 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
 };
 
 
-// --- Memory Wrapper Functions (Restored) ---
+// --- Memory Wrapper Functions ---
 
 void* safe_malloc(size_t size) {
     void *ptr = malloc(size);
@@ -126,7 +306,7 @@ void safe_free(void *ptr, size_t size) {
 }
 
 
-// --- Core Recognition Functions (Restored Prototypes and Logic) ---
+// --- Core Recognition Functions ---
 
 void apply_deformation(Point *point, const double alpha[NUM_DEFORMATIONS]) {
     point->x = point->x + alpha[0] * (point->y - 0.5);
@@ -309,7 +489,8 @@ void run_optimization(const Generated_Image observed_image, const Feature_Vector
     memcpy(result->estimated_alpha, alpha_hat.alpha, sizeof(double) * NUM_DEFORMATIONS);
 }
 
-// --- PNG Rendering Functions (Restored) ---
+
+// --- PNG Rendering Functions ---
 
 void set_pixel(unsigned char *buffer, int x, int y, int width, int height, unsigned char r, unsigned char g, unsigned char b) {
     if (x >= 0 && x < width && y >= 0 && y < height) {
@@ -345,7 +526,9 @@ void get_pixel_color(double intensity, int is_error_map, unsigned char *r, unsig
 void draw_text_placeholder_box(unsigned char *buffer, int buf_width, int buf_height, int x, int y, int width, int height, unsigned char r, unsigned char g, unsigned char b) {
     for(int py = 0; py < height; py++) {
         for(int px = 0; px < width; px++) {
+            // Draw background fill
             set_pixel(buffer, x + px, y + py, buf_width, buf_height, r / 3, g / 3, b / 3);
+            // Draw border
             if (py == 0 || py == height - 1 || px == 0 || px == width - 1) {
                  set_pixel(buffer, x + px, y + py, buf_width, buf_height, r, g, b);
             }
@@ -376,7 +559,7 @@ void render_single_image_to_png(unsigned char *buffer, int buf_width, int buf_he
 
 int load_image_stb(const char *filename, double **data_out, int *width_out, int *height_out) {
     printf("--- WARNING: Skipping actual image load (stbi_load not available) ---\n");
-    printf("Simulating image load with a 100x100 image containing 'TEST' like shapes.\n");
+    printf("Simulating image load with a 100x100 image containing 'TES' like shapes on two lines.\n");
 
     *width_out = 100;
     *height_out = 100;
@@ -391,23 +574,23 @@ int load_image_stb(const char *filename, double **data_out, int *width_out, int 
         }
     }
     
-    // Simulate line 1: T
+    // Simulate line 1: T E
+    // T
     for (int j = 10; j <= 30; j++) (*data_out)[15 * (*width_out) + j] = 1.0; // Horizontal bar
     for (int i = 15; i <= 40; i++) (*data_out)[i * (*width_out) + 20] = 1.0; // Vertical bar
-
-    // Simulate line 1: E
-    for (int j = 40; j <= 60; j++) (*data_out)[15 * (*width_out) + j] = 1.0; // Top
-    for (int j = 40; j <= 60; j++) (*data_out)[25 * (*width_out) + j] = 1.0; // Middle
-    for (int j = 40; j <= 60; j++) (*data_out)[35 * (*width_out) + j] = 1.0; // Bottom
-    for (int i = 15; i <= 35; i++) (*data_out)[i * (*width_out) + 40] = 1.0; // Vertical
+    // E (gap between T and E)
+    for (int j = 45; j <= 65; j++) (*data_out)[15 * (*width_out) + j] = 1.0; // Top
+    for (int j = 45; j <= 65; j++) (*data_out)[25 * (*width_out) + j] = 1.0; // Middle
+    for (int j = 45; j <= 65; j++) (*data_out)[35 * (*width_out) + j] = 1.0; // Bottom
+    for (int i = 15; i <= 35; i++) (*data_out)[i * (*width_out) + 45] = 1.0; // Vertical
 
     // Simulate line 2: S
-    for (int j = 10; j <= 30; j++) (*data_out)[60 * (*width_out) + j] = 1.0;
-    for (int i = 60; i <= 70; i++) (*data_out)[i * (*width_out) + 10] = 1.0;
+    // S (large vertical gap between line 1 and 2)
     for (int j = 10; j <= 30; j++) (*data_out)[70 * (*width_out) + j] = 1.0;
-    for (int i = 70; i <= 80; i++) (*data_out)[i * (*width_out) + 30] = 1.0;
+    for (int i = 70; i <= 80; i++) (*data_out)[i * (*width_out) + 10] = 1.0;
     for (int j = 10; j <= 30; j++) (*data_out)[80 * (*width_out) + j] = 1.0;
-
+    for (int i = 80; i <= 90; i++) (*data_out)[i * (*width_out) + 30] = 1.0;
+    for (int j = 10; j <= 30; j++) (*data_out)[90 * (*width_out) + j] = 1.0;
 
     return 1;
 }
@@ -416,15 +599,18 @@ void resize_segment(const double *full_data, int full_width, int full_height,
                     int x_start, int x_end, int y_start, int y_end, 
                     Generated_Image segment_out) {
     
-    int segment_w = x_end - x_start;
-    int segment_h = y_end - y_start;
+    int segment_w = x_end - x_start + 1;
+    int segment_h = y_end - y_start + 1;
 
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
             
-            int src_y = y_start + (int)round((double)i / (GRID_SIZE - 1) * segment_h);
-            int src_x = x_start + (int)round((double)j / (GRID_SIZE - 1) * segment_w);
+            // Map the 32x32 cell (i, j) to a coordinate in the original image segment
+            // Use (GRID_SIZE - 1) for proper interpolation to edges
+            int src_y = y_start + (int)round((double)i / (GRID_SIZE - 1) * (segment_h - 1));
+            int src_x = x_start + (int)round((double)j / (GRID_SIZE - 1) * (segment_w - 1));
 
+            // Ensure coordinates are within the full image bounds
             src_y = fmax(0, fmin(full_height - 1, src_y));
             src_x = fmax(0, fmin(full_width - 1, src_x));
 
@@ -458,41 +644,40 @@ void project_histogram(const double *full_data, int width, int height, int orien
     }
 }
 
-int find_zero_intervals(const double *hist, int size, int min_zero_length, double threshold, Boundary *boundaries_out) {
+int find_zero_intervals(const double *hist, int size, int min_content_length, double threshold, Boundary *boundaries_out) {
     int final_count = 0;
-    int content_start = 0; // The start of the current content block
+    int in_content = 0;
+    int content_start = 0;
 
     for (int i = 0; i < size; i++) {
-        if (hist[i] < threshold) {
-            // Found a zero region, look ahead
-            int zero_end = i;
-            while (zero_end < size && hist[zero_end] < threshold) {
-                zero_end++;
+        if (hist[i] >= threshold) {
+            // Entered or remained in a content region
+            if (!in_content) {
+                content_start = i;
+                in_content = 1;
             }
-            
-            int zero_length = zero_end - i;
-
-            if (zero_length >= min_zero_length) {
-                // Found a significant gap, the content ends at i-1
-                if (i - content_start > min_zero_length) { // Minimum content size
+        } else {
+            // Entered or remained in a zero region
+            if (in_content) {
+                // Content boundary found at i-1
+                int content_length = i - content_start;
+                if (content_length >= min_content_length) {
                     boundaries_out[final_count].start = content_start;
                     boundaries_out[final_count].end = i - 1;
                     if (final_count < MAX_SEGMENTS) final_count++;
                 }
-                
-                // New content starts after the gap
-                content_start = zero_end;
+                in_content = 0;
             }
-            // Skip past the gap we just processed
-            i = zero_end - 1; 
         }
     }
     
-    // Process the final content block
-    if (size - content_start > min_zero_length) {
-        boundaries_out[final_count].start = content_start;
-        boundaries_out[final_count].end = size - 1;
-        if (final_count < MAX_SEGMENTS) final_count++;
+    // Process the final content block if it extends to the end
+    if (in_content) {
+        if (size - content_start >= min_content_length) {
+            boundaries_out[final_count].start = content_start;
+            boundaries_out[final_count].end = size - 1;
+            if (final_count < MAX_SEGMENTS) final_count++;
+        }
     }
 
     return final_count;
@@ -506,6 +691,7 @@ int segment_image_naive(const double *full_data, int full_width, int full_height
     Boundary line_boundaries[MAX_SEGMENTS];
     project_histogram(full_data, full_width, full_height, 0, h_hist);
     
+    // Line segmentation: Min content length is 1/15th of height
     int num_lines = find_zero_intervals(h_hist, full_height, full_height / 15, 0.01, line_boundaries);
     safe_free(h_hist, sizeof(double) * full_height);
     
@@ -527,7 +713,7 @@ int segment_image_naive(const double *full_data, int full_width, int full_height
         }
         
         Boundary letter_boundaries[MAX_SEGMENTS];
-        // Letter segmentation: smaller minimum gap required
+        // Letter segmentation: Min content length is 1/40th of width
         int num_letters = find_zero_intervals(v_hist, full_width, full_width / 40, 0.01, letter_boundaries);
         safe_free(v_hist, sizeof(double) * full_width);
         
@@ -541,9 +727,9 @@ int segment_image_naive(const double *full_data, int full_width, int full_height
             }
             
             SegmentResult *seg = &segments_out[total_segments];
-            // Add a small buffer to the y-bounds to capture any ascenders/descenders lost in line segmentation
-            seg->y_start = fmax(0, line_y_start - 2); 
-            seg->y_end = fmin(full_height - 1, line_y_end + 2);
+            // Use the full line height for the vertical bounds
+            seg->y_start = line_y_start; 
+            seg->y_end = line_y_end;
             seg->x_start = letter_boundaries[c].start;
             seg->x_end = letter_boundaries[c].end;
             
@@ -560,7 +746,7 @@ int segment_image_naive(const double *full_data, int full_width, int full_height
 }
 
 
-// --- Recognition Function ---
+// --- Recognition Function (Uses run_optimization) ---
 
 void recognize_segment(SegmentResult *segment) {
     Feature_Vector observed_features;
@@ -569,7 +755,7 @@ void recognize_segment(SegmentResult *segment) {
     double min_feature_loss = HUGE_VAL;
     int best_match_index = -1;
 
-    EstimationResult current_result = {0}; // Zero-initialize
+    EstimationResult current_result = {0}; 
 
     for (int i = 0; i < NUM_IDEAL_CHARS; i++) {
         run_optimization(segment->resized_img, observed_features, i, &current_result); 
@@ -589,7 +775,8 @@ void recognize_segment(SegmentResult *segment) {
 // --- PNG Rendering for Segmentation Output ---
 
 #define SEG_ROW_HEIGHT (IMG_SIZE + TEXT_HEIGHT + SET_SPACING) 
-#define SEG_PNG_WIDTH (IMG_SIZE * 2 + IMG_SPACING * 3 + SET_SPACING * 2) // Simplified width
+// Simplified width calculation
+#define SEG_PNG_WIDTH (IMG_SIZE * 2 + IMG_SPACING * 3 + SET_SPACING * 2) 
 
 void draw_segment_info_box(unsigned char *buffer, int buf_width, int buf_height, int x, int y, int width, int height, const SegmentResult *seg) {
     char info[100];
@@ -597,28 +784,27 @@ void draw_segment_info_box(unsigned char *buffer, int buf_width, int buf_height,
     
     sprintf(info, "Match: %s | Loss: %.2f | a1:%.2f", char_name, seg->final_loss, seg->estimated_alpha[0]);
     draw_text_placeholder_box(buffer, buf_width, buf_height, x, y, width, height, 200, 200, 255);
+    // Note: Actual text rendering is omitted/placeholder, only the box is drawn.
 }
 
 void render_segment_to_png(unsigned char *buffer, int buf_width, int buf_height, const SegmentResult *seg, int x_set, int y_set) {
     int current_x = x_set;
     
-    // 1. Resized Segment Image (Observed)
+    // 1. Info Box
+    draw_segment_info_box(buffer, buf_width, buf_height, x_set, y_set + 2, IMG_SIZE * 2 + IMG_SPACING, TEXT_HEIGHT - 4, seg);
+    
+    // 2. Resized Segment Image (Observed)
     render_single_image_to_png(buffer, buf_width, buf_height, seg->resized_img, current_x, y_set + TEXT_HEIGHT, 0); 
     current_x += IMG_SIZE + IMG_SPACING;
     
-    // 2. Best Estimated Image
+    // 3. Best Estimated Image
     Generated_Image estimated_img;
     if (seg->best_match_index != -1) {
         draw_curve(seg->estimated_alpha, estimated_img, &IDEAL_TEMPLATES[seg->best_match_index]);
     } else {
-        // Fallback to clear image
         for(int i=0; i<GRID_SIZE; i++) for(int j=0; j<GRID_SIZE; j++) estimated_img[i][j] = 0.0;
     }
     render_single_image_to_png(buffer, buf_width, buf_height, estimated_img, current_x, y_set + TEXT_HEIGHT, 0);
-    current_x += IMG_SIZE + IMG_SPACING;
-
-    // 3. Info Box Placeholder
-    draw_segment_info_box(buffer, buf_width, buf_height, x_set, y_set + 2, IMG_SIZE * 2 + IMG_SPACING, TEXT_HEIGHT - 4, seg);
 }
 
 void generate_segment_png(const SegmentResult *segments, int num_segments, const double *full_data, int full_width, int full_height) {
@@ -634,8 +820,8 @@ void generate_segment_png(const SegmentResult *segments, int num_segments, const
     int seg_row_height = SEG_ROW_HEIGHT;
     int num_seg_rows = (num_segments + SEGMENTS_PER_ROW - 1) / SEGMENTS_PER_ROW; 
     
+    int png_width = SET_SPACING * 2 + SEGMENTS_PER_ROW * (IMG_SIZE * 2 + IMG_SPACING) + (SEGMENTS_PER_ROW - 1) * IMG_SPACING;
     int png_height = full_img_row_height + num_seg_rows * seg_row_height + SET_SPACING;
-    int png_width = (IMG_SIZE * 2 + IMG_SPACING) * SEGMENTS_PER_ROW + SET_SPACING * 2;
     
     long buffer_size = (long)png_width * png_height * NUM_CHANNELS;
     unsigned char *buffer = (unsigned char *)safe_malloc(buffer_size);
@@ -666,15 +852,17 @@ void generate_segment_png(const SegmentResult *segments, int num_segments, const
         }
     }
     
-    // 2. Draw Segment Boundaries on the Full Image
+    // 2. Draw Segment Boundaries on the Full Image (Blue Outline)
+    int y_offset = y_set + TEXT_HEIGHT; // Offset for image start
     for (int k = 0; k < num_segments; k++) {
         const SegmentResult *seg = &segments[k];
-        int y_offset = y_set + TEXT_HEIGHT; // Offset for image start
-
+        
+        // Draw vertical lines
         for (int y = seg->y_start * PIXEL_SIZE; y <= seg->y_end * PIXEL_SIZE + PIXEL_SIZE; y++) {
             set_pixel(buffer, x_set + seg->x_start * PIXEL_SIZE, y_offset + y, png_width, png_height, 0, 0, 255);
             set_pixel(buffer, x_set + seg->x_end * PIXEL_SIZE, y_offset + y, png_width, png_height, 0, 0, 255);
         }
+        // Draw horizontal lines
         for (int x = seg->x_start * PIXEL_SIZE; x <= seg->x_end * PIXEL_SIZE + PIXEL_SIZE; x++) {
             set_pixel(buffer, x_set + x, y_offset + seg->y_start * PIXEL_SIZE, png_width, png_height, 0, 0, 255);
             set_pixel(buffer, x_set + x, y_offset + seg->y_end * PIXEL_SIZE, png_width, png_height, 0, 0, 255);
@@ -700,6 +888,7 @@ void generate_segment_png(const SegmentResult *segments, int num_segments, const
 
     if (success) {
         printf("\nSegmentation Output Complete: segmentation_output.png created.\n");
+        printf("Output PNG Size: %d x %d pixels. Total Segments: %d.\n", png_width, png_height, num_segments);
     } else {
         printf("\nERROR: Failed to write segmentation_output.png.\n");
     }
