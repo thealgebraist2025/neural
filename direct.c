@@ -22,7 +22,7 @@
 #define NUM_POINTS 200
 #define ITERATIONS 500      
 #define GRADIENT_EPSILON 0.01 
-#define NUM_IDEAL_CHARS 36  
+#define NUM_IDEAL_CHARS 62  // 26 A-Z + 26 a-z + 10 0-9
 #define NUM_CONTROL_POINTS 9 
 #define MAX_SEGMENTS 100 
 #define PIXEL_SIZE 2    
@@ -64,6 +64,7 @@ size_t total_freed_bytes = 0;
 // --- Function Prototypes ---
 void* safe_malloc(size_t size);
 void safe_free(void *ptr, size_t size);
+void apply_deformation(Point *point, const double alpha[NUM_DEFORMATIONS]);
 Point get_deformed_point(const double t, const Ideal_Curve_Params *const params, const double alpha[NUM_DEFORMATIONS]);
 void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img, const Ideal_Curve_Params *const ideal_params);
 void extract_geometric_features(const Generated_Image img, Feature_Vector features_out);
@@ -88,30 +89,328 @@ int segment_image_naive(const double *full_data, int full_width, int full_height
 void recognize_segment(SegmentResult *segment);
 void generate_segment_png(const SegmentResult *segments, int num_segments, const double *full_data, int full_width, int full_height);
 
-// --- Fixed Ideal Curves (Simplified for brevity, structure remains) ---
+
+// --- Fixed Ideal Curves (COMPLETE: Uppercase, Lowercase, Digits) ---
 const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {
     "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", 
     "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", 
+    "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p",
+    "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"
 };
 const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
+    // Uppercase Letters (A-Z)
     // A
     [0] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.3, .y = 0.3}, {.x = 0.2, .y = 0.5}, {.x = 0.3, .y = 0.6}, 
         {.x = 0.7, .y = 0.6}, {.x = 0.8, .y = 0.5}, {.x = 0.7, .y = 0.3}, {.x = 0.5, .y = 0.1}, 
-        {.x = 0.7, .y = 0.9} 
+        {.x = 0.5, .y = 0.6} 
     }},
     // B 
     [1] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.8, .y = 0.5}, {.x = 0.2, .y = 0.5}, 
         {.x = 0.8, .y = 0.6}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, 
         {.x = 0.2, .y = 0.5} 
     }},
-    // C ... (rest of the templates are abbreviated)
+    // C 
     [2] = {.control_points = {{.x = 0.8, .y = 0.3}, {.x = 0.5, .y = 0.1}, {.x = 0.2, .y = 0.3}, {.x = 0.2, .y = 0.7}, 
         {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.7}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.7}, 
         {.x = 0.2, .y = 0.3} 
     }},
-    // ...
-    [35] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.5, .y = 0.4}, {.x = 0.2, .y = 0.2}, 
+    // D 
+    [3] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.7, .y = 0.2}, {.x = 0.8, .y = 0.5}, {.x = 0.7, .y = 0.8}, 
+        {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.5}, {.x = 0.2, .y = 0.5}, 
+        {.x = 0.2, .y = 0.1} 
+    }},
+    // E 
+    [4] = {.control_points = {{.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, 
+        {.x = 0.2, .y = 0.5}, {.x = 0.6, .y = 0.5}, {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.1}, 
+        {.x = 0.2, .y = 0.9} 
+    }},
+    // F 
+    [5] = {.control_points = {{.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.5}, 
+        {.x = 0.6, .y = 0.5}, {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.8, .y = 0.1} 
+    }},
+    // G 
+    [6] = {.control_points = {{.x = 0.8, .y = 0.3}, {.x = 0.5, .y = 0.1}, {.x = 0.2, .y = 0.3}, {.x = 0.2, .y = 0.7}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.7}, {.x = 0.8, .y = 0.5}, {.x = 0.6, .y = 0.5}, 
+        {.x = 0.8, .y = 0.7} 
+    }},
+    // H 
+    [7] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.1}, 
+        {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, 
+        {.x = 0.8, .y = 0.5} 
+    }},
+    // I 
+    [8] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, 
+        {.x = 0.5, .y = 0.5} 
+    }},
+    // J 
+    [9] = {.control_points = {{.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.7}, 
+        {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.2, .y = 0.7} 
+    }},
+    // K 
+    [10] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.1}, 
+        {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.8, .y = 0.1} 
+    }},
+    // L 
+    [11] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.1}, 
+        {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, 
+        {.x = 0.8, .y = 0.1} 
+    }},
+    // M 
+    [12] = {.control_points = {{.x = 0.1, .y = 0.9}, {.x = 0.1, .y = 0.1}, {.x = 0.5, .y = 0.5}, {.x = 0.9, .y = 0.1}, 
+        {.x = 0.9, .y = 0.9}, {.x = 0.1, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.9, .y = 0.9}, 
+        {.x = 0.1, .y = 0.1} 
+    }},
+    // N 
+    [13] = {.control_points = {{.x = 0.1, .y = 0.9}, {.x = 0.1, .y = 0.1}, {.x = 0.9, .y = 0.9}, {.x = 0.9, .y = 0.1}, 
+        {.x = 0.1, .y = 0.9}, {.x = 0.9, .y = 0.9}, {.x = 0.1, .y = 0.1}, {.x = 0.9, .y = 0.1}, 
+        {.x = 0.9, .y = 0.9} 
+    }},
+    // O 
+    [14] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.85, .y = 0.3}, {.x = 0.85, .y = 0.7}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.15, .y = 0.7}, {.x = 0.15, .y = 0.3}, 
+        {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.1}  
+    }},
+    // P 
+    [15] = {.control_points = {{.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.8, .y = 0.5}, 
+        {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.5}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.2, .y = 0.5} 
+    }},
+    // Q 
+    [16] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.85, .y = 0.3}, {.x = 0.85, .y = 0.7}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.15, .y = 0.7}, {.x = 0.15, .y = 0.3}, 
+        {.x = 0.5, .y = 0.1}, {.x = 0.6, .y = 0.6}, {.x = 0.8, .y = 0.9}  
+    }},
+    // R 
+    [17] = {.control_points = {{.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.8, .y = 0.5}, 
+        {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.2, .y = 0.5} 
+    }},
+    // S 
+    [18] = {.control_points = {{.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, 
+        {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.2, .y = 0.1} 
+    }},
+    // T 
+    [19] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.1}, 
+        {.x = 0.8, .y = 0.1} 
+    }},
+    // U 
+    [20] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.8}, {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.8}, 
+        {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.8}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.2, .y = 0.8} 
+    }},
+    // V 
+    [21] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, 
+        {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, 
+        {.x = 0.5, .y = 0.9} 
+    }},
+    // W 
+    [22] = {.control_points = {{.x = 0.1, .y = 0.1}, {.x = 0.3, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.7, .y = 0.9}, 
+        {.x = 0.9, .y = 0.1}, {.x = 0.1, .y = 0.1}, {.x = 0.9, .y = 0.1}, {.x = 0.5, .y = 0.5}, 
+        {.x = 0.3, .y = 0.9} 
+    }},
+    // X 
+    [23] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.5, .y = 0.5} 
+    }},
+    // Y 
+    [24] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.5, .y = 0.5}, {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.5}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.5, .y = 0.5} 
+    }},
+    // Z 
+    [25] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, 
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, 
+        {.x = 0.2, .y = 0.1} 
+    }},
+
+    // Lowercase Letters (a-z)
+    // a
+    [26] = {.control_points = {{.x = 0.7, .y = 0.7}, {.x = 0.5, .y = 0.3}, {.x = 0.3, .y = 0.5}, {.x = 0.3, .y = 0.7}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.7, .y = 0.7}, {.x = 0.7, .y = 0.3}, {.x = 0.7, .y = 0.5}, 
+        {.x = 0.7, .y = 0.9} 
+    }},
+    // b
+    [27] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.7, .y = 0.8}, {.x = 0.7, .y = 0.6}, 
+        {.x = 0.2, .y = 0.6}, {.x = 0.2, .y = 0.9}, {.x = 0.7, .y = 0.6}, {.x = 0.2, .y = 0.1}, 
+        {.x = 0.7, .y = 0.8} 
+    }},
+    // c
+    [28] = {.control_points = {{.x = 0.7, .y = 0.4}, {.x = 0.5, .y = 0.2}, {.x = 0.3, .y = 0.4}, {.x = 0.3, .y = 0.8}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.7, .y = 0.8}, {.x = 0.3, .y = 0.4}, {.x = 0.3, .y = 0.8}, 
+        {.x = 0.7, .y = 0.4} 
+    }},
+    // d
+    [29] = {.control_points = {{.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.3, .y = 0.8}, {.x = 0.3, .y = 0.6}, 
+        {.x = 0.8, .y = 0.6}, {.x = 0.8, .y = 0.9}, {.x = 0.3, .y = 0.6}, {.x = 0.8, .y = 0.1}, 
+        {.x = 0.3, .y = 0.8} 
+    }},
+    // e
+    [30] = {.control_points = {{.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, {.x = 0.2, .y = 0.3}, {.x = 0.5, .y = 0.1}, 
+        {.x = 0.8, .y = 0.3}, {.x = 0.8, .y = 0.7}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.7}, 
+        {.x = 0.2, .y = 0.5} 
+    }},
+    // f
+    [31] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, {.x = 0.3, .y = 0.1}, {.x = 0.7, .y = 0.1}, 
+        {.x = 0.2, .y = 0.5}, {.x = 0.6, .y = 0.5}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.2, .y = 0.5} 
+    }},
+    // g
+    [32] = {.control_points = {{.x = 0.7, .y = 0.7}, {.x = 0.5, .y = 0.3}, {.x = 0.3, .y = 0.5}, {.x = 0.3, .y = 0.7}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.7, .y = 0.7}, {.x = 0.7, .y = 0.3}, {.x = 0.7, .y = 0.9}, 
+        {.x = 0.5, .y = 1.1} 
+    }},
+    // h
+    [33] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.6}, {.x = 0.7, .y = 0.5}, 
+        {.x = 0.7, .y = 0.9}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.7, .y = 0.9}, 
+        {.x = 0.2, .y = 0.6} 
+    }},
+    // i
+    [34] = {.control_points = {{.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.9}, {.x = 0.5, .y = 0.2}, {.x = 0.5, .y = 0.2}, 
+        {.x = 0.5, .y = 0.2}, {.x = 0.5, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.5}, 
+        {.x = 0.5, .y = 0.1} 
+    }},
+    // j
+    [35] = {.control_points = {{.x = 0.6, .y = 0.5}, {.x = 0.6, .y = 0.9}, {.x = 0.4, .y = 1.1}, {.x = 0.2, .y = 1.0}, 
+        {.x = 0.6, .y = 0.2}, {.x = 0.6, .y = 0.1}, {.x = 0.6, .y = 0.5}, {.x = 0.6, .y = 0.9}, 
+        {.x = 0.6, .y = 0.1} 
+    }},
+    // k
+    [36] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.6}, {.x = 0.8, .y = 0.3}, 
+        {.x = 0.2, .y = 0.6}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.8, .y = 0.3} 
+    }},
+    // l
+    [37] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.5, .y = 0.1} 
+    }},
+    // m
+    [38] = {.control_points = {{.x = 0.1, .y = 0.9}, {.x = 0.1, .y = 0.5}, {.x = 0.3, .y = 0.3}, {.x = 0.5, .y = 0.5}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.7, .y = 0.3}, {.x = 0.9, .y = 0.5}, {.x = 0.9, .y = 0.9}, 
+        {.x = 0.1, .y = 0.5} 
+    }},
+    // n
+    [39] = {.control_points = {{.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.5}, {.x = 0.4, .y = 0.3}, {.x = 0.7, .y = 0.5}, 
+        {.x = 0.7, .y = 0.9}, {.x = 0.2, .y = 0.5}, {.x = 0.7, .y = 0.9}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.4, .y = 0.3} 
+    }},
+    // o
+    [40] = {.control_points = {{.x = 0.5, .y = 0.3}, {.x = 0.7, .y = 0.4}, {.x = 0.7, .y = 0.8}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.3, .y = 0.8}, {.x = 0.3, .y = 0.4}, 
+        {.x = 0.5, .y = 0.3}, {.x = 0.5, .y = 0.3}, {.x = 0.5, .y = 0.3}  
+    }},
+    // p
+    [41] = {.control_points = {{.x = 0.2, .y = 1.1}, {.x = 0.2, .y = 0.3}, {.x = 0.7, .y = 0.4}, {.x = 0.7, .y = 0.6}, 
+        {.x = 0.2, .y = 0.6}, {.x = 0.2, .y = 0.3}, {.x = 0.7, .y = 0.6}, {.x = 0.2, .y = 1.1}, 
+        {.x = 0.2, .y = 0.6} 
+    }},
+    // q
+    [42] = {.control_points = {{.x = 0.7, .y = 1.1}, {.x = 0.7, .y = 0.3}, {.x = 0.2, .y = 0.4}, {.x = 0.2, .y = 0.6}, 
+        {.x = 0.7, .y = 0.6}, {.x = 0.7, .y = 0.3}, {.x = 0.2, .y = 0.6}, {.x = 0.7, .y = 1.1}, 
+        {.x = 0.7, .y = 0.6} 
+    }},
+    // r
+    [43] = {.control_points = {{.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.5}, {.x = 0.4, .y = 0.3}, {.x = 0.7, .y = 0.4}, 
+        {.x = 0.7, .y = 0.5}, {.x = 0.2, .y = 0.5}, {.x = 0.7, .y = 0.5}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.4, .y = 0.3} 
+    }},
+    // s
+    [44] = {.control_points = {{.x = 0.7, .y = 0.3}, {.x = 0.3, .y = 0.3}, {.x = 0.3, .y = 0.6}, {.x = 0.7, .y = 0.6}, 
+        {.x = 0.7, .y = 0.9}, {.x = 0.3, .y = 0.9}, {.x = 0.7, .y = 0.3}, {.x = 0.3, .y = 0.9}, 
+        {.x = 0.3, .y = 0.3} 
+    }},
+    // t
+    [45] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, {.x = 0.5, .y = 0.9}, {.x = 0.3, .y = 0.4}, 
+        {.x = 0.7, .y = 0.4}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, {.x = 0.3, .y = 0.4}, 
+        {.x = 0.7, .y = 0.4} 
+    }},
+    // u
+    [46] = {.control_points = {{.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.8}, {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.8}, 
+        {.x = 0.8, .y = 0.5}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.9}, 
+        {.x = 0.5, .y = 0.9} 
+    }},
+    // v
+    [47] = {.control_points = {{.x = 0.2, .y = 0.5}, {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.5}, {.x = 0.2, .y = 0.5}, 
+        {.x = 0.8, .y = 0.5}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, 
+        {.x = 0.5, .y = 0.9} 
+    }},
+    // w
+    [48] = {.control_points = {{.x = 0.1, .y = 0.5}, {.x = 0.3, .y = 0.9}, {.x = 0.5, .y = 0.7}, {.x = 0.7, .y = 0.9}, 
+        {.x = 0.9, .y = 0.5}, {.x = 0.1, .y = 0.5}, {.x = 0.9, .y = 0.5}, {.x = 0.5, .y = 0.7}, 
+        {.x = 0.3, .y = 0.9} 
+    }},
+    // x
+    [49] = {.control_points = {{.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.5}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.5}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.5, .y = 0.7} 
+    }},
+    // y
+    [50] = {.control_points = {{.x = 0.2, .y = 0.5}, {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.5}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.5, .y = 1.1}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, {.x = 0.5, .y = 1.1}, 
+        {.x = 0.5, .y = 0.9} 
+    }},
+    // z
+    [51] = {.control_points = {{.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, 
+        {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.7}, {.x = 0.8, .y = 0.7}, 
+        {.x = 0.2, .y = 0.5} 
+    }},
+
+    // Digits (0-9)
+    // 0
+    [52] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.8, .y = 0.7}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.7}, {.x = 0.2, .y = 0.3}, 
+        {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.1}  
+    }},
+    // 1
+    [53] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, {.x = 0.3, .y = 0.2}, 
+        {.x = 0.7, .y = 0.9}, {.x = 0.3, .y = 0.9}, {.x = 0.5, .y = 0.1}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.5, .y = 0.1}, {.x = 0.3, .y = 0.2} 
+    }},
+    // 2
+    [54] = {.control_points = {{.x = 0.2, .y = 0.2}, {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.4}, 
+        {.x = 0.2, .y = 0.6}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.6}, {.x = 0.8, .y = 0.9} 
+    }},
+    // 3
+    [55] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.5, .y = 0.5}, 
+        {.x = 0.8, .y = 0.8}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.2}, 
+        {.x = 0.5, .y = 0.5}, {.x = 0.8, .y = 0.8}, {.x = 0.2, .y = 0.1} 
+    }},
+    // 4
+    [56] = {.control_points = {{.x = 0.6, .y = 0.1}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, 
+        {.x = 0.6, .y = 0.5}, {.x = 0.6, .y = 0.9}, {.x = 0.2, .y = 0.5}, 
+        {.x = 0.6, .y = 0.1}, {.x = 0.6, .y = 0.9}, {.x = 0.8, .y = 0.5} 
+    }},
+    // 5
+    [57] = {.control_points = {{.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.5}, 
+        {.x = 0.8, .y = 0.5}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.5} 
+    }},
+    // 6
+    [58] = {.control_points = {{.x = 0.7, .y = 0.1}, {.x = 0.2, .y = 0.3}, {.x = 0.2, .y = 0.7}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.7}, {.x = 0.5, .y = 0.5}, 
+        {.x = 0.2, .y = 0.7}, {.x = 0.7, .y = 0.1}, {.x = 0.5, .y = 0.9} 
+    }},
+    // 7
+    [59] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.3, .y = 0.9}, 
+        {.x = 0.7, .y = 0.9}, {.x = 0.8, .y = 0.1}, {.x = 0.3, .y = 0.9}, 
+        {.x = 0.5, .y = 0.5}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1} 
+    }},
+    // 8
+    [60] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.5, .y = 0.5}, {.x = 0.2, .y = 0.3}, 
+        {.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.7}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.7}, 
+        {.x = 0.5, .y = 0.5} 
+    }},
+    // 9
+    [61] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.5, .y = 0.4}, {.x = 0.2, .y = 0.2}, 
         {.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.4}, {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.7}, 
         {.x = 0.8, .y = 0.9} 
     }}
@@ -136,7 +435,7 @@ void safe_free(void *ptr, size_t size) {
 }
 
 
-// --- Core Recognition Functions (Unchanged from previous version) ---
+// --- Core Recognition Functions ---
 
 void apply_deformation(Point *point, const double alpha[NUM_DEFORMATIONS]) {
     point->x = point->x + alpha[0] * (point->y - 0.5);
@@ -344,7 +643,7 @@ void recognize_segment(SegmentResult *segment) {
 }
 
 
-// --- PNG Rendering Functions (Unchanged from previous version) ---
+// --- PNG Rendering Functions ---
 
 void set_pixel(unsigned char *buffer, int x, int y, int width, int height, unsigned char r, unsigned char g, unsigned char b) {
     if (x >= 0 && x < width && y >= 0 && y < height) {
@@ -407,7 +706,7 @@ void render_single_image_to_png(unsigned char *buffer, int buf_width, int buf_he
 }
 
 
-// --- Image Loading and Preprocessing (Unchanged) ---
+// --- Image Loading and Preprocessing ---
 
 int load_image_stb(const char *filename, double **data_out, int *width_out, int *height_out) {
     int channels = 0;
@@ -445,8 +744,8 @@ void resize_segment(const double *full_data, int full_width, int full_height,
     int segment_w = x_end - x_start + 1;
     int segment_h = y_end - y_start + 1;
 
-    for (int i = 0; i < GRID_SIZE; i++) { // Target Y
-        for (int j = 0; j < GRID_SIZE; j++) { // Target X
+    for (int i = 0; i < GRID_SIZE; i++) { 
+        for (int j = 0; j < GRID_SIZE; j++) { 
             
             int src_y = y_start + (int)round((double)i / (GRID_SIZE - 1) * (segment_h - 1));
             int src_x = x_start + (int)round((double)j / (GRID_SIZE - 1) * (segment_w - 1));
@@ -460,25 +759,20 @@ void resize_segment(const double *full_data, int full_width, int full_height,
 }
 
 
-// --- UPDATED Segmentation Logic: Boolean Array Interval Method ---
+// --- Segmentation Logic: Boolean Array Interval Method ---
 
-/**
- * Finds contiguous 'true' intervals (content boundaries) in a boolean array.
- * A content interval is a sequence of 'true' values (non-zero in the unsigned char array)
- * that is longer than min_length.
- */
 int find_content_intervals_bool(const unsigned char *bool_array, int size, int min_length, Boundary *boundaries_out) {
     int final_count = 0;
     int in_content = 0;
     int content_start = 0;
 
     for (int i = 0; i < size; i++) {
-        if (bool_array[i]) { // Content is detected (value is non-zero/true)
+        if (bool_array[i]) { 
             if (!in_content) {
                 content_start = i;
                 in_content = 1;
             }
-        } else { // Gap is detected (value is zero/false)
+        } else { 
             if (in_content) {
                 int content_length = i - content_start;
                 if (content_length >= min_length) {
@@ -491,7 +785,6 @@ int find_content_intervals_bool(const unsigned char *bool_array, int size, int m
         }
     }
     
-    // Check for content extending to the end of the array
     if (in_content) {
         if (size - content_start >= min_length) {
             boundaries_out[final_count].start = content_start;
@@ -511,18 +804,16 @@ int segment_image_naive(const double *full_data, int full_width, int full_height
     unsigned char *y_bool_array = (unsigned char *)safe_malloc(sizeof(unsigned char) * full_height);
     Boundary line_boundaries[MAX_SEGMENTS];
 
-    // Create Boolean Array for Lines (check if any pixel in the row is above threshold)
     for (int i = 0; i < full_height; i++) {
-        y_bool_array[i] = 0; // Default to false
+        y_bool_array[i] = 0; 
         for (int j = 0; j < full_width; j++) {
             if (full_data[i * full_width + j] > threshold) {
-                y_bool_array[i] = 1; // True: content found in this row
+                y_bool_array[i] = 1; 
                 break;
             }
         }
     }
     
-    // Convert boolean array to line boundaries
     int min_line_height = full_height / 15;
     if (min_line_height < 10) min_line_height = 10;
     
@@ -539,12 +830,11 @@ int segment_image_naive(const double *full_data, int full_width, int full_height
         
         unsigned char *x_bool_array = (unsigned char *)safe_malloc(sizeof(unsigned char) * full_width);
 
-        // Create Boolean Array for Letters (check if any pixel in the column of this line is above threshold)
         for (int j = 0; j < full_width; j++) {
-            x_bool_array[j] = 0; // Default to false
+            x_bool_array[j] = 0; 
             for (int i = line_y_start; i <= line_y_end; i++) {
                 if (full_data[i * full_width + j] > threshold) {
-                    x_bool_array[j] = 1; // True: content found in this column for this line
+                    x_bool_array[j] = 1; 
                     break;
                 }
             }
@@ -552,7 +842,6 @@ int segment_image_naive(const double *full_data, int full_width, int full_height
         
         Boundary letter_boundaries[MAX_SEGMENTS];
         
-        // Convert boolean array to letter boundaries
         int min_char_width = line_height / 5;
         if (min_char_width < 5) min_char_width = 5; 
         
@@ -574,7 +863,6 @@ int segment_image_naive(const double *full_data, int full_width, int full_height
             seg->x_start = letter_boundaries[c].start;
             seg->x_end = letter_boundaries[c].end;
             
-            // Resize the extracted segment to the fixed GRID_SIZE
             resize_segment(full_data, full_width, full_height, 
                            seg->x_start, seg->x_end, seg->y_start, seg->y_end, 
                            seg->resized_img);
@@ -587,7 +875,7 @@ int segment_image_naive(const double *full_data, int full_width, int full_height
 }
 
 
-// --- PNG Rendering for Segmentation Output (Unchanged) ---
+// --- PNG Rendering for Segmentation Output ---
 
 #define SEG_ROW_HEIGHT (IMG_SIZE + TEXT_HEIGHT + SET_SPACING) 
 #define SEG_PNG_WIDTH (IMG_SIZE * 2 + IMG_SPACING * 3 + SET_SPACING * 2) 
@@ -730,7 +1018,7 @@ int main(void) {
         return 1;
     }
     
-    // 1. Segment Image using the new Boolean Array method
+    // 1. Segment Image using the Boolean Array method
     int num_segments = segment_image_naive(full_image_data, full_width, full_height, segments);
 
     // 2. Recognize Each Segment
