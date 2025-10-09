@@ -20,7 +20,7 @@
 #define NUM_FEATURES (NUM_VECTORS * NUM_BINS) 
 #define PIXEL_LOSS_WEIGHT 2.5 
 #define NUM_POINTS 200
-#define ITERATIONS 500      
+#define ITERATIONS 200      // DECREASED from 500 to 200 for 3-minute limit
 #define GRADIENT_EPSILON 0.01 
 #define NUM_IDEAL_CHARS 62  // 26 A-Z + 26 a-z + 10 0-9
 #define NUM_CONTROL_POINTS 9 
@@ -58,7 +58,7 @@ typedef struct {
     int best_match_index; 
     double final_loss;
     double estimated_alpha[NUM_DEFORMATIONS];
-    int best_stroke_width; // New field
+    int best_stroke_width; 
 } SegmentResult;
 
 
@@ -1085,11 +1085,14 @@ int main(void) {
     srand(42); 
 
     // Using the image from the context
-    const char *input_filename = "test1.jpg"; 
+    const char *input_filename = "1000000809.jpg"; 
     double *full_image_data = NULL;
     int full_width = 0;
     int full_height = 0;
     
+    // Start timing
+    clock_t start_time = clock();
+
     if (!load_image_stb(input_filename, &full_image_data, &full_width, &full_height) || full_image_data == NULL) {
         fprintf(stderr, "Fatal Error: Image processing aborted.\n");
         return 1;
@@ -1108,23 +1111,30 @@ int main(void) {
     int num_segments = segment_image_naive(full_image_data, full_width, full_height, segments);
 
     // 2. Recognize Each Segment
-    printf("\nStarting recognition for %d segments (testing stroke widths %d, %d, %d, %d)...\n", 
-           num_segments, STROKE_WIDTHS[0], STROKE_WIDTHS[1], STROKE_WIDTHS[2], STROKE_WIDTHS[3]);
+    printf("\nStarting recognition for %d segments (testing stroke widths %d, %d, %d, %d) with %d iterations per match...\n", 
+           num_segments, STROKE_WIDTHS[0], STROKE_WIDTHS[1], STROKE_WIDTHS[2], STROKE_WIDTHS[3], ITERATIONS);
+           
     for (int i = 0; i < num_segments; i++) {
         recognize_segment(&segments[i]);
         const char* char_name = (segments[i].best_match_index != -1) ? CHAR_NAMES[segments[i].best_match_index] : "N/A";
-        printf("  Segment %d: Match='%s' (Loss: %.4f, SW: %d)\n", 
-               i + 1, char_name, segments[i].final_loss, segments[i].best_stroke_width);
+        printf("  Segment %d: Match='%s' (Loss: %.4f, SW: %d, a1: %.2f)\n", 
+               i + 1, char_name, segments[i].final_loss, segments[i].best_stroke_width, segments[i].estimated_alpha[0]);
     }
     
     // 3. Generate PNG Output
     generate_segment_png(segments, num_segments, full_image_data, full_width, full_height);
 
+    // Stop timing
+    clock_t end_time = clock();
+    double time_spent = (double)(end_time - start_time) / CLOCKS_PER_SEC;
+
     // Free resources
     safe_free(segments, segments_size);
     safe_free(full_image_data, data_size);
 
-    printf("\nFinal Memory Check: Allocated: %zu bytes | Freed: %zu bytes | Net: %zu bytes\n", 
+    printf("\n--- Performance Summary ---\n");
+    printf("Total Time Spent: %.2f seconds (Target: 180 seconds)\n", time_spent);
+    printf("Final Memory Check: Allocated: %zu bytes | Freed: %zu bytes | Net: %zu bytes\n", 
            total_allocated_bytes, total_freed_bytes, total_allocated_bytes - total_freed_bytes);
 
     return 0;
