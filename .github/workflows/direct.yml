@@ -20,5 +20,5 @@ jobs:
     - name: Upload Artifact
       uses: actions/upload-artifact@v4 # Use the latest version
       with:
-        name: directnetwork-diagram
-        path: network_full_vertical.png
+        name: segmentation 
+        path: segmentation_output.png
