@@ -11,8 +11,8 @@
 // --- STB Image Read Configuration (Placeholder) ---
 // We can't actually include this and load an image, but define the implementation guard
 // to show where it would be used if possible.
-// #define STB_IMAGE_IMPLEMENTATION 
-// #include "stb_image.h" // Assuming stbi_load function is here
+#define STB_IMAGE_IMPLEMENTATION 
+#include "stb_image.h" // Assuming stbi_load function is here
 
 // Define M_PI explicitly
 #define M_PI 3.14159265358979323846
