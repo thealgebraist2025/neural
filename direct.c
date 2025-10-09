@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <math.h>
 
 // Define M_PI and M_SQRT1_2 explicitly as they are non-standard extensions
@@ -11,9 +12,9 @@
 #define NUM_DEFORMATIONS 2 // alpha_1 (Slant), alpha_2 (Curvature)
 #define NUM_FEATURES 8     // Using 8 directional projections for loss calculation
 #define NUM_POINTS 200
-// Learning rate will now be dynamic, starting value is defined inside run_test
-#define ITERATIONS 2000    // Increased iterations for slower, stable convergence
+#define ITERATIONS 5000    // Increased iterations for final, tiny convergence steps
 #define GRADIENT_EPSILON 0.01 
+#define NUM_TESTS 10
 
 // --- OCaml-like Immutability & Const Correctness ---
 
@@ -35,6 +36,21 @@ typedef struct {
 typedef const double Observed_Image[GRID_SIZE][GRID_SIZE]; // IMMUTABLE
 typedef double Generated_Image[GRID_SIZE][GRID_SIZE]; // MUTABLE
 typedef double Feature_Vector[NUM_FEATURES]; // MUTABLE
+
+// Structure to hold results for final summary
+typedef struct {
+    double true_alpha[NUM_DEFORMATIONS];
+    double estimated_alpha[NUM_DEFORMATIONS];
+    double observed_image[GRID_SIZE][GRID_SIZE];
+    double estimated_image[GRID_SIZE][GRID_SIZE];
+    double diff_image[GRID_SIZE][GRID_SIZE];
+    double final_loss;
+    int id;
+} TestResult;
+
+// Global storage for all test results
+TestResult all_results[NUM_TESTS];
+
 
 // --- Fixed Ideal Curve and Basis Functions (IMMUTABLE) ---
 
@@ -189,20 +205,27 @@ void calculate_gradient(const Feature_Vector observed_features, const Deformatio
     }
 }
 
-// --- Display Functions ---
+// --- Image Utility Functions ---
 
-void print_image(const char *const title, const double image[GRID_SIZE][GRID_SIZE]) {
-    printf("\n%s (16x16):\n", title);
-    for (int i = 0; i < GRID_SIZE; i++) {
-        for (int j = 0; j < GRID_SIZE; j++) {
-            if (image[i][j] < 0.3) printf(" ");
-            else printf("#");
-        }
-        printf("\n");
+void print_image_row(const double image[GRID_SIZE][GRID_SIZE], int i) {
+    for (int j = 0; j < GRID_SIZE; j++) {
+        if (image[i][j] < 0.3) printf(" ");
+        else if (image[i][j] < 0.6) printf(":");
+        else printf("#");
     }
 }
 
-// --- Simulation Setup (Generating a Target/Observed Image) ---
+/**
+ * @brief Calculates the absolute pixel-wise difference between two images.
+ */
+void calculate_difference_image(const Generated_Image obs, const Generated_Image est, Generated_Image diff) {
+    for (int i = 0; i < GRID_SIZE; i++) {
+        for (int j = 0; j < GRID_SIZE; j++) {
+            // Absolute difference of intensity
+            diff[i][j] = fabs(obs[i][j] - est[i][j]);
+        }
+    }
+}
 
 /**
  * @brief Creates a synthetic observed image with known deformation and noise.
@@ -223,10 +246,17 @@ void generate_observed_target(Generated_Image observed_out, const double true_al
 
 // --- Test Runner ---
 
-void run_test(int test_id, const double true_alpha[NUM_DEFORMATIONS]) {
+void run_test(int test_id, const double true_alpha[NUM_DEFORMATIONS], TestResult *result) {
+    // Copy true parameters to result structure
+    result->id = test_id;
+    memcpy(result->true_alpha, true_alpha, sizeof(double) * NUM_DEFORMATIONS);
+
     // Setup (IMMUTABLE data)
     Generated_Image observed_image; // Observed image (mutable buffer)
     generate_observed_target(observed_image, true_alpha);
+    
+    // Copy observed image to result structure
+    memcpy(result->observed_image, observed_image, sizeof(Generated_Image));
     
     // Extract the target features once (IMMUTABLE feature vector)
     Feature_Vector observed_features;
@@ -234,23 +264,29 @@ void run_test(int test_id, const double true_alpha[NUM_DEFORMATIONS]) {
     
     printf("\n======================================================\n");
     printf("TEST %d: Target Slant (a_1)=%.4f, Curve (a_2)=%.4f\n", test_id, true_alpha[0], true_alpha[1]);
-    printf("======================================================\n");
-    print_image("Observed Noisy Target Image (J)", observed_image); 
+    printf("--- Target Image for Optimization ---\n");
+    // Show the observed image only once at the start of the test
+    for (int i = 0; i < GRID_SIZE; i++) {
+        printf("                ");
+        print_image_row(observed_image, i);
+        printf("\n");
+    }
 
     // Initialization (MUTABLE data)
     Deformation_Coefficients alpha_hat = {
         .alpha = {0.0, 0.0} // Starting guess: Ideal 'J'
     };
     
-    // CRITICAL: Initialize dynamic learning rate
+    // CRITICAL FIX: Dynamic learning rate initialization and floor
     double learning_rate = 0.0000001; 
+    const double min_learning_rate = 0.0000000001; // 1e-10 floor to prevent full lockup
     double gradient[NUM_DEFORMATIONS];
     Generated_Image generated_image;
     Feature_Vector generated_features;
     double loss;
     double prev_loss = HUGE_VAL; // Initialize previous loss to a very large number
 
-    printf("\n--- Optimization Trace (Adaptive Learning Rate) ---\n");
+    printf("\n--- Optimization Trace (L Rate Decay) ---\n");
     printf("It | Loss     | L Rate  | a_1 (Slant) | a_2 (Curve)\n");
     printf("----------------------------------------------------------\n");
     
@@ -264,38 +300,82 @@ void run_test(int test_id, const double true_alpha[NUM_DEFORMATIONS]) {
         loss = calculate_feature_loss(generated_features, observed_features);
         
         // Check for bouncing/overshooting and decay learning rate
-        if (loss > prev_loss * 1.001) { // If loss increased by more than 0.1%
+        if (loss > prev_loss * 1.001 && learning_rate > min_learning_rate) { 
             learning_rate *= 0.5; // Halve the learning rate
-            // Optional: revert the last step to ensure we are still walking downhill
-            // alpha_hat.alpha[0] = prev_alpha[0];
-            // alpha_hat.alpha[1] = prev_alpha[1];
         }
 
-        // Store current state for next iteration's check
+        // Store current loss for next iteration's check
         prev_loss = loss;
 
         // Calculate Gradient (IMMUTABLE operation)
         calculate_gradient(observed_features, &alpha_hat, loss, gradient);
         
-        printf("%04d | %8.5f | %7.8f | %8.4f | %8.4f\n", t, loss, learning_rate, alpha_hat.alpha[0], alpha_hat.alpha[1]);
+        // Print progress only every 100 iterations, and at start/end
+        if (t % 100 == 0 || t == ITERATIONS) {
+            printf("%04d | %8.5f | %7.8f | %8.4f | %8.4f\n", t, loss, learning_rate, alpha_hat.alpha[0], alpha_hat.alpha[1]);
+        }
 
         // Gradient Descent Update (MUTABLE operation on alpha_hat)
         if (t < ITERATIONS) {
-            const double delta_a1 = learning_rate * gradient[0];
-            const double delta_a2 = learning_rate * gradient[1];
+            double step_rate = (learning_rate > min_learning_rate) ? learning_rate : min_learning_rate;
+            
+            const double delta_a1 = step_rate * gradient[0];
+            const double delta_a2 = step_rate * gradient[1];
             
             alpha_hat.alpha[0] -= delta_a1;
             alpha_hat.alpha[1] -= delta_a2;
         }
     }
 
-    // Final Result (IMMUTABLE visualization)
+    // --- Store Final Results ---
+    result->final_loss = loss;
+    memcpy(result->estimated_alpha, alpha_hat.alpha, sizeof(double) * NUM_DEFORMATIONS);
+    
+    // Final image rasterization based on estimated parameters
     draw_curve(alpha_hat.alpha, generated_image);
-    print_image("Final Denoised/Estimated Image", generated_image);
+    memcpy(result->estimated_image, generated_image, sizeof(Generated_Image));
+    
+    // Calculate the difference image
+    calculate_difference_image(observed_image, generated_image, result->diff_image);
+    
+    // Copy the difference image to result structure
+    memcpy(result->diff_image, result->diff_image, sizeof(Generated_Image));
+}
 
-    printf("\n--- Conclusion ---\n");
-    printf("TRUE Slant (a_1): %.4f, Estimated: %.4f\n", true_alpha[0], alpha_hat.alpha[0]);
-    printf("TRUE Curvature (a_2): %.4f, Estimated: %.4f\n", true_alpha[1], alpha_hat.alpha[1]);
+
+// --- Summary Function ---
+void summarize_results() {
+    printf("\n\n======================================================\n");
+    printf("                   FINAL SUMMARY                    \n");
+    printf("======================================================\n");
+    printf("True vs Estimated Parameters (Feature Loss)\n");
+    printf("------------------------------------------------------\n");
+    
+    for (int k = 0; k < NUM_TESTS; k++) {
+        TestResult *r = &all_results[k];
+        printf("\n\n--- TEST %02d (Final Loss: %8.5f) ---\n", r->id, r->final_loss);
+        printf("TRUE:   a_1 (Slant)=%.4f, a_2 (Curve)=%.4f\n", r->true_alpha[0], r->true_alpha[1]);
+        printf("ESTIMATED: a_1 (Slant)=%.4f, a_2 (Curve)=%.4f\n", r->estimated_alpha[0], r->estimated_alpha[1]);
+        
+        printf("\n| Observed Noisy Target | Estimated Clean Fit | Difference (Error) |\n");
+        printf("|-----------------------|---------------------|--------------------|\n");
+
+        for (int i = 0; i < GRID_SIZE; i++) {
+            printf("| ");
+            print_image_row(r->observed_image, i);
+            printf(" | ");
+            print_image_row(r->estimated_image, i);
+            printf(" | ");
+            // Difference image uses '*' for high difference (error > 0.3)
+            for (int j = 0; j < GRID_SIZE; j++) {
+                if (r->diff_image[i][j] > 0.3) printf("*"); // High error
+                else if (r->diff_image[i][j] > 0.1) printf("+"); // Moderate error
+                else printf(" "); // Low error
+            }
+            printf(" |\n");
+        }
+    }
+    printf("======================================================\n");
 }
 
 
@@ -304,7 +384,7 @@ void run_test(int test_id, const double true_alpha[NUM_DEFORMATIONS]) {
 int main(void) {
     // Array of 10 test cases (IMMUTABLE data)
     // {Slant (a1), Curvature (a2)}
-    const double test_cases[10][NUM_DEFORMATIONS] = {
+    const double test_cases[NUM_TESTS][NUM_DEFORMATIONS] = {
         {-0.10, 0.05}, // 1. Original Target (Slanted Left, Curved Out)
         { 0.10, -0.05}, // 2. Slanted Right, Curved In
         { 0.00, 0.15},  // 3. Very Curved Out (Vertical)
@@ -319,9 +399,12 @@ int main(void) {
     
     srand(42); // Seed for reproducible results
 
-    for (int i = 0; i < 10; i++) {
-        run_test(i + 1, test_cases[i]);
+    for (int i = 0; i < NUM_TESTS; i++) {
+        run_test(i + 1, test_cases[i], &all_results[i]);
     }
+    
+    // Print the consolidated summary of all tests
+    summarize_results();
 
     return 0;
 }
