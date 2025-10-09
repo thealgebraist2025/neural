@@ -31,8 +31,10 @@
 #define TEXT_HEIGHT 15  
 #define SET_SPACING 25  
 #define NUM_CHANNELS 3 
-#define SEGMENTATION_THRESHOLD 0.5 // Intensity > 0.5 (i.e., pixel value < 128)
-#define MAX_SEGMENTS_PER_ROW 10 // INCREASED for wider output PNG
+#define SEGMENTATION_THRESHOLD 0.5
+ // Intensity > 0.5 (i.e., pixel value < 128)
+#define MAX_SEGMENTS_PER_ROW 10
+ // INCREASED for wider output PNG
 
 // Stroke widths to test (in GRID_SIZE pixels)
 const int STROKE_WIDTHS[] = {1, 2, 4, 8};
