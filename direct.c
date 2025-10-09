@@ -16,6 +16,9 @@
 #define NUM_IDEAL_CHARS 5   // J, 1, 2, 3, 4
 #define NUM_TESTS 5         // One test case for each character
 
+// NEW: 8 segments require 9 control points (P0 to P8)
+#define NUM_CONTROL_POINTS 9 
+
 // --- Data Structures ---
 
 typedef struct {
@@ -24,9 +27,8 @@ typedef struct {
 } Point;
 
 typedef struct {
-    const Point stroke_1_start;
-    const Point stroke_1_mid;
-    const Point stroke_1_end;
+    // Array of 9 control points defining the 8 segments of the curve
+    const Point control_points[NUM_CONTROL_POINTS];
 } Ideal_Curve_Params; 
 
 typedef struct {
@@ -67,22 +69,42 @@ TestResult all_results[NUM_TESTS];
 // Lookup table for character names
 const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {"J", "1", "2", "3", "4"};
 
-// Updated Ideal Templates for better visual fidelity using a single piecewise stroke
+// Updated Ideal Templates using 9 control points (8 segments)
 const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
-    // 0: 'J' (Hook)
-    [0] = {.stroke_1_start = {.x = 0.5, .y = 0.1}, .stroke_1_mid = {.x = 0.5, .y = 0.7}, .stroke_1_end = {.x = 0.2, .y = 0.9}},
+    // 0: 'J' (Curved stroke down, hook left at bottom)
+    [0] = {.control_points = {
+        {.x = 0.6, .y = 0.1}, {.x = 0.6, .y = 0.2}, {.x = 0.6, .y = 0.3}, {.x = 0.6, .y = 0.4}, 
+        {.x = 0.5, .y = 0.5}, {.x = 0.4, .y = 0.65}, {.x = 0.3, .y = 0.8}, {.x = 0.2, .y = 0.85}, 
+        {.x = 0.2, .y = 0.9} 
+    }},
     
-    // 1: '1' (Straight Line)
-    [1] = {.stroke_1_start = {.x = 0.5, .y = 0.1}, .stroke_1_mid = {.x = 0.5, .y = 0.5}, .stroke_1_end = {.x = 0.5, .y = 0.9}},
+    // 1: '1' (Mostly vertical line)
+    [1] = {.control_points = {
+        {.x = 0.4, .y = 0.1}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.2}, {.x = 0.5, .y = 0.35}, 
+        {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.65}, {.x = 0.5, .y = 0.8}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.5, .y = 0.9} 
+    }},
     
-    // 2: '2' (S-curve approximation: Top right loop, bottom left baseline)
-    [2] = {.stroke_1_start = {.x = 0.2, .y = 0.1}, .stroke_1_mid = {.x = 0.7, .y = 0.4}, .stroke_1_end = {.x = 0.3, .y = 0.9}}, 
+    // 2: '2' (S-curve: Top arc, down-left diagonal, horizontal base)
+    [2] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.7, .y = 0.1}, {.x = 0.8, .y = 0.25}, {.x = 0.7, .y = 0.4}, 
+        {.x = 0.3, .y = 0.55}, {.x = 0.2, .y = 0.7}, {.x = 0.3, .y = 0.8}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.8, .y = 0.9} 
+    }}, 
     
-    // 3: '3' (Double arc approximation: Two open arcs facing right)
-    [3] = {.stroke_1_start = {.x = 0.2, .y = 0.1}, .stroke_1_mid = {.x = 0.8, .y = 0.5}, .stroke_1_end = {.x = 0.2, .y = 0.9}}, 
+    // 3: '3' (Two right-facing curves, fixing the missing middle stroke issue)
+    [3] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.4, .y = 0.5}, 
+        {.x = 0.8, .y = 0.5}, {.x = 0.8, .y = 0.7}, {.x = 0.4, .y = 0.9}, {.x = 0.8, .y = 0.9}, 
+        {.x = 0.2, .y = 0.9} 
+    }}, 
     
-    // 4: '4' (Zig-zag approximation: Down-right, horizontal corner, then vertical line)
-    [4] = {.stroke_1_start = {.x = 0.2, .y = 0.1}, .stroke_1_mid = {.x = 0.8, .y = 0.7}, .stroke_1_end = {.x = 0.8, .y = 0.9}} 
+    // 4: '4' (Down-left, then across, then vertical stem)
+    [4] = {.control_points = {
+        {.x = 0.2, .y = 0.1}, {.x = 0.3, .y = 0.2}, {.x = 0.4, .y = 0.3}, {.x = 0.5, .y = 0.4}, 
+        {.x = 0.2, .y = 0.55}, {.x = 0.8, .y = 0.55}, {.x = 0.8, .y = 0.7}, {.x = 0.8, .y = 0.85}, 
+        {.x = 0.8, .y = 0.9} 
+    }} 
 };
 
 /**
@@ -97,21 +119,30 @@ void apply_deformation(Point *point, const double alpha[NUM_DEFORMATIONS]) {
 }
 
 /**
- * @brief Generates a point on the curve using the ideal form and deformations.
+ * @brief Generates a point on the curve using the ideal form and deformations (8-segment interpolation).
  */
 Point get_deformed_point(const double t, const Ideal_Curve_Params *const params, const double alpha[NUM_DEFORMATIONS]) {
     Point p = {.x = 0.0, .y = 0.0};
     
-    // Piecewise Linear Interpolation of the curve skeleton
-    if (t < 0.5) {
-        const double segment_t = t / 0.5;
-        p.x = params->stroke_1_start.x + (params->stroke_1_mid.x - params->stroke_1_start.x) * segment_t;
-        p.y = params->stroke_1_start.y + (params->stroke_1_mid.y - params->stroke_1_start.y) * segment_t;
-    } else {
-        const double segment_t = (t - 0.5) / 0.5;
-        p.x = params->stroke_1_mid.x + (params->stroke_1_end.x - params->stroke_1_mid.x) * segment_t;
-        p.y = params->stroke_1_mid.y + (params->stroke_1_end.y - params->stroke_1_mid.y) * segment_t;
+    const int N = NUM_CONTROL_POINTS; // 9
+    const double segment_length_t = 1.0 / (N - 1); // 1/8 = 0.125
+
+    // Find the segment index (0 to 7)
+    int segment_index = (int)floor(t / segment_length_t);
+    if (segment_index >= N - 1) {
+        segment_index = N - 2; // Clamp to the last segment index (7)
     }
+
+    // Get the starting and ending control points for the segment
+    const Point P_start = params->control_points[segment_index];
+    const Point P_end = params->control_points[segment_index + 1];
+
+    // Normalize t within the current segment [0, 1]
+    const double segment_t = (t - segment_index * segment_length_t) / segment_length_t;
+
+    // Linear interpolation
+    p.x = P_start.x + (P_end.x - P_start.x) * segment_t;
+    p.y = P_start.y + (P_end.y - P_start.y) * segment_t;
 
     apply_deformation(&p, alpha);
 
@@ -468,8 +499,23 @@ void summarize_results_console() {
  */
 void get_grayscale_color(double intensity, char *color_out) {
     double clamped_intensity = fmax(0.0, fmin(1.0, intensity));
+    // Invert intensity for visualization (0.0=black, 1.0=white, so low intensity is dark)
     int value = (int)round(clamped_intensity * 255.0);
-    sprintf(color_out, "rgb(%d,%d,%d)", value, value, value);
+    // Use an inverted grayscale for better visibility on a black background
+    value = 255 - value; 
+    // Ensure the background of the image area is gray to distinguish it from the black SVG background
+    if (value > 200) value = 200; // Clamp the lightest part to a dark gray
+    
+    // Instead of inverted, let's use a bright color for the line to stand out
+    int line_color = (int)round(clamped_intensity * 255.0);
+    // Line is white/yellow, background is black.
+    if (line_color > 150) {
+        sprintf(color_out, "rgb(255, 255, 100)"); // Yellowish white for high intensity
+    } else if (line_color > 50) {
+        sprintf(color_out, "rgb(100, 100, 100)"); // Gray for medium intensity
+    } else {
+        sprintf(color_out, "rgb(0, 0, 0)"); // Black/Invisible for low intensity
+    }
 }
 
 /**
@@ -479,11 +525,21 @@ void render_single_image_to_svg(FILE *fp, const Generated_Image img, double x_of
     char color[20];
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
-            get_grayscale_color(img[i][j], color);
-            fprintf(fp, "<rect x=\"%.1f\" y=\"%.1f\" width=\"%d\" height=\"%d\" fill=\"%s\"/>\n",
-                    x_offset + j * PIXEL_SIZE, 
-                    y_offset + i * PIXEL_SIZE, 
-                    PIXEL_SIZE, PIXEL_SIZE, color);
+            // Check intensity to decide on background vs line drawing
+            if (img[i][j] > 0.0) {
+                // Use bright color for the line itself
+                get_grayscale_color(img[i][j], color);
+                fprintf(fp, "<rect x=\"%.1f\" y=\"%.1f\" width=\"%d\" height=\"%d\" fill=\"%s\"/>\n",
+                        x_offset + j * PIXEL_SIZE, 
+                        y_offset + i * PIXEL_SIZE, 
+                        PIXEL_SIZE, PIXEL_SIZE, color);
+            } else {
+                // Draw black for the empty background grid cells
+                 fprintf(fp, "<rect x=\"%.1f\" y=\"%.1f\" width=\"%d\" height=\"%d\" fill=\"black\"/>\n",
+                        x_offset + j * PIXEL_SIZE, 
+                        y_offset + i * PIXEL_SIZE, 
+                        PIXEL_SIZE, PIXEL_SIZE);
+            }
         }
     }
 }
@@ -501,8 +557,24 @@ void render_test_to_svg(FILE *fp, const TestResult *r, double x_set, double y_se
     // 3. Best Estimated Image (Clean Fit from Best Match)
     render_single_image_to_svg(fp, r->best_estimated_image, x_set + 2 * (IMG_SIZE + IMG_SPACING), y_set);
 
-    // 4. Difference Image (Error Magnitude)
-    render_single_image_to_svg(fp, r->best_diff_image, x_set + 3 * (IMG_SIZE + IMG_SPACING), y_set);
+    // 4. Difference Image (Error Magnitude) - using a different coloring for error map
+    char error_color[20];
+    for (int i = 0; i < GRID_SIZE; i++) {
+        for (int j = 0; j < GRID_SIZE; j++) {
+            double error = r->best_diff_image[i][j];
+            if (error > 0.3) {
+                sprintf(error_color, "rgb(255, 50, 50)"); // High Error: Red
+            } else if (error > 0.1) {
+                sprintf(error_color, "rgb(255, 150, 0)"); // Medium Error: Orange
+            } else {
+                sprintf(error_color, "black");
+            }
+            fprintf(fp, "<rect x=\"%.1f\" y=\"%.1f\" width=\"%d\" height=\"%d\" fill=\"%s\"/>\n",
+                    x_set + 3 * (IMG_SIZE + IMG_SPACING) + j * PIXEL_SIZE, 
+                    y_set + i * PIXEL_SIZE, 
+                    PIXEL_SIZE, PIXEL_SIZE, error_color);
+        }
+    }
     
     // Add text label for the test ID and classification result
     char label[150];
