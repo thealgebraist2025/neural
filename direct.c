@@ -780,12 +780,15 @@ void summarize_results_console() {
 #define PIXEL_SIZE 5    
 #define IMG_SIZE (GRID_SIZE * PIXEL_SIZE) // 80
 #define IMG_SPACING 5   
-#define SET_SPACING 25  
-#define SET_WIDTH (4 * IMG_SIZE + 3 * IMG_SPACING) // 335
+// *** ADJUSTED CONSTANTS TO PREVENT TEXT OVERLAP ***
+#define SET_SPACING 40  // Increased spacing between sets
+#define SET_WIDTH (400) // Explicitly set width to allow for long text label (335 required for images + some buffer)
+// *************************************************
+
 // Dimensions calculated for 10 sets in a single row
 #define SVG_RENDER_LIMIT 10
-#define SVG_WIDTH (SVG_RENDER_LIMIT * SET_WIDTH + (SVG_RENDER_LIMIT - 1) * SET_SPACING + 2 * SET_SPACING) // 3625
-#define SVG_HEIGHT (IMG_SIZE + 15 + 2 * SET_SPACING) // 130
+#define SVG_WIDTH (SVG_RENDER_LIMIT * SET_WIDTH + (SVG_RENDER_LIMIT) * SET_SPACING) 
+#define SVG_HEIGHT (IMG_SIZE + 15 + 2 * SET_SPACING) // Height remains constant
 
 /**
  * @brief Maps an intensity [0.0, 1.0] to an RGB grayscale color string.
@@ -895,6 +898,7 @@ void generate_svg_file() {
     fprintf(fp, "<rect width=\"100%%\" height=\"100%%\" fill=\"black\"/>\n");
 
     // Add general titles for the 4 image columns
+    double image_set_total_width = 4.0 * IMG_SIZE + 3.0 * IMG_SPACING;
     double initial_x = SET_SPACING + IMG_SIZE / 2.0;
     double initial_y = SET_SPACING / 2.0;
     fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"12\" fill=\"white\" text-anchor=\"middle\">TRUE CLEAN</text>\n", initial_x, initial_y);
@@ -909,7 +913,8 @@ void generate_svg_file() {
         int col = k; 
         
         // Calculate top-left corner position for the current 4-image set
-        double x_set = SET_SPACING + col * (SET_WIDTH + SET_SPACING);
+        // Start X is SET_SPACING + column index * (SET_WIDTH)
+        double x_set = SET_SPACING + col * (SET_WIDTH);
         // Offset y to leave room for the title text at the top
         double y_set = SET_SPACING + 15; 
         
