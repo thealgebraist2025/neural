@@ -33,6 +33,10 @@
 #define NUM_CHANNELS 3 
 #define SEGMENTATION_THRESHOLD 0.5 // Intensity > 0.5 (i.e., pixel value < 128)
 
+// Stroke widths to test (in GRID_SIZE pixels)
+const int STROKE_WIDTHS[] = {1, 2, 4, 8};
+const int NUM_STROKE_WIDTHS = sizeof(STROKE_WIDTHS) / sizeof(STROKE_WIDTHS[0]);
+
 // --- Data Structures ---
 
 typedef struct { double x; double y; } Point;
@@ -40,7 +44,7 @@ typedef struct { const Point control_points[NUM_CONTROL_POINTS]; } Ideal_Curve_P
 typedef struct { double alpha[NUM_DEFORMATIONS]; } Deformation_Coefficients;
 typedef double Generated_Image[GRID_SIZE][GRID_SIZE]; 
 typedef double Feature_Vector[NUM_FEATURES]; 
-typedef struct { double estimated_alpha[NUM_DEFORMATIONS]; double final_loss; double loss_history[1]; } EstimationResult;
+typedef struct { double estimated_alpha[NUM_DEFORMATIONS]; double final_loss; int stroke_width; double loss_history[1]; } EstimationResult;
 
 typedef struct {
     int start; 
@@ -54,6 +58,7 @@ typedef struct {
     int best_match_index; 
     double final_loss;
     double estimated_alpha[NUM_DEFORMATIONS];
+    int best_stroke_width; // New field
 } SegmentResult;
 
 
@@ -66,7 +71,7 @@ void* safe_malloc(size_t size);
 void safe_free(void *ptr, size_t size);
 void apply_deformation(Point *point, const double alpha[NUM_DEFORMATIONS]);
 Point get_deformed_point(const double t, const Ideal_Curve_Params *const params, const double alpha[NUM_DEFORMATIONS]);
-void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img, const Ideal_Curve_Params *const ideal_params);
+void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img, const Ideal_Curve_Params *const ideal_params, int stroke_width);
 void extract_geometric_features(const Generated_Image img, Feature_Vector features_out);
 double calculate_feature_loss_L2(const Feature_Vector generated, const Feature_Vector observed);
 double calculate_pixel_loss_L2(const Generated_Image generated, const Generated_Image observed);
@@ -74,9 +79,9 @@ double calculate_combined_loss(const Generated_Image generated_img, const Featur
                                const Generated_Image observed_img, const Feature_Vector observed_features);
 void calculate_gradient(const Generated_Image observed_img, const Feature_Vector observed_features, 
                         const Deformation_Coefficients *const alpha, const double loss_base, 
-                        double grad_out[NUM_DEFORMATIONS], const Ideal_Curve_Params *const ideal_params);
+                        double grad_out[NUM_DEFORMATIONS], const Ideal_Curve_Params *const ideal_params, int stroke_width);
 void run_optimization(const Generated_Image observed_image, const Feature_Vector observed_features, 
-                      int ideal_char_index, EstimationResult *result);
+                      int ideal_char_index, EstimationResult *result, int stroke_width);
 void set_pixel(unsigned char *buffer, int x, int y, int width, int height, unsigned char r, unsigned char g, unsigned char b);
 void get_pixel_color(double intensity, int is_error_map, unsigned char *r, unsigned char *g, unsigned char *b);
 void draw_text_placeholder_box(unsigned char *buffer, int buf_width, int buf_height, int x, int y, int width, int height, unsigned char r, unsigned char g, unsigned char b);
@@ -90,7 +95,7 @@ void recognize_segment(SegmentResult *segment);
 void generate_segment_png(const SegmentResult *segments, int num_segments, const double *full_data, int full_width, int full_height);
 
 
-// --- Fixed Ideal Curves (COMPLETE: Uppercase, Lowercase, Digits) ---
+// --- Fixed Ideal Curves (UPDATED for thicker, smoother strokes) ---
 const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {
     "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", 
     "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", 
@@ -99,30 +104,30 @@ const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"
 };
 const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
-    // Uppercase Letters (A-Z)
+    // Uppercase Letters (A-Z) - Adjusted for high-contrast/bold font
     // A
-    [0] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.3, .y = 0.3}, {.x = 0.2, .y = 0.5}, {.x = 0.3, .y = 0.6}, 
-        {.x = 0.7, .y = 0.6}, {.x = 0.8, .y = 0.5}, {.x = 0.7, .y = 0.3}, {.x = 0.5, .y = 0.1}, 
-        {.x = 0.5, .y = 0.6} 
+    [0] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.1}, 
+        {.x = 0.4, .y = 0.6}, {.x = 0.6, .y = 0.6}, {.x = 0.5, .y = 0.6}, {.x = 0.2, .y = 0.9}, 
+        {.x = 0.8, .y = 0.9} 
     }},
     // B 
-    [1] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.8, .y = 0.5}, {.x = 0.2, .y = 0.5}, 
-        {.x = 0.8, .y = 0.6}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, 
-        {.x = 0.2, .y = 0.5} 
+    [1] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.7, .y = 0.8}, {.x = 0.8, .y = 0.5}, 
+        {.x = 0.7, .y = 0.2}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, {.x = 0.2, .y = 0.1}, 
+        {.x = 0.2, .y = 0.9} 
     }},
     // C 
-    [2] = {.control_points = {{.x = 0.8, .y = 0.3}, {.x = 0.5, .y = 0.1}, {.x = 0.2, .y = 0.3}, {.x = 0.2, .y = 0.7}, 
-        {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.7}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.7}, 
+    [2] = {.control_points = {{.x = 0.8, .y = 0.2}, {.x = 0.5, .y = 0.1}, {.x = 0.2, .y = 0.3}, {.x = 0.2, .y = 0.7}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.8}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.7}, 
         {.x = 0.2, .y = 0.3} 
     }},
     // D 
-    [3] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.7, .y = 0.2}, {.x = 0.8, .y = 0.5}, {.x = 0.7, .y = 0.8}, 
-        {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.5}, {.x = 0.2, .y = 0.5}, 
-        {.x = 0.2, .y = 0.1} 
+    [3] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.5}, {.x = 0.2, .y = 0.1}, 
+        {.x = 0.8, .y = 0.5}, {.x = 0.7, .y = 0.2}, {.x = 0.7, .y = 0.8}, {.x = 0.2, .y = 0.5}, 
+        {.x = 0.2, .y = 0.9} 
     }},
     // E 
     [4] = {.control_points = {{.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, 
-        {.x = 0.2, .y = 0.5}, {.x = 0.6, .y = 0.5}, {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.1}, 
+        {.x = 0.2, .y = 0.5}, {.x = 0.7, .y = 0.5}, {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.1}, 
         {.x = 0.2, .y = 0.9} 
     }},
     // F 
@@ -131,8 +136,8 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
         {.x = 0.8, .y = 0.1} 
     }},
     // G 
-    [6] = {.control_points = {{.x = 0.8, .y = 0.3}, {.x = 0.5, .y = 0.1}, {.x = 0.2, .y = 0.3}, {.x = 0.2, .y = 0.7}, 
-        {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.7}, {.x = 0.8, .y = 0.5}, {.x = 0.6, .y = 0.5}, 
+    [6] = {.control_points = {{.x = 0.8, .y = 0.2}, {.x = 0.5, .y = 0.1}, {.x = 0.2, .y = 0.3}, {.x = 0.2, .y = 0.7}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.7}, {.x = 0.8, .y = 0.5}, {.x = 0.5, .y = 0.5}, 
         {.x = 0.8, .y = 0.7} 
     }},
     // H 
@@ -146,8 +151,8 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
         {.x = 0.5, .y = 0.5} 
     }},
     // J 
-    [9] = {.control_points = {{.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.7}, 
-        {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.9}, 
+    [9] = {.control_points = {{.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.7}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.7}, 
+        {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.7}, {.x = 0.5, .y = 0.9}, 
         {.x = 0.2, .y = 0.7} 
     }},
     // K 
@@ -176,17 +181,17 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
         {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.1}  
     }},
     // P 
-    [15] = {.control_points = {{.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.8, .y = 0.5}, 
+    [15] = {.control_points = {{.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.7, .y = 0.2}, {.x = 0.8, .y = 0.5}, 
         {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.5}, {.x = 0.2, .y = 0.9}, 
         {.x = 0.2, .y = 0.5} 
     }},
     // Q 
     [16] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.85, .y = 0.3}, {.x = 0.85, .y = 0.7}, 
         {.x = 0.5, .y = 0.9}, {.x = 0.15, .y = 0.7}, {.x = 0.15, .y = 0.3}, 
-        {.x = 0.5, .y = 0.1}, {.x = 0.6, .y = 0.6}, {.x = 0.8, .y = 0.9}  
+        {.x = 0.5, .y = 0.1}, {.x = 0.6, .y = 0.7}, {.x = 0.8, .y = 0.9}  
     }},
     // R 
-    [17] = {.control_points = {{.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.8, .y = 0.5}, 
+    [17] = {.control_points = {{.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.7, .y = 0.2}, {.x = 0.8, .y = 0.5}, 
         {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
         {.x = 0.2, .y = 0.5} 
     }},
@@ -231,11 +236,11 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
         {.x = 0.2, .y = 0.1} 
     }},
 
-    // Lowercase Letters (a-z)
+    // Lowercase Letters (a-z) - Adjusted for better curve definition
     // a
-    [26] = {.control_points = {{.x = 0.7, .y = 0.7}, {.x = 0.5, .y = 0.3}, {.x = 0.3, .y = 0.5}, {.x = 0.3, .y = 0.7}, 
-        {.x = 0.5, .y = 0.9}, {.x = 0.7, .y = 0.7}, {.x = 0.7, .y = 0.3}, {.x = 0.7, .y = 0.5}, 
-        {.x = 0.7, .y = 0.9} 
+    [26] = {.control_points = {{.x = 0.7, .y = 0.5}, {.x = 0.5, .y = 0.3}, {.x = 0.3, .y = 0.5}, {.x = 0.3, .y = 0.7}, 
+        {.x = 0.5, .y = 0.9}, {.x = 0.7, .y = 0.7}, {.x = 0.7, .y = 0.3}, {.x = 0.7, .y = 0.9}, 
+        {.x = 0.3, .y = 0.9} 
     }},
     // b
     [27] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.7, .y = 0.8}, {.x = 0.7, .y = 0.6}, 
@@ -264,8 +269,8 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
     }},
     // g
     [32] = {.control_points = {{.x = 0.7, .y = 0.7}, {.x = 0.5, .y = 0.3}, {.x = 0.3, .y = 0.5}, {.x = 0.3, .y = 0.7}, 
-        {.x = 0.5, .y = 0.9}, {.x = 0.7, .y = 0.7}, {.x = 0.7, .y = 0.3}, {.x = 0.7, .y = 0.9}, 
-        {.x = 0.5, .y = 1.1} 
+        {.x = 0.5, .y = 0.9}, {.x = 0.7, .y = 0.7}, {.x = 0.7, .y = 0.9}, {.x = 0.5, .y = 1.1}, 
+        {.x = 0.3, .y = 1.1} 
     }},
     // h
     [33] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.6}, {.x = 0.7, .y = 0.5}, 
@@ -363,7 +368,7 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
         {.x = 0.2, .y = 0.5} 
     }},
 
-    // Digits (0-9)
+    // Digits (0-9) - Adjusted
     // 0
     [52] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.8, .y = 0.7}, 
         {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.7}, {.x = 0.2, .y = 0.3}, 
@@ -466,13 +471,27 @@ Point get_deformed_point(const double t, const Ideal_Curve_Params *const params,
     return p;
 }
 
-void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img, const Ideal_Curve_Params *const ideal_params) {
+// Function to calculate Gaussian value (used for smoothing/stroke width)
+static double gaussian(double x, double y, double sigma) {
+    return exp(-(x*x + y*y) / (2.0 * sigma*sigma));
+}
+
+// UPDATED draw_curve to include stroke width simulation via Gaussian smoothing
+void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img, const Ideal_Curve_Params *const ideal_params, int stroke_width) {
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
             img[i][j] = 0.0;
         }
     }
 
+    Generated_Image temp_img;
+    for (int i = 0; i < GRID_SIZE; i++) {
+        for (int j = 0; j < GRID_SIZE; j++) {
+            temp_img[i][j] = 0.0;
+        }
+    }
+
+    // 1. Draw single-pixel curve to a temporary image
     for (int i = 0; i <= NUM_POINTS; i++) {
         const double t = (double)i / NUM_POINTS;
         const Point current_p = get_deformed_point(t, ideal_params, alpha);
@@ -481,7 +500,51 @@ void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img, const
         const int py = (int)round(current_p.y);
 
         if (px >= 0 && px < GRID_SIZE && py >= 0 && py < GRID_SIZE) {
-            img[py][px] = fmin(1.0, img[py][px] + 0.5); 
+            temp_img[py][px] = 1.0; 
+        }
+    }
+
+    // 2. Apply Gaussian blur to simulate stroke width
+    if (stroke_width <= 1) {
+        // No blurring for minimal stroke width
+        memcpy(img, temp_img, sizeof(Generated_Image));
+        return;
+    }
+
+    const double sigma = (double)stroke_width / 4.0; 
+    const int radius = stroke_width / 2;
+
+    for (int i = 0; i < GRID_SIZE; i++) {
+        for (int j = 0; j < GRID_SIZE; j++) {
+            if (temp_img[i][j] > 0) { // If it's a curve pixel
+                for (int ky = -radius; ky <= radius; ky++) {
+                    for (int kx = -radius; kx <= radius; kx++) {
+                        int ni = i + ky;
+                        int nj = j + kx;
+
+                        if (ni >= 0 && ni < GRID_SIZE && nj >= 0 && nj < GRID_SIZE) {
+                            // Add Gaussian intensity to the neighborhood
+                            double g = gaussian((double)kx, (double)ky, sigma);
+                            img[ni][nj] = fmin(1.0, img[ni][nj] + g * temp_img[i][j]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // Normalize to 1.0
+    double max_val = 0.0;
+    for (int i = 0; i < GRID_SIZE; i++) {
+        for (int j = 0; j < GRID_SIZE; j++) {
+            if (img[i][j] > max_val) max_val = img[i][j];
+        }
+    }
+    if (max_val > 0.0) {
+        for (int i = 0; i < GRID_SIZE; i++) {
+            for (int j = 0; j < GRID_SIZE; j++) {
+                img[i][j] /= max_val;
+            }
         }
     }
 }
@@ -556,7 +619,7 @@ double calculate_combined_loss(const Generated_Image generated_img, const Featur
 
 void calculate_gradient(const Generated_Image observed_img, const Feature_Vector observed_features, 
                         const Deformation_Coefficients *const alpha, const double loss_base, 
-                        double grad_out[NUM_DEFORMATIONS], const Ideal_Curve_Params *const ideal_params) {
+                        double grad_out[NUM_DEFORMATIONS], const Ideal_Curve_Params *const ideal_params, int stroke_width) {
     
     const double epsilon = GRADIENT_EPSILON; 
     Generated_Image generated_img_perturbed; 
@@ -566,7 +629,7 @@ void calculate_gradient(const Generated_Image observed_img, const Feature_Vector
         Deformation_Coefficients alpha_perturbed = *alpha;
         alpha_perturbed.alpha[k] += epsilon; 
 
-        draw_curve(alpha_perturbed.alpha, generated_img_perturbed, ideal_params);
+        draw_curve(alpha_perturbed.alpha, generated_img_perturbed, ideal_params, stroke_width);
         extract_geometric_features(generated_img_perturbed, generated_features_perturbed);
         
         const double loss_perturbed = calculate_combined_loss(generated_img_perturbed, generated_features_perturbed, observed_img, observed_features);
@@ -577,7 +640,7 @@ void calculate_gradient(const Generated_Image observed_img, const Feature_Vector
 
 
 void run_optimization(const Generated_Image observed_image, const Feature_Vector observed_features, 
-                      int ideal_char_index, EstimationResult *result) {
+                      int ideal_char_index, EstimationResult *result, int stroke_width) {
     
     const Ideal_Curve_Params *ideal_params = &IDEAL_TEMPLATES[ideal_char_index];
     
@@ -590,9 +653,13 @@ void run_optimization(const Generated_Image observed_image, const Feature_Vector
     double combined_loss;
     double prev_combined_loss = HUGE_VAL; 
     double current_feature_loss_only = HUGE_VAL;
+    
+    // Set initial alpha based on a basic guess (can be improved)
+    alpha_hat.alpha[0] = 0.0;
+    alpha_hat.alpha[1] = 0.0;
 
     for (int t = 0; t <= ITERATIONS; t++) {
-        draw_curve(alpha_hat.alpha, generated_image, ideal_params);
+        draw_curve(alpha_hat.alpha, generated_image, ideal_params, stroke_width);
         extract_geometric_features(generated_image, generated_features);
         
         current_feature_loss_only = calculate_feature_loss_L2(generated_features, observed_features);
@@ -605,7 +672,7 @@ void run_optimization(const Generated_Image observed_image, const Feature_Vector
         prev_combined_loss = combined_loss;
 
         if (t < ITERATIONS) {
-            calculate_gradient(observed_image, observed_features, &alpha_hat, combined_loss, gradient, ideal_params);
+            calculate_gradient(observed_image, observed_features, &alpha_hat, combined_loss, gradient, ideal_params, stroke_width);
             
             double step_rate = (learning_rate > min_learning_rate) ? learning_rate : min_learning_rate;
             
@@ -615,6 +682,7 @@ void run_optimization(const Generated_Image observed_image, const Feature_Vector
     }
 
     result->final_loss = current_feature_loss_only;
+    result->stroke_width = stroke_width;
     memcpy(result->estimated_alpha, alpha_hat.alpha, sizeof(double) * NUM_DEFORMATIONS);
 }
 
@@ -625,21 +693,30 @@ void recognize_segment(SegmentResult *segment) {
     
     double min_feature_loss = HUGE_VAL;
     int best_match_index = -1;
+    int best_stroke_width = -1;
 
     EstimationResult current_result = {0}; 
+    EstimationResult best_result = {0}; 
 
-    for (int i = 0; i < NUM_IDEAL_CHARS; i++) {
-        run_optimization(segment->resized_img, observed_features, i, &current_result); 
+    // Iterate through all character templates (62) AND all stroke widths (4)
+    for (int s = 0; s < NUM_STROKE_WIDTHS; s++) {
+        int sw = STROKE_WIDTHS[s];
+        for (int i = 0; i < NUM_IDEAL_CHARS; i++) {
+            run_optimization(segment->resized_img, observed_features, i, &current_result, sw); 
 
-        if (current_result.final_loss < min_feature_loss) {
-            min_feature_loss = current_result.final_loss;
-            best_match_index = i;
-            memcpy(segment->estimated_alpha, current_result.estimated_alpha, sizeof(double) * NUM_DEFORMATIONS);
+            if (current_result.final_loss < min_feature_loss) {
+                min_feature_loss = current_result.final_loss;
+                best_match_index = i;
+                best_stroke_width = sw;
+                best_result = current_result;
+            }
         }
     }
     
     segment->best_match_index = best_match_index;
     segment->final_loss = min_feature_loss;
+    segment->best_stroke_width = best_stroke_width;
+    memcpy(segment->estimated_alpha, best_result.estimated_alpha, sizeof(double) * NUM_DEFORMATIONS);
 }
 
 
@@ -715,7 +792,14 @@ int load_image_stb(const char *filename, double **data_out, int *width_out, int 
 
     if (img_data == NULL) {
         fprintf(stderr, "Error: Failed to load image file '%s'. Ensure the file exists and is readable.\n", filename);
-        return 0; 
+        // Try the other uploaded image name if the first one fails
+        const char *fallback_filename = "1000000809.jpg"; 
+        img_data = stbi_load(fallback_filename, width_out, height_out, &channels, 1); 
+        if (img_data == NULL) {
+             fprintf(stderr, "Error: Failed to load image file '%s'. Image processing aborted.\n", fallback_filename);
+             return 0;
+        }
+        printf("Using fallback image '%s'.\n", fallback_filename);
     }
     
     size_t total_pixels = (size_t)(*width_out) * (*height_out);
@@ -733,7 +817,7 @@ int load_image_stb(const char *filename, double **data_out, int *width_out, int 
     }
     
     stbi_image_free(img_data);
-    printf("Successfully loaded image '%s' (%dx%d, inverted intensity).\n", filename, *width_out, *height_out);
+    printf("Successfully loaded image (%dx%d, inverted intensity).\n", *width_out, *height_out);
     return 1;
 }
 
@@ -884,7 +968,8 @@ void draw_segment_info_box(unsigned char *buffer, int buf_width, int buf_height,
     char info[100];
     const char* char_name = (seg->best_match_index != -1) ? CHAR_NAMES[seg->best_match_index] : "N/A";
     
-    sprintf(info, "Match: '%s' | Loss: %.2f | a1:%.2f", char_name, seg->final_loss, seg->estimated_alpha[0]);
+    // Include stroke width in the info box
+    sprintf(info, "Match: '%s' | Loss: %.2f | SW:%d | a1:%.2f", char_name, seg->final_loss, seg->best_stroke_width, seg->estimated_alpha[0]);
     draw_text_placeholder_box(buffer, buf_width, buf_height, x, y + 2, width, TEXT_HEIGHT - 4, 200, 200, 255);
 }
 
@@ -897,10 +982,10 @@ void render_segment_to_png(unsigned char *buffer, int buf_width, int buf_height,
     render_single_image_to_png(buffer, buf_width, buf_height, seg->resized_img, current_x, y_set + TEXT_HEIGHT, 0); 
     current_x += IMG_SIZE + IMG_SPACING;
     
-    // 2. Draw Estimated Curve
+    // 2. Draw Estimated Curve (using the best determined stroke width)
     Generated_Image estimated_img;
     if (seg->best_match_index != -1) {
-        draw_curve(seg->estimated_alpha, estimated_img, &IDEAL_TEMPLATES[seg->best_match_index]);
+        draw_curve(seg->estimated_alpha, estimated_img, &IDEAL_TEMPLATES[seg->best_match_index], seg->best_stroke_width);
     } else {
         for(int i=0; i<GRID_SIZE; i++) for(int j=0; j<GRID_SIZE; j++) estimated_img[i][j] = 0.0;
     }
@@ -999,7 +1084,8 @@ void generate_segment_png(const SegmentResult *segments, int num_segments, const
 int main(void) {
     srand(42); 
 
-    const char *input_filename = "test1.jpg"; 
+    // Using the image from the context
+    const char *input_filename = "1000000809.jpg"; 
     double *full_image_data = NULL;
     int full_width = 0;
     int full_height = 0;
@@ -1022,13 +1108,13 @@ int main(void) {
     int num_segments = segment_image_naive(full_image_data, full_width, full_height, segments);
 
     // 2. Recognize Each Segment
-    printf("\nStarting recognition for %d segments...\n", num_segments);
+    printf("\nStarting recognition for %d segments (testing stroke widths %d, %d, %d, %d)...\n", 
+           num_segments, STROKE_WIDTHS[0], STROKE_WIDTHS[1], STROKE_WIDTHS[2], STROKE_WIDTHS[3]);
     for (int i = 0; i < num_segments; i++) {
         recognize_segment(&segments[i]);
         const char* char_name = (segments[i].best_match_index != -1) ? CHAR_NAMES[segments[i].best_match_index] : "N/A";
-        printf("  Segment %d: Match='%s' (Loss: %.4f, Bounds: X:[%d,%d] Y:[%d,%d])\n", 
-               i + 1, char_name, segments[i].final_loss, 
-               segments[i].x_start, segments[i].x_end, segments[i].y_start, segments[i].y_end);
+        printf("  Segment %d: Match='%s' (Loss: %.4f, SW: %d)\n", 
+               i + 1, char_name, segments[i].final_loss, segments[i].best_stroke_width);
     }
     
     // 3. Generate PNG Output
