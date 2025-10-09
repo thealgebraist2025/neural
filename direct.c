@@ -21,6 +21,9 @@
 // 8 segments require 9 control points (P0 to P8)
 #define NUM_CONTROL_POINTS 9 
 
+// Maximum possible total absolute pixel difference (16*16 = 256.0)
+#define MAX_PIXEL_ERROR (GRID_SIZE * GRID_SIZE) 
+
 // --- Data Structures ---
 
 typedef struct {
@@ -492,6 +495,20 @@ void generate_target_image(Generated_Image image_out, const double true_alpha[NU
 }
 
 /**
+ * @brief Calculates the L1 sum of absolute pixel differences (Image Space Error).
+ */
+double calculate_pixel_error_sum(const Generated_Image obs, const Generated_Image est) {
+    double total_error = 0.0;
+    for (int i = 0; i < GRID_SIZE; i++) {
+        for (int j = 0; j < GRID_SIZE; j++) {
+            // Sum of absolute differences (L1 norm)
+            total_error += fabs(obs[i][j] - est[i][j]);
+        }
+    }
+    return total_error;
+}
+
+/**
  * @brief Runs a single optimization of a test image against one ideal template.
  */
 void run_optimization(const Feature_Vector observed_features, int ideal_char_index, EstimationResult *result, int print_trace) {
@@ -617,6 +634,7 @@ void run_classification_test(int test_id, int true_char_index, const double true
     // 5. Finalize the Best Match Images (for summary and SVG)
     EstimationResult *best_fit = &result->classification_results[best_match_index];
     
+    // We draw the best estimated image here so it's ready for summary functions
     draw_curve(best_fit->estimated_alpha, result->best_estimated_image, &IDEAL_TEMPLATES[best_match_index]);
     calculate_difference_image(observed_image, result->best_estimated_image, result->best_diff_image);
 }
@@ -635,13 +653,12 @@ void summarize_results_console() {
            NUM_IDEAL_CHARS, DETAILED_SUMMARY_LIMIT);
     
     // Print header: A | B | C | D | ... | 9
-    printf("  ID | TRUE | PRED | Best Loss | Loss against: ");
+    printf("  ID | TRUE | PRED | Best Feat Loss | Loss against: ");
     for (int i = 0; i < NUM_IDEAL_CHARS; i++) {
         printf(" %s |", CHAR_NAMES[i]);
     }
-    printf("\n-----|------|------|-----------|");
+    printf("\n-----|------|------|----------------|");
     for (int i = 0; i < NUM_IDEAL_CHARS; i++) {
-        // FIX 1: Removed extra argument (CHAR_NAMES[i]) from fixed format string
         printf("----|"); 
     }
     printf("\n");
@@ -649,7 +666,7 @@ void summarize_results_console() {
     // Print data for the first DETAILED_SUMMARY_LIMIT tests
     for (int k = 0; k < DETAILED_SUMMARY_LIMIT; k++) {
         TestResult *r = &all_results[k];
-        printf("%4d | %4s | %4s | %9.4f |", 
+        printf("%4d | %4s | %4s | %14.4f |", 
                r->id, CHAR_NAMES[r->true_char_index], CHAR_NAMES[r->best_match_index],
                r->classification_results[r->best_match_index].final_loss);
         
@@ -661,23 +678,28 @@ void summarize_results_console() {
     printf("--------------------------------------------------------------------------------\n");
 
     // Print Concise Summary for all 36 tests
-    printf("\n--- CONCISE SUMMARY (All %d Tests) ---\n", NUM_TESTS);
-    printf("  ID | TRUE | PRED | a_1 (Slant) | a_2 (Curve) | Best Loss | Correct?\n");
-    printf("-----|------|------|-------------|-------------|-----------|----------\n");
+    printf("\n--- CLASSIFICATION PERFORMANCE SUMMARY (All %d Tests) ---\n", NUM_TESTS);
+    // Updated header for better clarity and includes the new metric
+    printf("  ID | TRUE | PRED | Best Feat Loss | a_1 (Slant) | a_2 (Curve) | **PIXEL ERROR %%** | Correct?\n");
+    printf("-----|------|------|----------------|-------------|-------------|-------------------|----------\n");
 
     int correct_classifications = 0;
     for (int k = 0; k < NUM_TESTS; k++) {
         TestResult *r = &all_results[k];
-        // FIX 2: Added const qualifier to pointer
         const EstimationResult *best_fit = &r->classification_results[r->best_match_index];
         
+        // Calculate the new Pixel Error Percentage
+        // Note: r->observed_image and r->best_estimated_image are ready from run_classification_test
+        double pixel_error_sum = calculate_pixel_error_sum(r->observed_image, r->best_estimated_image);
+        double pixel_error_percent = (pixel_error_sum / MAX_PIXEL_ERROR) * 100.0;
+
         int is_correct = (r->true_char_index == r->best_match_index);
         if (is_correct) correct_classifications++;
 
-        printf("%4d | %4s | %4s | %11.4f | %11.4f | %9.4f | %8s\n", 
+        printf("%4d | %4s | %4s | %14.4f | %11.4f | %11.4f | %15.2f | %8s\n", 
                r->id, CHAR_NAMES[r->true_char_index], CHAR_NAMES[r->best_match_index],
-               best_fit->estimated_alpha[0], best_fit->estimated_alpha[1], 
-               best_fit->final_loss, is_correct ? "YES" : "NO");
+               best_fit->final_loss, best_fit->estimated_alpha[0], best_fit->estimated_alpha[1], 
+               pixel_error_percent, is_correct ? "YES" : "NO");
     }
     printf("--------------------------------------------------------------------------------\n");
     printf("Overall Accuracy: %d/%d (%.2f%%)\n", correct_classifications, NUM_TESTS, 
@@ -750,15 +772,14 @@ void render_test_to_svg(FILE *fp, const TestResult *r, double x_set, double y_se
     // 2. Target Image (Noisy)
     render_single_image_to_svg(fp, r->observed_image, x_set + IMG_SIZE + IMG_SPACING, y_set);
 
-    // FIX 2: Added const qualifier to pointer
     const EstimationResult *best_fit = &r->classification_results[r->best_match_index];
     
     // 3. Best Estimated Image (Clean Fit from Best Match)
-    draw_curve(best_fit->estimated_alpha, r->best_estimated_image, &IDEAL_TEMPLATES[r->best_match_index]);
+    // Image is already prepared in r->best_estimated_image by run_classification_test
     render_single_image_to_svg(fp, r->best_estimated_image, x_set + 2 * (IMG_SIZE + IMG_SPACING), y_set);
 
     // 4. Difference Image (Error Magnitude) - using a different coloring for error map
-    calculate_difference_image(r->observed_image, r->best_estimated_image, r->best_diff_image);
+    // Image is already prepared in r->best_diff_image by run_classification_test
     char error_color[20];
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
@@ -779,7 +800,6 @@ void render_test_to_svg(FILE *fp, const TestResult *r, double x_set, double y_se
     
     // Add text label for the test ID and classification result
     char label[150];
-    // FIX 3: Replaced invalid initializer with conditional strcpy
     char correct_str[5];
     if (r->true_char_index == r->best_match_index) {
         strcpy(correct_str, "YES");
@@ -787,9 +807,13 @@ void render_test_to_svg(FILE *fp, const TestResult *r, double x_set, double y_se
         strcpy(correct_str, "NO");
     }
     
-    sprintf(label, "T:'%s' (%.2f,%.2f) | P:'%s' L:%.2f (%s)", 
+    // Recalculate pixel error for SVG label
+    double pixel_error_sum = calculate_pixel_error_sum(r->observed_image, r->best_estimated_image);
+    double pixel_error_percent = (pixel_error_sum / MAX_PIXEL_ERROR) * 100.0;
+
+    sprintf(label, "T:'%s' (%.2f,%.2f) | P:'%s' | Error:%.2f%% (%s)", 
             CHAR_NAMES[r->true_char_index], r->true_alpha[0], r->true_alpha[1], 
-            CHAR_NAMES[r->best_match_index], best_fit->final_loss, correct_str);
+            CHAR_NAMES[r->best_match_index], pixel_error_percent, correct_str);
     
     fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"10\" fill=\"white\">%s</text>\n",
             x_set, y_set + IMG_SIZE + 10, label);
