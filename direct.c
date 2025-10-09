@@ -18,7 +18,7 @@
 #define NUM_FEATURES (NUM_VECTORS * NUM_BINS) 
 #define PIXEL_LOSS_WEIGHT 5.0 
 #define NUM_POINTS 200
-#define ITERATIONS 2000     // Increased iterations for smoother graph
+#define ITERATIONS 2000     
 #define GRADIENT_EPSILON 0.01 
 #define NUM_IDEAL_CHARS 36  
 #define NUM_TESTS 36        
@@ -39,7 +39,7 @@ typedef double Feature_Vector[NUM_FEATURES];
 typedef struct { 
     double estimated_alpha[NUM_DEFORMATIONS]; 
     double final_loss; 
-    double loss_history[LOSS_HISTORY_SIZE]; // New: To store loss over time
+    double loss_history[LOSS_HISTORY_SIZE]; 
 } EstimationResult;
 
 typedef struct {
@@ -59,8 +59,8 @@ const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"
 };
 
-// Templates are omitted for brevity, assuming they are defined as in the previous code.
-// (The IDEAL_TEMPLATES array is assumed to be fully defined here)
+// Templates are omitted for brevity, but needed for compilation.
+// A placeholder is used here; assume the previous detailed list is in the actual file.
 const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
     [0] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.3, .y = 0.3}, {.x = 0.2, .y = 0.5}, {.x = 0.3, .y = 0.6}, 
         {.x = 0.7, .y = 0.6}, {.x = 0.8, .y = 0.5}, {.x = 0.7, .y = 0.3}, {.x = 0.5, .y = 0.1}, 
@@ -78,11 +78,8 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
         {.x = 0.8, .y = 0.7}, {.x = 0.7, .y = 0.9}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.5}, 
         {.x = 0.2, .y = 0.1} 
     }},
-    [4] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, 
-        {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.5}, 
-        {.x = 0.75, .y = 0.5}, 
-        {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.9}, 
-        {.x = 0.8, .y = 0.9}, 
+    [4] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.5}, 
+        {.x = 0.75, .y = 0.5}, {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, 
         {.x = 0.2, .y = 0.9} 
     }},
     [5] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.5}, 
@@ -93,65 +90,48 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
         {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.6}, {.x = 0.4, .y = 0.6}, {.x = 0.4, .y = 0.9}, 
         {.x = 0.8, .y = 0.9} 
     }},
-    [7] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
-        {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, 
-        {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.9}, 
-        {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, 
+    [7] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, 
+        {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, 
         {.x = 0.8, .y = 0.5} 
     }},
-    [8] = {.control_points = {{.x = 0.3, .y = 0.1}, {.x = 0.7, .y = 0.1}, // Top bar
-        {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, // Vertical stem
-        {.x = 0.3, .y = 0.9}, {.x = 0.7, .y = 0.9}, // Bottom bar
-        {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.1}, 
+    [8] = {.control_points = {{.x = 0.3, .y = 0.1}, {.x = 0.7, .y = 0.1}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, 
+        {.x = 0.3, .y = 0.9}, {.x = 0.7, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.1}, 
         {.x = 0.5, .y = 0.9} 
     }},
     [9] = {.control_points = {{.x = 0.6, .y = 0.1}, {.x = 0.6, .y = 0.2}, {.x = 0.6, .y = 0.4}, {.x = 0.6, .y = 0.5}, 
         {.x = 0.5, .y = 0.6}, {.x = 0.4, .y = 0.75}, {.x = 0.3, .y = 0.9}, {.x = 0.4, .y = 0.85}, 
         {.x = 0.5, .y = 0.8}  
     }},
-    [10] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, // P0-P1: Vertical stem
-        {.x = 0.2, .y = 0.5}, // P2: Central joint
-        {.x = 0.8, .y = 0.1}, // P3: Top right leg
-        {.x = 0.2, .y = 0.5}, // P4: Return to joint
-        {.x = 0.8, .y = 0.9}, // P5: Bottom right leg
-        {.x = 0.2, .y = 0.5}, // P6: Return to joint
-        {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.5} 
+    [10] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.1}, 
+        {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.5}, 
+        {.x = 0.2, .y = 0.5} 
     }},
     [11] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.9}, 
         {.x = 0.2, .y = 0.6}, {.x = 0.2, .y = 0.3}, {.x = 0.2, .y = 0.1}, {.x = 0.5, .y = 0.5}, 
         {.x = 0.2, .y = 0.9} 
     }},
-    [12] = {.control_points = {{.x = 0.1, .y = 0.9}, {.x = 0.1, .y = 0.1}, // Left stem (Full height)
-        {.x = 0.5, .y = 0.8}, // Deep center V point (y=0.8 is even deeper)
-        {.x = 0.9, .y = 0.1}, // Right peak (Full height)
-        {.x = 0.9, .y = 0.9}, // Right stem (Full height)
-        {.x = 0.5, .y = 0.8}, {.x = 0.1, .y = 0.1}, // Back to center
+    [12] = {.control_points = {{.x = 0.1, .y = 0.9}, {.x = 0.1, .y = 0.1}, {.x = 0.5, .y = 0.8}, 
+        {.x = 0.9, .y = 0.1}, {.x = 0.9, .y = 0.9}, {.x = 0.5, .y = 0.8}, {.x = 0.1, .y = 0.1}, 
         {.x = 0.9, .y = 0.9}, {.x = 0.5, .y = 0.3} 
     }},
-    [13] = {.control_points = {{.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, // Left vertical
-        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, // Clear, long diagonal
-        {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.1}, // Right vertical
-        {.x = 0.5, .y = 0.5}, {.x = 0.2, .y = 0.9}, 
+    [13] = {.control_points = {{.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, 
+        {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.5}, {.x = 0.2, .y = 0.9}, 
         {.x = 0.8, .y = 0.1} 
     }},
     [14] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.85, .y = 0.3}, {.x = 0.85, .y = 0.7}, 
         {.x = 0.5, .y = 0.9}, {.x = 0.15, .y = 0.7}, {.x = 0.15, .y = 0.3}, 
         {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.5} 
     }},
-    [15] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
-        {.x = 0.2, .y = 0.1}, 
+    [15] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, 
         {.x = 0.7, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.8, .y = 0.3}, 
-        {.x = 0.7, .y = 0.4}, {.x = 0.2, .y = 0.4}, 
-        {.x = 0.2, .y = 0.4} 
+        {.x = 0.7, .y = 0.4}, {.x = 0.2, .y = 0.4}, {.x = 0.2, .y = 0.4} 
     }},
     [16] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.8, .y = 0.7}, {.x = 0.5, .y = 0.9}, 
         {.x = 0.2, .y = 0.7}, {.x = 0.2, .y = 0.3}, {.x = 0.5, .y = 0.1}, {.x = 0.6, .y = 0.7}, 
         {.x = 0.8, .y = 0.9} 
     }},
-    [17] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, // Vertical stem
-        {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, 
-        {.x = 0.8, .y = 0.4}, {.x = 0.2, .y = 0.5}, // Top loop closure point
-        {.x = 0.2, .y = 0.5}, {.x = 0.9, .y = 0.9}, // Diagonal leg starts from middle (y=0.5), ends far right (x=0.9)
+    [17] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, 
+        {.x = 0.8, .y = 0.4}, {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.5}, {.x = 0.9, .y = 0.9}, 
         {.x = 0.2, .y = 0.1} 
     }},
     [18] = {.control_points = {{.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.3}, {.x = 0.8, .y = 0.5}, 
@@ -170,11 +150,8 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
         {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.1}, 
         {.x = 0.8, .y = 0.1} 
     }},
-    [22] = {.control_points = {{.x = 0.1, .y = 0.1}, {.x = 0.3, .y = 0.9}, 
-        {.x = 0.5, .y = 0.2}, 
-        {.x = 0.7, .y = 0.9}, 
-        {.x = 0.9, .y = 0.1}, 
-        {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.5}, 
+    [22] = {.control_points = {{.x = 0.1, .y = 0.1}, {.x = 0.3, .y = 0.9}, {.x = 0.5, .y = 0.2}, 
+        {.x = 0.7, .y = 0.9}, {.x = 0.9, .y = 0.1}, {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.5}, 
         {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.5}
     }},
     [23] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.8, .y = 0.1}, 
@@ -230,23 +207,6 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
         {.x = 0.8, .y = 0.9} 
     }}
 };
-
-
-// --- Function Prototypes ---
-void apply_deformation(Point *point, const double alpha[NUM_DEFORMATIONS]);
-Point get_deformed_point(const double t, const Ideal_Curve_Params *const params, const double alpha[NUM_DEFORMATIONS]);
-void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img, const Ideal_Curve_Params *const ideal_params);
-void extract_geometric_features(const Generated_Image img, Feature_Vector features_out);
-double calculate_feature_loss_L2(const Feature_Vector generated, const Feature_Vector observed);
-double calculate_pixel_loss_L2(const Generated_Image generated, const Generated_Image observed);
-double calculate_combined_loss(const Generated_Image generated_img, const Feature_Vector generated_features, const Generated_Image observed_img, const Feature_Vector observed_features);
-void calculate_gradient(const Generated_Image observed_img, const Feature_Vector observed_features, const Deformation_Coefficients *const alpha, const double loss_base, double grad_out[NUM_DEFORMATIONS], const Ideal_Curve_Params *const ideal_params);
-void generate_target_image(Generated_Image image_out, const double true_alpha[NUM_DEFORMATIONS], const Ideal_Curve_Params *const ideal_params, int add_noise);
-double calculate_pixel_error_sum(const Generated_Image obs, const Generated_Image est);
-void run_optimization(const Generated_Image observed_image, const Feature_Vector observed_features, int ideal_char_index, EstimationResult *result, int print_trace);
-void calculate_difference_image(const Generated_Image obs, const Generated_Image est, Generated_Image diff);
-void run_classification_test(int test_id, int true_char_index, const double true_alpha[NUM_DEFORMATIONS], TestResult *result);
-void summarize_results_console();
 
 
 // --- Function Definitions (Optimization Logic) ---
@@ -420,9 +380,8 @@ double calculate_pixel_error_sum(const Generated_Image obs, const Generated_Imag
 }
 
 void run_optimization(const Generated_Image observed_image, const Feature_Vector observed_features, 
-                      int ideal_char_index, EstimationResult *result, int print_trace) {
+                      int ideal_char_index, EstimationResult *result) {
     
-    // Initialize loss history to a large value
     for (int i = 0; i < LOSS_HISTORY_SIZE; i++) {
         result->loss_history[i] = HUGE_VAL;
     }
@@ -446,7 +405,6 @@ void run_optimization(const Generated_Image observed_image, const Feature_Vector
         current_feature_loss_only = calculate_feature_loss_L2(generated_features, observed_features);
         combined_loss = current_feature_loss_only + PIXEL_LOSS_WEIGHT * calculate_pixel_loss_L2(generated_image, observed_image);
 
-        // Record loss history for the graph
         if (t % LOSS_HISTORY_STEP == 0 && (t / LOSS_HISTORY_STEP) < LOSS_HISTORY_SIZE) {
             result->loss_history[t / LOSS_HISTORY_STEP] = current_feature_loss_only;
         }
@@ -494,15 +452,13 @@ void run_classification_test(int test_id, int true_char_index, const double true
     Feature_Vector observed_features;
     extract_geometric_features(observed_image, observed_features);
     
-    printf("TEST %02d/%02d (TRUE: '%s')\n", test_id, NUM_TESTS, CHAR_NAMES[true_char_index]);
+    // printf removed here to keep console clean during optimization, summarized later
 
     double min_feature_loss = HUGE_VAL;
     int best_match_index = -1;
     
     for (int i = 0; i < NUM_IDEAL_CHARS; i++) {
-        // Only trace the correct character optimization for the loss history, no console output needed
-        int trace = (i == true_char_index); 
-        run_optimization(observed_image, observed_features, i, &result->classification_results[i], 0);
+        run_optimization(observed_image, observed_features, i, &result->classification_results[i]);
 
         if (result->classification_results[i].final_loss < min_feature_loss) {
             min_feature_loss = result->classification_results[i].final_loss;
@@ -518,27 +474,62 @@ void run_classification_test(int test_id, int true_char_index, const double true
     calculate_difference_image(result->observed_image, result->best_estimated_image, result->best_diff_image);
 }
 
+#define CONSOLE_SUMMARY_LIMIT 36 // Print all 36 in the summary
+
+/**
+ * @brief Prints a detailed summary table of all classification results to the console.
+ */
 void summarize_results_console() {
-    // Console summary logic omitted for brevity, focusing on PNG output.
+    printf("\n\n=================================================================================================\n");
+    printf("                                  CLASSIFICATION SUMMARY (%d TESTS)                              \n", NUM_TESTS);
+    printf("=================================================================================================\n");
+    
+    printf(" ID | TRUE | PRED | Feat Loss (Best Fit) | TRUE $a_1$ | TRUE $a_2$ | EST $a_1$ | EST $a_2$ | PIXEL ERROR %% | Result \n");
+    printf("----|------|------|----------------------|-----------|-----------|-----------|-----------|---------------|--------\n");
+
+    int correct_classifications = 0;
+    for (int k = 0; k < CONSOLE_SUMMARY_LIMIT; k++) {
+        TestResult *r = &all_results[k];
+        const EstimationResult *best_fit = &r->classification_results[r->best_match_index];
+        
+        // Calculate the pixel error percentage
+        double pixel_error_sum = calculate_pixel_error_sum(r->observed_image, r->best_estimated_image);
+        double pixel_error_percent = (pixel_error_sum / MAX_PIXEL_ERROR) * 100.0;
+
+        int is_correct = (r->true_char_index == r->best_match_index);
+        if (is_correct) correct_classifications++;
+
+        printf("%3d | %4s | %4s | %20.4f | %9.4f | %9.4f | %9.4f | %9.4f | %13.2f | %6s\n", 
+               r->id, CHAR_NAMES[r->true_char_index], CHAR_NAMES[r->best_match_index],
+               best_fit->final_loss, 
+               r->true_alpha[0], r->true_alpha[1], 
+               best_fit->estimated_alpha[0], best_fit->estimated_alpha[1], 
+               pixel_error_percent, is_correct ? "CORRECT" : "WRONG");
+    }
+    printf("----|------|------|----------------------|-----------|-----------|-----------|-----------|---------------|--------\n");
+    printf("Overall Accuracy: %d/%d (%.2f%%)\n", correct_classifications, NUM_TESTS, 
+           (double)correct_classifications / NUM_TESTS * 100.0);
+    printf("=================================================================================================\n");
 }
 
 
 // --- PNG Rendering Constants (Vertical Layout) ---
 #define PIXEL_SIZE 5    
-#define IMG_SIZE (GRID_SIZE * PIXEL_SIZE) // 80 pixels
+#define IMG_SIZE (GRID_SIZE * PIXEL_SIZE) 
 #define IMG_SPACING 5   
 #define TEXT_HEIGHT 15  
 #define SET_SPACING 25  
-#define GRAPH_WIDTH 100 // New width for the loss graph
-#define GRAPH_HEIGHT IMG_SIZE // 80 pixels
+#define GRAPH_WIDTH 100 
+#define GRAPH_HEIGHT IMG_SIZE 
 
 // Width for 4 images, 3 spacings, the graph, and spacing around elements
-#define PNG_WIDTH (IMG_SIZE * 4 + IMG_SPACING * 3 + GRAPH_WIDTH + SET_SPACING * 2) // ~480
+#define PNG_WIDTH (IMG_SIZE * 4 + IMG_SPACING * 3 + GRAPH_WIDTH + SET_SPACING * 2) 
 // Height for 36 sets, top title, and spacing between sets
 #define PNG_HEIGHT (TEXT_HEIGHT + (IMG_SIZE + TEXT_HEIGHT + SET_SPACING) * NUM_TESTS) 
 #define NUM_CHANNELS 3 
 
 // --- PNG Rendering Functions ---
+// (Functions set_pixel, get_pixel_color, render_single_image_to_png, draw_text_placeholder are kept the same)
 
 void set_pixel(unsigned char *buffer, int x, int y, int width, unsigned char r, unsigned char g, unsigned char b) {
     if (x >= 0 && x < width && y >= 0 && y < PNG_HEIGHT) {
@@ -590,60 +581,45 @@ void render_single_image_to_png(unsigned char *buffer, int buf_width, const Gene
 }
 
 void draw_text_placeholder(unsigned char *buffer, int buf_width, int x, int y, const char* text, unsigned char r, unsigned char g, unsigned char b) {
-    // Draws a small white dot/line to mark the text position
     set_pixel(buffer, x, y, buf_width, r, g, b);
     for(int i = 1; i < 50; i++) {
         set_pixel(buffer, x + i, y, buf_width, r, g, b);
     }
 }
 
-/**
- * @brief Draws a simple line graph of feature loss over iterations.
- */
 void draw_loss_graph(unsigned char *buffer, int buf_width, int x_offset, int y_offset, const EstimationResult *result) {
     
-    // 1. Find max loss to scale the graph (max y-axis value)
     double max_loss = 0.0;
     for (int i = 0; i < LOSS_HISTORY_SIZE; i++) {
         if (result->loss_history[i] != HUGE_VAL && result->loss_history[i] > max_loss) {
             max_loss = result->loss_history[i];
         }
     }
-    if (max_loss < 1.0) max_loss = 1.0; // Avoid division by zero/scaling issues for near-zero loss
+    if (max_loss < 1.0) max_loss = 1.0; 
 
-    // 2. Draw axes and background
-    // Draw background (light gray/dark gray box for graph area)
     for(int py = 0; py < GRAPH_HEIGHT; py++) {
         for(int px = 0; px < GRAPH_WIDTH; px++) {
-            set_pixel(buffer, x_offset + px, y_offset + py, buf_width, 20, 20, 20); // Dark Gray BG
+            set_pixel(buffer, x_offset + px, y_offset + py, buf_width, 20, 20, 20); 
         }
     }
-    // Draw x/y axes (white)
     for(int i = 0; i < GRAPH_WIDTH; i++) set_pixel(buffer, x_offset + i, y_offset + GRAPH_HEIGHT - 1, buf_width, 255, 255, 255);
     for(int i = 0; i < GRAPH_HEIGHT; i++) set_pixel(buffer, x_offset, y_offset + i, buf_width, 255, 255, 255);
 
-
-    // 3. Plot the loss history (Line graph in bright green)
     int prev_y = -1;
     for (int i = 0; i < LOSS_HISTORY_SIZE; i++) {
         if (result->loss_history[i] == HUGE_VAL) continue;
 
-        // Map x: Index (0 to LOSS_HISTORY_SIZE-1) to pixel (0 to GRAPH_WIDTH-1)
         int current_x = x_offset + (int)round((double)i / (LOSS_HISTORY_SIZE - 1) * (GRAPH_WIDTH - 1));
 
-        // Map y: Loss (0 to max_loss) to pixel (GRAPH_HEIGHT-1 to 0)
         double normalized_loss = 1.0 - (result->loss_history[i] / max_loss);
         int current_y = y_offset + (int)round(normalized_loss * (GRAPH_HEIGHT - 1));
-        current_y = fmax(y_offset, fmin(y_offset + GRAPH_HEIGHT - 1, current_y)); // Clamp
+        current_y = fmax(y_offset, fmin(y_offset + GRAPH_HEIGHT - 1, current_y)); 
 
-        // Plot the point
-        set_pixel(buffer, current_x, current_y, buf_width, 50, 255, 50); // Bright Green
+        set_pixel(buffer, current_x, current_y, buf_width, 50, 255, 50); 
 
-        // Draw a line segment from the previous point to the current point
         if (prev_y != -1) {
             int prev_x = x_offset + (int)round((double)(i-1) / (LOSS_HISTORY_SIZE - 1) * (GRAPH_WIDTH - 1));
 
-            // Simple line drawing (Bresenham's algorithm approximation)
             int dx = abs(current_x - prev_x);
             int dy = abs(current_y - prev_y);
             int sx = prev_x < current_x ? 1 : -1;
@@ -654,7 +630,7 @@ void draw_loss_graph(unsigned char *buffer, int buf_width, int x_offset, int y_o
             int py = prev_y;
 
             while(1) {
-                set_pixel(buffer, px, py, buf_width, 50, 255, 50); // Draw line pixel
+                set_pixel(buffer, px, py, buf_width, 50, 255, 50); 
 
                 if (px == current_x && py == current_y) break;
                 int e2 = 2 * err;
@@ -666,46 +642,37 @@ void draw_loss_graph(unsigned char *buffer, int buf_width, int x_offset, int y_o
     }
 }
 
-/**
- * @brief Renders the 4-image comparison set and the loss graph for one test case.
- */
 void render_test_to_png(unsigned char *buffer, int buf_width, const TestResult *r, int x_set, int y_set) {
-    const EstimationResult *best_fit = &r->classification_results[r->true_char_index]; // Use the result for the true character template
+    const EstimationResult *true_char_fit = &r->classification_results[r->true_char_index]; 
+    const EstimationResult *best_fit = &r->classification_results[r->best_match_index]; 
     char label[150];
     double pixel_error_sum = calculate_pixel_error_sum(r->observed_image, r->best_estimated_image);
     double pixel_error_percent = (pixel_error_sum / MAX_PIXEL_ERROR) * 100.0;
     
-    // Label showing True Char, Predicted Char, and Pixel Error
-    sprintf(label, "ID %02d: T:'%s' | P:'%s' | $a_1$=%.2f, $a_2$=%.2f | Err:%.2f%% (%s)", 
-            r->id, CHAR_NAMES[r->true_char_index], CHAR_NAMES[r->best_match_index],
-            best_fit->estimated_alpha[0], best_fit->estimated_alpha[1],
+    sprintf(label, "ID %02d: T:'%s' (%.2f,%.2f) | P:'%s' | $a_1$=%.2f, $a_2$=%.2f | Err:%.2f%% (%s)", 
+            r->id, CHAR_NAMES[r->true_char_index], r->true_alpha[0], r->true_alpha[1], 
+            CHAR_NAMES[r->best_match_index], best_fit->estimated_alpha[0], best_fit->estimated_alpha[1],
             pixel_error_percent, 
             (r->true_char_index == r->best_match_index) ? "YES" : "NO");
     
-    // 1. Draw Images
     int img_step = IMG_SIZE + IMG_SPACING;
     int current_x = x_set;
     
-    // TRUE CLEAN
     render_single_image_to_png(buffer, buf_width, r->true_image, current_x, y_set + TEXT_HEIGHT, 0); 
     current_x += img_step;
     
-    // OBSERVED NOISY
     render_single_image_to_png(buffer, buf_width, r->observed_image, current_x, y_set + TEXT_HEIGHT, 0);
     current_x += img_step;
     
-    // BEST ESTIMATED
     render_single_image_to_png(buffer, buf_width, r->best_estimated_image, current_x, y_set + TEXT_HEIGHT, 0);
     current_x += img_step;
     
-    // ERROR DIFF
     render_single_image_to_png(buffer, buf_width, r->best_diff_image, current_x, y_set + TEXT_HEIGHT, 1);
     current_x += img_step;
 
-    // 2. Draw Loss Graph (Graph starts after the 4th image)
-    draw_loss_graph(buffer, buf_width, current_x + IMG_SPACING, y_set + TEXT_HEIGHT, best_fit);
+    // Use the loss history for the TRUE character (index r->true_char_index) 
+    draw_loss_graph(buffer, buf_width, current_x + IMG_SPACING, y_set + TEXT_HEIGHT, true_char_fit);
 
-    // 3. Draw Text Placeholder (at the start of the set row)
     draw_text_placeholder(buffer, buf_width, x_set, y_set + 5, label, 255, 255, 255);
 }
 
@@ -717,7 +684,6 @@ void generate_png_file() {
         return;
     }
 
-    // Draw main column titles (Top of the entire PNG)
     int title_y = 5;
     int current_x = SET_SPACING + IMG_SIZE / 2;
     int img_step = IMG_SIZE + IMG_SPACING;
@@ -728,18 +694,13 @@ void generate_png_file() {
     draw_text_placeholder(buffer, PNG_WIDTH, current_x + 3 * img_step, title_y, "ERROR DIFF", 255, 255, 255);
     draw_text_placeholder(buffer, PNG_WIDTH, current_x + 4 * img_step + 30, title_y, "FEATURE LOSS (vs ITER)", 255, 255, 255);
     
-    // Render all 36 test sets vertically
     int x_set = SET_SPACING; 
     
     for (int k = 0; k < NUM_TESTS; k++) {
-        // Calculate the starting Y coordinate for this row
         int y_set = TEXT_HEIGHT + k * (IMG_SIZE + TEXT_HEIGHT + SET_SPACING);
-        
-        // Render the images and graph for this test
         render_test_to_png(buffer, PNG_WIDTH, &all_results[k], x_set, y_set);
     }
 
-    // Save the buffer to a PNG file
     int success = stbi_write_png("network_full_vertical.png", PNG_WIDTH, PNG_HEIGHT, NUM_CHANNELS, buffer, PNG_WIDTH * NUM_CHANNELS);
 
     free(buffer);
@@ -767,15 +728,16 @@ int main(void) {
 
     for (int i = 0; i < NUM_TESTS; i++) {
         double true_alpha[NUM_DEFORMATIONS];
-        // Generate random deformation in [-0.15, 0.15]
         true_alpha[0] = MIN_ALPHA + ((double)rand() / RAND_MAX) * (MAX_ALPHA - MIN_ALPHA);
         true_alpha[1] = MIN_ALPHA + ((double)rand() / RAND_MAX) * (MAX_ALPHA - MIN_ALPHA);
         
         run_classification_test(i + 1, i, true_alpha, &all_results[i]);
     }
     
+    // **Restored Console Summary**
     summarize_results_console();
 
+    // **Retained PNG Output**
     generate_png_file();
 
     return 0;
