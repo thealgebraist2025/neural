@@ -5,13 +5,13 @@
 // Define M_PI explicitly as it's not guaranteed by the C standard
 #define M_PI 3.14159265358979323846
 
-// --- Configuration ---
+// --- Global Configuration ---
 #define GRID_SIZE 16
 #define NUM_DEFORMATIONS 2 // alpha_1 (Slant), alpha_2 (Curvature)
 #define NUM_POINTS 200     // Number of points to sample the curve
-#define LEARNING_RATE 0.1 // ADJUSTED: Significantly increased to allow movement in the loss landscape
-#define ITERATIONS 10
-#define GRADIENT_EPSILON 0.01 // ADJUSTED: Increased step size for finite difference to force a pixel change
+#define LEARNING_RATE 0.01 // ADJUSTED: Reduced for stability
+#define ITERATIONS 50      // ADJUSTED: Increased for convergence
+#define GRADIENT_EPSILON 0.01 // Step size for finite difference
 
 // --- OCaml-like Immutability & Const Correctness ---
 
@@ -73,7 +73,7 @@ Point get_deformed_point(const double t, const Ideal_Curve_Params *const params,
     } else if (t < 0.8) {
         const double segment_t = (t - 0.3) / 0.5;
         p.x = params->stroke_1_mid.x;
-        p.y = params->stroke_1_mid.y + (params->stroke_1_end.y - params->stroke_1_mid.y) * segment_t; // Correction for stem direction
+        p.y = params->stroke_1_mid.y + (params->stroke_1_end.y - params->stroke_1_mid.y) * segment_t;
     } else {
         const double segment_t = (t - 0.8) / 0.2;
         p.x = params->stroke_1_mid.x + (params->stroke_1_end.x - params->stroke_1_mid.x) * segment_t;
@@ -157,7 +157,7 @@ void calculate_gradient(const Observed_Image observed, const Deformation_Coeffic
         // 3. Compute Gradient (Finite Difference)
         grad_out[k] = (loss_perturbed - loss_base) / epsilon;
         
-        // Safety check to prevent NaN/Inf gradients if loss_perturbed == loss_base
+        // Safety check to prevent zero gradient lock-up near flat areas
         if (fabs(grad_out[k]) < 1e-10) {
             grad_out[k] = 0.0;
         }
@@ -170,9 +170,8 @@ void print_image(const char *const title, const double image[GRID_SIZE][GRID_SIZ
     printf("\n%s (16x16):\n", title);
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
-            // Simplified visualization: only use space or hash ('#')
-            if (image[i][j] < 0.3) printf(" "); // Background
-            else printf("#"); // Foreground
+            if (image[i][j] < 0.3) printf(" ");
+            else printf("#");
         }
         printf("\n");
     }
@@ -183,60 +182,58 @@ void print_image(const char *const title, const double image[GRID_SIZE][GRID_SIZ
 /**
  * @brief Creates a synthetic observed image with known deformation and noise.
  * @param observed_out The mutable image array to fill.
+ * @param true_alpha The immutable true deformation coefficients.
  */
-void generate_observed_target(Generated_Image observed_out) {
-    // 1. Define the TRUE, underlying deformation for the target (IMMUTABLE)
-    const double true_alpha[NUM_DEFORMATIONS] = {-0.1, 0.05}; // Slanted left, slightly curved
-
-    // 2. Rasterize the TRUE deformed curve (Signal)
+void generate_observed_target(Generated_Image observed_out, const double true_alpha[NUM_DEFORMATIONS]) {
+    // 1. Rasterize the TRUE deformed curve (Signal)
     draw_curve(true_alpha, observed_out);
 
-    // 3. Add random noise (Stochastic Process/Error) (MUTABLE operation on observed_out)
+    // 2. Add random noise (Stochastic Process/Error) (MUTABLE operation on observed_out)
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
+            // Re-seed rand() for each image if necessary, or just rely on global seed for simplicity
             double noise = ((double)rand() / RAND_MAX - 0.5) * 0.3; // White noise [-0.15, 0.15]
             observed_out[i][j] = fmax(0.0, fmin(1.0, observed_out[i][j] + noise));
         }
     }
 }
 
+// --- Test Runner ---
 
-// --- Main Execution ---
-
-int main(void) {
-    // 1. Setup (IMMUTABLE data)
-    srand(42); // Seed for reproducible noise
+/**
+ * @brief Runs the optimization for a single test case.
+ * @param test_id The ID of the test case.
+ * @param true_alpha The immutable true deformation coefficients for the target.
+ */
+void run_test(int test_id, const double true_alpha[NUM_DEFORMATIONS]) {
+    // Setup (IMMUTABLE data)
     Generated_Image observed_image; // Observed image (mutable buffer)
-    generate_observed_target(observed_image);
+    generate_observed_target(observed_image, true_alpha);
+    
+    printf("\n======================================================\n");
+    printf("TEST %d: Target Slant (a_1)=%.2f, Curve (a_2)=%.2f\n", test_id, true_alpha[0], true_alpha[1]);
+    printf("======================================================\n");
     print_image("Observed Noisy Target Image (J)", observed_image); 
 
-    // 2. Initialization (MUTABLE data)
-    // Initial guess for the deformation coefficients (starting near zero/ideal)
+    // Initialization (MUTABLE data)
     Deformation_Coefficients alpha_hat = {
         .alpha = {0.0, 0.0} // Starting guess: Ideal 'J'
     };
     
-    // Gradient and generated image buffers (MUTABLE)
     double gradient[NUM_DEFORMATIONS];
     Generated_Image generated_image;
     double loss;
 
-    printf("\n--- Optimization (Gradient Descent) ---\n");
+    printf("\n--- Optimization Trace ---\n");
     printf("It | Loss     | a_1 (Slant) | a_2 (Curve) | da_1 | da_2\n");
     printf("----------------------------------------------------------\n");
 
-    // 3. Training/Estimation Loop (MUTABLE iterations)
+    // Training/Estimation Loop (MUTABLE iterations)
     for (int t = 0; t <= ITERATIONS; t++) {
-        // Forward Pass: Generate image based on current alpha_hat (MUTABLE)
         draw_curve(alpha_hat.alpha, generated_image);
-        
-        // Calculate Loss (IMMUTABLE operation)
         loss = calculate_loss(generated_image, observed_image);
-        
-        // Calculate Gradient (IMMUTABLE operation)
         calculate_gradient(observed_image, &alpha_hat, loss, gradient);
         
-        // Print status
         printf("%02d | %8.5f | %8.4f | %8.4f |", t, loss, alpha_hat.alpha[0], alpha_hat.alpha[1]);
 
         // Gradient Descent Update (MUTABLE operation on alpha_hat)
@@ -253,13 +250,40 @@ int main(void) {
         }
     }
 
-    // 4. Final Result (IMMUTABLE visualization)
+    // Final Result (IMMUTABLE visualization)
     draw_curve(alpha_hat.alpha, generated_image);
     print_image("Final Denoised/Estimated Image", generated_image);
 
     printf("\n--- Conclusion ---\n");
-    printf("Estimated Slant (a_1): %.4f (True was -0.10)\n", alpha_hat.alpha[0]);
-    printf("Estimated Curvature (a_2): %.4f (True was 0.05)\n", alpha_hat.alpha[1]);
+    printf("TRUE Slant (a_1): %.4f, Estimated: %.4f\n", true_alpha[0], alpha_hat.alpha[0]);
+    printf("TRUE Curvature (a_2): %.4f, Estimated: %.4f\n", true_alpha[1], alpha_hat.alpha[1]);
+}
+
+
+// --- Main Execution ---
+
+int main(void) {
+    // Array of 10 test cases (IMMUTABLE data)
+    // {Slant (a1), Curvature (a2)}
+    const double test_cases[10][NUM_DEFORMATIONS] = {
+        {-0.10, 0.05}, // 1. Original Target (Slanted Left, Curved Out)
+        { 0.10, -0.05}, // 2. Slanted Right, Curved In
+        { 0.00, 0.15},  // 3. Very Curved Out (Vertical)
+        {-0.20, 0.00},  // 4. Very Slanted Left (Straight)
+        { 0.05, 0.00},  // 5. Slightly Slanted Right (Straight)
+        {-0.05, -0.05}, // 6. Slightly Slanted Left, Curved In
+        { 0.15, 0.10},  // 7. Slanted Right, Curved Out (Exaggerated)
+        { 0.00, 0.00},  // 8. Ideal J (No Deformation)
+        { 0.20, 0.05},  // 9. Highly Slanted Right
+        {-0.10, -0.10}  // 10. Slanted Left, Highly Curved In
+    };
+    
+    srand(42); // Seed for reproducible results
+
+    for (int i = 0; i < 10; i++) {
+        // Run optimization for each test case
+        run_test(i + 1, test_cases[i]);
+    }
 
     return 0;
 }
