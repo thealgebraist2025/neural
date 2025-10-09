@@ -9,11 +9,11 @@
 // --- Global Configuration ---
 #define GRID_SIZE 16
 #define NUM_DEFORMATIONS 2  // alpha_1 (Slant), alpha_2 (Curvature)
-#define NUM_FEATURES 32     // CRITICAL: Increased to 32 directional projection features
+#define NUM_FEATURES 32     // 32 directional projection features
 #define NUM_POINTS 200
 #define ITERATIONS 5000     // 5000 iterations for stable convergence
 #define GRADIENT_EPSILON 0.01 
-#define NUM_TESTS 64        // CRITICAL: Increased to 64 random test cases
+#define NUM_TESTS 64        // 64 random test cases
 
 // --- Data Structures ---
 
@@ -26,7 +26,7 @@ typedef struct {
     const Point stroke_1_start;
     const Point stroke_1_mid;
     const Point stroke_1_end;
-} Ideal_Curve_Params; // IMMUTABLE ideal curve definition
+} Ideal_Curve_Params; 
 
 typedef struct {
     double alpha[NUM_DEFORMATIONS]; 
@@ -40,6 +40,7 @@ typedef double Feature_Vector[NUM_FEATURES];
 typedef struct {
     double true_alpha[NUM_DEFORMATIONS];
     double estimated_alpha[NUM_DEFORMATIONS];
+    double true_image[GRID_SIZE][GRID_SIZE];      // New: Clean image of true parameters
     double observed_image[GRID_SIZE][GRID_SIZE];
     double estimated_image[GRID_SIZE][GRID_SIZE];
     double diff_image[GRID_SIZE][GRID_SIZE];
@@ -135,7 +136,7 @@ void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img) {
  * @brief Extracts 32 geometric projection features from the image (Directional Moments).
  */
 void extract_geometric_features(const Generated_Image img, Feature_Vector features_out) {
-    // CRITICAL: Generate 32 normalized unit vectors (length 1)
+    // Generate 32 normalized unit vectors (length 1)
     double vectors[NUM_FEATURES][2];
     for (int k = 0; k < NUM_FEATURES; k++) {
         const double angle = 2.0 * M_PI * k / NUM_FEATURES;
@@ -232,17 +233,20 @@ void calculate_difference_image(const Generated_Image obs, const Generated_Image
 
 /**
  * @brief Creates a synthetic observed image with known deformation and noise.
+ * If 'add_noise' is false, it returns the clean, true image.
  */
-void generate_observed_target(Generated_Image observed_out, const double true_alpha[NUM_DEFORMATIONS]) {
+void generate_target_image(Generated_Image image_out, const double true_alpha[NUM_DEFORMATIONS], int add_noise) {
     // 1. Rasterize the TRUE deformed curve (Signal)
-    draw_curve(true_alpha, observed_out);
+    draw_curve(true_alpha, image_out);
 
-    // 2. Add random noise 
-    for (int i = 0; i < GRID_SIZE; i++) {
-        for (int j = 0; j < GRID_SIZE; j++) {
-            // White noise [-0.15, 0.15]
-            double noise = ((double)rand() / RAND_MAX - 0.5) * 0.3; 
-            observed_out[i][j] = fmax(0.0, fmin(1.0, observed_out[i][j] + noise));
+    // 2. Add random noise if requested
+    if (add_noise) {
+        for (int i = 0; i < GRID_SIZE; i++) {
+            for (int j = 0; j < GRID_SIZE; j++) {
+                // White noise [-0.15, 0.15]
+                double noise = ((double)rand() / RAND_MAX - 0.5) * 0.3; 
+                image_out[i][j] = fmax(0.0, fmin(1.0, image_out[i][j] + noise));
+            }
         }
     }
 }
@@ -254,17 +258,19 @@ void run_test(int test_id, const double true_alpha[NUM_DEFORMATIONS], TestResult
     result->id = test_id;
     memcpy(result->true_alpha, true_alpha, sizeof(double) * NUM_DEFORMATIONS);
 
-    // Setup (generate observed image)
-    Generated_Image observed_image; 
-    generate_observed_target(observed_image, true_alpha);
+    // 1. Generate the CLEAN True Image and store it
+    generate_target_image(result->true_image, true_alpha, 0); 
     
-    // Copy observed image to result structure
+    // 2. Generate the NOISY Observed Image and store it
+    Generated_Image observed_image; 
+    generate_target_image(observed_image, true_alpha, 1);
     memcpy(result->observed_image, observed_image, sizeof(Generated_Image));
     
     // Extract the target features once
     Feature_Vector observed_features;
     extract_geometric_features(observed_image, observed_features);
     
+    // Console output for the start of the test
     printf("\n======================================================\n");
     printf("TEST %02d/%02d: Target Slant (a_1)=%.4f, Curve (a_2)=%.4f\n", 
            test_id, NUM_TESTS, true_alpha[0], true_alpha[1]);
@@ -340,8 +346,8 @@ void run_test(int test_id, const double true_alpha[NUM_DEFORMATIONS], TestResult
 }
 
 
-// --- Summary Function ---
-void summarize_results() {
+// --- Console Summary Function ---
+void summarize_results_console() {
     printf("\n\n======================================================\n");
     printf("            COLLECTED 64-TEST ERROR SUMMARY           \n");
     printf("======================================================\n");
@@ -361,6 +367,7 @@ void summarize_results() {
 
     printf("\n\n======================================================\n");
     printf("            64-TEST IMAGE COMPARISON GRID             \n");
+    printf("         (Visual comparison filtered for noise)       \n");
     printf("======================================================\n");
     
     for (int k = 0; k < NUM_TESTS; k++) {
@@ -377,15 +384,130 @@ void summarize_results() {
             printf(" | ");
             print_image_row(r->estimated_image, i);
             printf(" | ");
-            // Difference image uses symbols for difference magnitude
+            // Error visualization (threshold > 0.2 to filter out background noise)
             for (int j = 0; j < GRID_SIZE; j++) {
-                if (r->diff_image[i][j] > 0.3) printf("*"); // High error
-                else if (r->diff_image[i][j] > 0.1) printf("+"); // Moderate error
-                else printf(" "); // Low error
+                if (r->diff_image[i][j] > 0.3) printf("*"); 
+                else if (r->diff_image[i][j] > 0.2) printf("+"); 
+                else printf(" "); 
             }
             printf(" |\n");
         }
     }
+    printf("======================================================\n");
+}
+
+
+// --- SVG Generation Functions ---
+
+// Constants for SVG rendering
+#define PIXEL_SIZE 5    // Size of one pixel rectangle in SVG units
+#define IMG_SIZE (GRID_SIZE * PIXEL_SIZE)
+#define IMG_SPACING 5   // Spacing between the four images in a set
+#define SET_SPACING 25  // Spacing between different test sets
+#define SET_WIDTH (4 * IMG_SIZE + 3 * IMG_SPACING)
+#define SVG_WIDTH (8 * SET_WIDTH + 7 * SET_SPACING + 2 * SET_SPACING)
+#define SVG_HEIGHT (8 * IMG_SIZE + 7 * SET_SPACING + 2 * SET_SPACING)
+
+/**
+ * @brief Maps an intensity [0.0, 1.0] to an RGB grayscale color string.
+ */
+void get_grayscale_color(double intensity, char *color_out) {
+    // Clamp intensity to [0.0, 1.0]
+    double clamped_intensity = fmax(0.0, fmin(1.0, intensity));
+    
+    // Map to 0-255 range (0=black, 255=white)
+    int value = (int)round(clamped_intensity * 255.0);
+    
+    // Format the RGB string
+    sprintf(color_out, "rgb(%d,%d,%d)", value, value, value);
+}
+
+/**
+ * @brief Renders a single image into the SVG file at a specific offset.
+ */
+void render_single_image_to_svg(FILE *fp, const Generated_Image img, double x_offset, double y_offset) {
+    char color[20];
+    for (int i = 0; i < GRID_SIZE; i++) {
+        for (int j = 0; j < GRID_SIZE; j++) {
+            get_grayscale_color(img[i][j], color);
+            fprintf(fp, "<rect x=\"%.1f\" y=\"%.1f\" width=\"%d\" height=\"%d\" fill=\"%s\"/>\n",
+                    x_offset + j * PIXEL_SIZE, 
+                    y_offset + i * PIXEL_SIZE, 
+                    PIXEL_SIZE, PIXEL_SIZE, color);
+        }
+    }
+}
+
+/**
+ * @brief Renders the 4-image comparison set for one test case into the SVG file.
+ */
+void render_test_to_svg(FILE *fp, const TestResult *r, double x_set, double y_set) {
+    // 1. True Image (Clean)
+    render_single_image_to_svg(fp, r->true_image, x_set, y_set);
+    
+    // 2. Target Image (Noisy)
+    render_single_image_to_svg(fp, r->observed_image, x_set + IMG_SIZE + IMG_SPACING, y_set);
+
+    // 3. Estimated Image (Clean Fit)
+    render_single_image_to_svg(fp, r->estimated_image, x_set + 2 * (IMG_SIZE + IMG_SPACING), y_set);
+
+    // 4. Difference Image (Error Magnitude) - Normalized to [0.0, 1.0]
+    // The diff image intensity is already [0, 1.0] (max difference between 0 and 1 pixel)
+    render_single_image_to_svg(fp, r->diff_image, x_set + 3 * (IMG_SIZE + IMG_SPACING), y_set);
+    
+    // Add text label for the test ID and parameters
+    char label[100];
+    sprintf(label, "ID %02d (T: %.2f, %.2f | E: %.2f, %.2f)", r->id, 
+            r->true_alpha[0], r->true_alpha[1], r->estimated_alpha[0], r->estimated_alpha[1]);
+    
+    fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"10\" fill=\"white\">%s</text>\n",
+            x_set, y_set + IMG_SIZE + 10, label);
+}
+
+/**
+ * @brief Generates the final SVG file with all test results.
+ */
+void generate_svg_file() {
+    FILE *fp = fopen("network.svg", "w");
+    if (fp == NULL) {
+        printf("\nERROR: Could not open network.svg for writing.\n");
+        return;
+    }
+
+    // SVG Header (Black Background for all images)
+    fprintf(fp, "<svg width=\"%d\" height=\"%d\" viewBox=\"0 0 %d %d\" xmlns=\"http://www.w3.org/2000/svg\">\n",
+            SVG_WIDTH, SVG_HEIGHT, SVG_WIDTH, SVG_HEIGHT);
+    fprintf(fp, "<rect width=\"100%%\" height=\"100%%\" fill=\"black\"/>\n");
+
+    // Add general titles for the 4 image columns
+    double initial_x = SET_SPACING + IMG_SIZE / 2.0;
+    double initial_y = SET_SPACING / 2.0;
+    fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"12\" fill=\"white\" text-anchor=\"middle\">TRUE</text>\n", initial_x, initial_y);
+    fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"12\" fill=\"white\" text-anchor=\"middle\">TARGET</text>\n", initial_x + IMG_SIZE + IMG_SPACING, initial_y);
+    fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"12\" fill=\"white\" text-anchor=\"middle\">ESTIMATED</text>\n", initial_x + 2 * (IMG_SIZE + IMG_SPACING), initial_y);
+    fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"12\" fill=\"white\" text-anchor=\"middle\">ERROR</text>\n", initial_x + 3 * (IMG_SIZE + IMG_SPACING), initial_y);
+
+
+    // Render all 64 test sets (8x8 grid)
+    const int sets_per_row = 8;
+    for (int k = 0; k < NUM_TESTS; k++) {
+        int row = k / sets_per_row;
+        int col = k % sets_per_row;
+        
+        // Calculate top-left corner position for the current 4-image set
+        double x_set = SET_SPACING + col * (SET_WIDTH + SET_SPACING);
+        // Offset y to leave room for the title text at the top
+        double y_set = SET_SPACING + 15 + row * (IMG_SIZE + 15 + SET_SPACING); 
+        
+        render_test_to_svg(fp, &all_results[k], x_set, y_set);
+    }
+
+    // SVG Footer
+    fprintf(fp, "</svg>\n");
+    
+    fclose(fp);
+    printf("\n\n======================================================\n");
+    printf("SVG Output Complete: network.svg created.\n");
     printf("======================================================\n");
 }
 
@@ -409,8 +531,11 @@ int main(void) {
         run_test(i + 1, true_alpha, &all_results[i]);
     }
     
-    // Print the consolidated summary of all tests
-    summarize_results();
+    // 1. Print the console-based summary
+    summarize_results_console();
+
+    // 2. Generate the SVG file
+    generate_svg_file();
 
     return 0;
 }
