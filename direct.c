@@ -20,7 +20,7 @@
 #define NUM_FEATURES (NUM_VECTORS * NUM_BINS) 
 #define PIXEL_LOSS_WEIGHT 2.5 
 #define NUM_POINTS 200
-#define ITERATIONS 200      // INCREASED from 100 to 200 for better convergence
+#define ITERATIONS 200      // Increased for better convergence
 #define GRADIENT_EPSILON 0.01 
 #define NUM_IDEAL_CHARS 62  // 26 A-Z + 26 a-z + 10 0-9
 #define NUM_CONTROL_POINTS 9 
@@ -31,10 +31,8 @@
 #define TEXT_HEIGHT 15  
 #define SET_SPACING 25  
 #define NUM_CHANNELS 3 
-#define SEGMENTATION_THRESHOLD 0.5
- // Intensity > 0.5 (i.e., pixel value < 128)
-#define MAX_SEGMENTS_PER_ROW 10
- // INCREASED for wider output PNG
+#define SEGMENTATION_THRESHOLD 0.5 
+#define MAX_SEGMENTS_PER_ROW 10 // Increased for wider output PNG
 
 // Stroke widths to test (in GRID_SIZE pixels)
 const int STROKE_WIDTHS[] = {1, 2, 4, 8};
@@ -98,7 +96,7 @@ void recognize_segment(SegmentResult *segment);
 void generate_segment_png(const SegmentResult *segments, int num_segments, const double *full_data, int full_width, int full_height);
 
 
-// --- Fixed Ideal Curves (UPDATED for thicker, smoother strokes) ---
+// --- Fixed Ideal Curves ---
 const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {
     "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", 
     "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", 
@@ -107,7 +105,7 @@ const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"
 };
 const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
-    // Uppercase Letters (A-Z) - Adjusted for high-contrast/bold font
+    // Uppercase Letters (A-Z) 
     // A
     [0] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.1}, 
         {.x = 0.4, .y = 0.6}, {.x = 0.6, .y = 0.6}, {.x = 0.5, .y = 0.6}, {.x = 0.2, .y = 0.9}, 
@@ -239,7 +237,7 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
         {.x = 0.2, .y = 0.1} 
     }},
 
-    // Lowercase Letters (a-z) - Adjusted for better curve definition
+    // Lowercase Letters (a-z) 
     // a
     [26] = {.control_points = {{.x = 0.7, .y = 0.5}, {.x = 0.5, .y = 0.3}, {.x = 0.3, .y = 0.5}, {.x = 0.3, .y = 0.7}, 
         {.x = 0.5, .y = 0.9}, {.x = 0.7, .y = 0.7}, {.x = 0.7, .y = 0.3}, {.x = 0.7, .y = 0.9}, 
@@ -371,7 +369,7 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
         {.x = 0.2, .y = 0.5} 
     }},
 
-    // Digits (0-9) - Adjusted
+    // Digits (0-9) 
     // 0
     [52] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.8, .y = 0.7}, 
         {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.7}, {.x = 0.2, .y = 0.3}, 
@@ -474,12 +472,10 @@ Point get_deformed_point(const double t, const Ideal_Curve_Params *const params,
     return p;
 }
 
-// Function to calculate Gaussian value (used for smoothing/stroke width)
 static double gaussian(double x, double y, double sigma) {
     return exp(-(x*x + y*y) / (2.0 * sigma*sigma));
 }
 
-// UPDATED draw_curve to include stroke width simulation via Gaussian smoothing
 void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img, const Ideal_Curve_Params *const ideal_params, int stroke_width) {
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
@@ -509,24 +505,22 @@ void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img, const
 
     // 2. Apply Gaussian blur to simulate stroke width
     if (stroke_width <= 1) {
-        // No blurring for minimal stroke width
         memcpy(img, temp_img, sizeof(Generated_Image));
         return;
     }
 
     const double sigma = (double)stroke_width / 4.0; 
-    const int radius = stroke_width / 2 + 1; // Slight increase in radius for better smoothing
+    const int radius = stroke_width / 2 + 1; 
 
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
-            if (temp_img[i][j] > 0) { // If it's a curve pixel
+            if (temp_img[i][j] > 0) { 
                 for (int ky = -radius; ky <= radius; ky++) {
                     for (int kx = -radius; kx <= radius; kx++) {
                         int ni = i + ky;
                         int nj = j + kx;
 
                         if (ni >= 0 && ni < GRID_SIZE && nj >= 0 && nj < GRID_SIZE) {
-                            // Add Gaussian intensity to the neighborhood
                             double g = gaussian((double)kx, (double)ky, sigma);
                             img[ni][nj] = fmin(1.0, img[ni][nj] + g * temp_img[i][j]);
                         }
@@ -536,7 +530,6 @@ void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img, const
         }
     }
     
-    // Normalize to 1.0
     double max_val = 0.0;
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
@@ -648,7 +641,6 @@ void run_optimization(const Generated_Image observed_image, const Feature_Vector
     const Ideal_Curve_Params *ideal_params = &IDEAL_TEMPLATES[ideal_char_index];
     
     Deformation_Coefficients alpha_hat; 
-    // Increased base learning rate
     double learning_rate = 0.0000003; 
     const double min_learning_rate = 0.00000000005;
     double gradient[NUM_DEFORMATIONS];
@@ -658,8 +650,7 @@ void run_optimization(const Generated_Image observed_image, const Feature_Vector
     double prev_combined_loss = HUGE_VAL; 
     double current_feature_loss_only = HUGE_VAL;
     
-    // **Improvement 2: Random Initialization**
-    // Introduce a small random jitter to avoid starting exactly at a local minimum for (0,0)
+    // Random Initialization
     alpha_hat.alpha[0] = ((double)rand() / RAND_MAX - 0.5) * 0.2; 
     alpha_hat.alpha[1] = ((double)rand() / RAND_MAX - 0.5) * 0.2;
 
@@ -670,9 +661,9 @@ void run_optimization(const Generated_Image observed_image, const Feature_Vector
         current_feature_loss_only = calculate_feature_loss_L2(generated_features, observed_features);
         combined_loss = current_feature_loss_only + PIXEL_LOSS_WEIGHT * calculate_pixel_loss_L2(generated_image, observed_image);
 
-        // More aggressive learning rate decay
+        // Learning rate decay
         if (combined_loss > prev_combined_loss * 1.0005 && learning_rate > min_learning_rate) { 
-            learning_rate *= 0.75; // More aggressive decay (0.75 vs 0.5)
+            learning_rate *= 0.75; 
         }
 
         prev_combined_loss = combined_loss;
@@ -704,13 +695,12 @@ void recognize_segment(SegmentResult *segment) {
     EstimationResult current_result = {0}; 
     EstimationResult best_result = {0}; 
 
-    // Iterate through all character templates (62) AND all stroke widths (4)
+    // Iterate through all templates and all stroke widths
     for (int s = 0; s < NUM_STROKE_WIDTHS; s++) {
         int sw = STROKE_WIDTHS[s];
         for (int i = 0; i < NUM_IDEAL_CHARS; i++) {
             run_optimization(segment->resized_img, observed_features, i, &current_result, sw); 
 
-            // Only compare based on feature loss, which is more robust to stroke width differences.
             if (current_result.final_loss < min_feature_loss) {
                 min_feature_loss = current_result.final_loss;
                 best_match_index = i;
@@ -795,18 +785,13 @@ void render_single_image_to_png(unsigned char *buffer, int buf_width, int buf_he
 int load_image_stb(const char *filename, double **data_out, int *width_out, int *height_out) {
     int channels = 0;
     
+    // Load as grayscale (1 channel)
     unsigned char *img_data = stbi_load(filename, width_out, height_out, &channels, 1); 
 
     if (img_data == NULL) {
         fprintf(stderr, "Error: Failed to load image file '%s'. Ensure the file exists and is readable.\n", filename);
-        // Try the other uploaded image name if the first one fails
-        const char *fallback_filename = "1000000809.jpg"; 
-        img_data = stbi_load(fallback_filename, width_out, height_out, &channels, 1); 
-        if (img_data == NULL) {
-             fprintf(stderr, "Error: Failed to load image file '%s'. Image processing aborted.\n", fallback_filename);
-             return 0;
-        }
-        printf("Using fallback image '%s'.\n", fallback_filename);
+        // Fallback is commented out as the user provided the file name.
+        return 0;
     }
     
     size_t total_pixels = (size_t)(*width_out) * (*height_out);
@@ -969,14 +954,11 @@ int segment_image_naive(const double *full_data, int full_width, int full_height
 // --- PNG Rendering for Segmentation Output ---
 
 #define SEG_ROW_HEIGHT (IMG_SIZE + TEXT_HEIGHT + SET_SPACING) 
-// The actual PNG width is calculated in generate_segment_png dynamically
-// #define SEG_PNG_WIDTH (IMG_SIZE * 2 + IMG_SPACING * 3 + SET_SPACING * 2) 
 
 void draw_segment_info_box(unsigned char *buffer, int buf_width, int buf_height, int x, int y, int width, int height, const SegmentResult *seg) {
     char info[100];
     const char* char_name = (seg->best_match_index != -1) ? CHAR_NAMES[seg->best_match_index] : "N/A";
     
-    // Include stroke width in the info box
     sprintf(info, "Match: '%s' | Loss: %.2f | SW:%d | a1:%.2f", char_name, seg->final_loss, seg->best_stroke_width, seg->estimated_alpha[0]);
     draw_text_placeholder_box(buffer, buf_width, buf_height, x, y + 2, width, TEXT_HEIGHT - 4, 200, 200, 255);
 }
@@ -1006,20 +988,19 @@ void generate_segment_png(const SegmentResult *segments, int num_segments, const
         return;
     }
     
-    // **Improvement 1: Dynamic Width Calculation**
-    const int SEGMENT_SET_WIDTH = (IMG_SIZE * 2 + IMG_SPACING); // Width of a single observed + generated pair
-    const int MAX_SEGMENTS_PER_ROW = 10; // Use the updated max per row
-    const int SEGMENTS_PER_ROW = fmin(MAX_SEGMENTS_PER_ROW, num_segments);
+    const int SEGMENT_SET_WIDTH = (IMG_SIZE * 2 + IMG_SPACING); 
+    // FIX: Use the global macro MAX_SEGMENTS_PER_ROW directly. 
+    const int segments_per_row = fmin(MAX_SEGMENTS_PER_ROW, num_segments);
     
     int full_img_row_height = (full_height * PIXEL_SIZE) + TEXT_HEIGHT + SET_SPACING;
     int seg_row_height = SEG_ROW_HEIGHT;
-    int num_seg_rows = (num_segments + SEGMENTS_PER_ROW - 1) / SEGMENTS_PER_ROW; 
+    int num_seg_rows = (num_segments + segments_per_row - 1) / segments_per_row; 
     
-    // Calculate required width based on MAX_SEGMENTS_PER_ROW
-    int max_seg_row_width = SET_SPACING * 2 + SEGMENTS_PER_ROW * SEGMENT_SET_WIDTH + (SEGMENTS_PER_ROW - 1) * IMG_SPACING;
+    // Calculate required width
+    int max_seg_row_width = SET_SPACING * 2 + segments_per_row * SEGMENT_SET_WIDTH + (segments_per_row - 1) * IMG_SPACING;
     int full_img_width = full_width * PIXEL_SIZE + SET_SPACING * 2;
     
-    int png_width = fmax(max_seg_row_width, full_img_width); // Ensure width is enough for the widest row/full image
+    int png_width = fmax(max_seg_row_width, full_img_width);
     int png_height = full_img_row_height + num_seg_rows * seg_row_height + SET_SPACING;
     
     long buffer_size = (long)png_width * png_height * NUM_CHANNELS;
@@ -1098,15 +1079,11 @@ void generate_segment_png(const SegmentResult *segments, int num_segments, const
 int main(void) {
     srand(42); 
 
-    // Using the image from the context
-    // NOTE: The name 'test1.jpg' is used for the previous placeholder. 
-    // The name '1000000825.png' from the upload is used here directly.
-    const char *input_filename = "test1.png"; 
+    const char *input_filename = "1000000825.png"; 
     double *full_image_data = NULL;
     int full_width = 0;
     int full_height = 0;
     
-    // Start timing
     clock_t start_time = clock();
 
     if (!load_image_stb(input_filename, &full_image_data, &full_width, &full_height) || full_image_data == NULL) {
@@ -1123,7 +1100,7 @@ int main(void) {
         return 1;
     }
     
-    // 1. Segment Image using the Boolean Array method
+    // 1. Segment Image
     int num_segments = segment_image_naive(full_image_data, full_width, full_height, segments);
 
     // 2. Recognize Each Segment
