@@ -2,6 +2,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+   #define STB_IMAGE_IMPLEMENTATION
+   #include "stb_image.h"
+
 
 // Define M_PI explicitly
 #define M_PI 3.14159265358979323846
