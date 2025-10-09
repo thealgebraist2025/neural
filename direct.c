@@ -11,8 +11,8 @@
 #define NUM_DEFORMATIONS 2 // alpha_1 (Slant), alpha_2 (Curvature)
 #define NUM_FEATURES 8     // Using 8 directional projections for loss calculation
 #define NUM_POINTS 200
-#define LEARNING_RATE 0.0000001 // CRITICAL FIX: Drastically reduced for stability in feature space
-#define ITERATIONS 2000     // Increased to allow slower, stable steps to converge
+// Learning rate will now be dynamic, starting value is defined inside run_test
+#define ITERATIONS 2000    // Increased iterations for slower, stable convergence
 #define GRADIENT_EPSILON 0.01 
 
 // --- OCaml-like Immutability & Const Correctness ---
@@ -139,8 +139,6 @@ void extract_geometric_features(const Generated_Image img, Feature_Vector featur
             if (intensity < 0.1) continue; // Skip near-background pixels
 
             // Vector from center to pixel (j is x-axis, i is y-axis)
-            // Note: In image coordinates, i (row) is usually Y, j (col) is X.
-            // But projection calculations typically use x = col, y = row.
             const double vx = (double)j - center;
             const double vy = (double)i - center;
             
@@ -244,15 +242,18 @@ void run_test(int test_id, const double true_alpha[NUM_DEFORMATIONS]) {
         .alpha = {0.0, 0.0} // Starting guess: Ideal 'J'
     };
     
+    // CRITICAL: Initialize dynamic learning rate
+    double learning_rate = 0.0000001; 
     double gradient[NUM_DEFORMATIONS];
     Generated_Image generated_image;
     Feature_Vector generated_features;
     double loss;
+    double prev_loss = HUGE_VAL; // Initialize previous loss to a very large number
 
-    printf("\n--- Optimization Trace ---\n");
-    printf("It | Loss     | a_1 (Slant) | a_2 (Curve) | da_1 | da_2\n");
+    printf("\n--- Optimization Trace (Adaptive Learning Rate) ---\n");
+    printf("It | Loss     | L Rate  | a_1 (Slant) | a_2 (Curve)\n");
     printf("----------------------------------------------------------\n");
-
+    
     // Training/Estimation Loop (MUTABLE iterations)
     for (int t = 0; t <= ITERATIONS; t++) {
         // Forward Pass: Draw curve -> Extract Features
@@ -262,22 +263,29 @@ void run_test(int test_id, const double true_alpha[NUM_DEFORMATIONS]) {
         // Calculate Loss (IMMUTABLE operation)
         loss = calculate_feature_loss(generated_features, observed_features);
         
+        // Check for bouncing/overshooting and decay learning rate
+        if (loss > prev_loss * 1.001) { // If loss increased by more than 0.1%
+            learning_rate *= 0.5; // Halve the learning rate
+            // Optional: revert the last step to ensure we are still walking downhill
+            // alpha_hat.alpha[0] = prev_alpha[0];
+            // alpha_hat.alpha[1] = prev_alpha[1];
+        }
+
+        // Store current state for next iteration's check
+        prev_loss = loss;
+
         // Calculate Gradient (IMMUTABLE operation)
         calculate_gradient(observed_features, &alpha_hat, loss, gradient);
         
-        printf("%03d | %8.5f | %8.4f | %8.4f |", t, loss, alpha_hat.alpha[0], alpha_hat.alpha[1]);
+        printf("%04d | %8.5f | %7.8f | %8.4f | %8.4f\n", t, loss, learning_rate, alpha_hat.alpha[0], alpha_hat.alpha[1]);
 
         // Gradient Descent Update (MUTABLE operation on alpha_hat)
         if (t < ITERATIONS) {
-            const double delta_a1 = LEARNING_RATE * gradient[0];
-            const double delta_a2 = LEARNING_RATE * gradient[1];
+            const double delta_a1 = learning_rate * gradient[0];
+            const double delta_a2 = learning_rate * gradient[1];
             
             alpha_hat.alpha[0] -= delta_a1;
             alpha_hat.alpha[1] -= delta_a2;
-
-            printf(" %+.4f | %+.4f\n", delta_a1, delta_a2);
-        } else {
-            printf(" --- Final ---\n");
         }
     }
 
