@@ -4,17 +4,15 @@
 #include <math.h>
 #include <time.h> 
 
-// --- STB Image Configuration (DEFINED AS REQUESTED) ---
-// Note: In a real environment, you need these headers in your compilation path.
+// --- STB Image Configuration ---
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "stb_read.h"
+#include "stb_image.h"
 #include "stb_image_write.h"
 
-// Define M_PI explicitly (or use <tgmath.h> M_PI or <math.h> _USE_MATH_DEFINES)
 #define M_PI 3.14159265358979323846
 
-// --- Global Configuration (SAME AS BEFORE) ---
+// --- Global Configuration ---
 #define GRID_SIZE 32        
 #define NUM_DEFORMATIONS 2  
 #define NUM_VECTORS 16      
@@ -38,7 +36,7 @@
 #define GRAPH_HEIGHT IMG_SIZE 
 #define NUM_CHANNELS 3 
 
-// --- Data Structures (SAME AS BEFORE) ---
+// --- Data Structures ---
 
 typedef struct { double x; double y; } Point;
 typedef struct { const Point control_points[NUM_CONTROL_POINTS]; } Ideal_Curve_Params; 
@@ -62,11 +60,11 @@ typedef struct {
 } SegmentResult;
 
 
-// --- Memory Tracking Globals (SAME AS BEFORE) ---
+// --- Memory Tracking Globals ---
 size_t total_allocated_bytes = 0;
 size_t total_freed_bytes = 0;
 
-// --- Function Prototypes (SAME AS BEFORE) ---
+// --- Function Prototypes ---
 void* safe_malloc(size_t size);
 void safe_free(void *ptr, size_t size);
 void apply_deformation(Point *point, const double alpha[NUM_DEFORMATIONS]);
@@ -86,13 +84,13 @@ void set_pixel(unsigned char *buffer, int x, int y, int width, int height, unsig
 void get_pixel_color(double intensity, int is_error_map, unsigned char *r, unsigned char *g, unsigned char *b);
 void draw_text_placeholder_box(unsigned char *buffer, int buf_width, int buf_height, int x, int y, int width, int height, unsigned char r, unsigned char g, unsigned char b);
 void render_single_image_to_png(unsigned char *buffer, int buf_width, int buf_height, const Generated_Image img, int x_offset, int y_offset, int is_error_map);
-int load_image_stb(const char *filename, double **data_out, int *width_out, int *height_out); // Modified
+int load_image_stb(const char *filename, double **data_out, int *width_out, int *height_out); 
 void resize_segment(const double *full_data, int full_width, int full_height, 
                     int x_start, int x_end, int y_start, int y_end, 
                     Generated_Image segment_out);
 void project_histogram(const double *full_data, int width, int height, int orientation, double *hist_out);
 int find_zero_intervals(const double *hist, int size, int min_content_length, double threshold, Boundary *boundaries_out);
-int segment_image_naive(const double *full_data, int full_width, int full_height, SegmentResult *segments_out);
+int segment_image_naive(const double *full_data, int full_width, int full_height, SegmentResult *segments_out); // Segmentation logic revised
 void recognize_segment(SegmentResult *segment);
 void generate_segment_png(const SegmentResult *segments, int num_segments, const double *full_data, int full_width, int full_height);
 
@@ -287,7 +285,7 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
 };
 
 
-// --- Memory Wrapper Functions (SAME AS BEFORE) ---
+// --- Memory Wrapper Functions ---
 
 void* safe_malloc(size_t size) {
     void *ptr = malloc(size);
@@ -305,7 +303,7 @@ void safe_free(void *ptr, size_t size) {
 }
 
 
-// --- Core Recognition Functions (SAME AS BEFORE) ---
+// --- Core Recognition Functions ---
 
 void apply_deformation(Point *point, const double alpha[NUM_DEFORMATIONS]) {
     point->x = point->x + alpha[0] * (point->y - 0.5);
@@ -489,7 +487,7 @@ void run_optimization(const Generated_Image observed_image, const Feature_Vector
 }
 
 
-// --- PNG Rendering Functions (SAME AS BEFORE) ---
+// --- PNG Rendering Functions ---
 
 void set_pixel(unsigned char *buffer, int x, int y, int width, int height, unsigned char r, unsigned char g, unsigned char b) {
     if (x >= 0 && x < width && y >= 0 && y < height) {
@@ -552,20 +550,15 @@ void render_single_image_to_png(unsigned char *buffer, int buf_width, int buf_he
 }
 
 
-// --- Image Loading and Preprocessing (UPDATED) ---
+// --- Image Loading and Preprocessing ---
 
 int load_image_stb(const char *filename, double **data_out, int *width_out, int *height_out) {
     int channels = 0;
     
-    // Attempt to load the image as a single-channel (grayscale) 8-bit image
     unsigned char *img_data = stbi_load(filename, width_out, height_out, &channels, 1); 
 
     if (img_data == NULL) {
         fprintf(stderr, "Error: Failed to load image file '%s'. Ensure the file exists and is readable.\n", filename);
-        // Fallback to simulation for demonstration purposes IF this function were allowed to fail:
-        
-        // For strict implementation as requested, we return 0 on failure.
-        // To allow testing in environments that can't access files, you'd re-add the simulation block here.
         return 0; 
     }
     
@@ -579,9 +572,9 @@ int load_image_stb(const char *filename, double **data_out, int *width_out, int 
     }
 
     for (size_t i = 0; i < total_pixels; i++) {
-        // Normalize the 8-bit image data to [0.0, 1.0] and invert the intensity.
-        // Assuming the text is dark/black on a light/white background for typical OCR.
-        // If the original image has white text on a black background, use img_data[i] / 255.0
+        // Normalize the 8-bit image data to [0.0, 1.0].
+        // Since the image is black text (low value) on a white background (high value),
+        // we use 1.0 - value to invert it, making text content high intensity (~1.0).
         (*data_out)[i] = 1.0 - (img_data[i] / 255.0); 
     }
     
@@ -612,7 +605,7 @@ void resize_segment(const double *full_data, int full_width, int full_height,
 }
 
 
-// --- Segmentation Logic (SAME AS BEFORE) ---
+// --- Segmentation Logic (Thresholds Adjusted) ---
 
 void project_histogram(const double *full_data, int width, int height, int orientation, double *hist_out) {
     int hist_size = (orientation == 0) ? height : width; 
@@ -679,6 +672,8 @@ int segment_image_naive(const double *full_data, int full_width, int full_height
     Boundary line_boundaries[MAX_SEGMENTS];
     project_histogram(full_data, full_width, full_height, 0, h_hist);
     
+    // Revised Line Segmentation Parameters:
+    // Min line height: 1/15th of image height. Threshold: 0.01 (very sensitive to any content)
     int num_lines = find_zero_intervals(h_hist, full_height, full_height / 15, 0.01, line_boundaries);
     safe_free(h_hist, sizeof(double) * full_height);
     
@@ -699,7 +694,12 @@ int segment_image_naive(const double *full_data, int full_width, int full_height
         }
         
         Boundary letter_boundaries[MAX_SEGMENTS];
-        int num_letters = find_zero_intervals(v_hist, full_width, full_width / 40, 0.01, letter_boundaries);
+        
+        // Revised Letter Segmentation Parameters:
+        // Min letter width: 1/100th of image width (smaller chars allowed). Threshold: 0.01 (very sensitive)
+        int min_char_width = full_width / 100;
+        if (min_char_width < 5) min_char_width = 5; // Ensure a minimum sensible size
+        int num_letters = find_zero_intervals(v_hist, full_width, min_char_width, 0.01, letter_boundaries);
         safe_free(v_hist, sizeof(double) * full_width);
         
         printf("  Line %d (Y:[%d,%d]): Found %d letter(s).\n", l + 1, line_y_start, line_y_end, num_letters);
@@ -729,7 +729,7 @@ int segment_image_naive(const double *full_data, int full_width, int full_height
 }
 
 
-// --- Recognition Function (SAME AS BEFORE) ---
+// --- Recognition Function ---
 
 void recognize_segment(SegmentResult *segment) {
     Feature_Vector observed_features;
@@ -755,7 +755,7 @@ void recognize_segment(SegmentResult *segment) {
 }
 
 
-// --- PNG Rendering for Segmentation Output (SAME AS BEFORE) ---
+// --- PNG Rendering for Segmentation Output ---
 
 #define SEG_ROW_HEIGHT (IMG_SIZE + TEXT_HEIGHT + SET_SPACING) 
 #define SEG_PNG_WIDTH (IMG_SIZE * 2 + IMG_SPACING * 3 + SET_SPACING * 2) 
@@ -870,7 +870,7 @@ void generate_segment_png(const SegmentResult *segments, int num_segments, const
 }
 
 
-// --- Main Execution (SAME AS BEFORE) ---
+// --- Main Execution ---
 
 int main(void) {
     srand(42); 
@@ -880,7 +880,7 @@ int main(void) {
     int full_width = 0;
     int full_height = 0;
     
-    // Load Image (Now using stbi_load directly)
+    // Load Image
     if (!load_image_stb(input_filename, &full_image_data, &full_width, &full_height) || full_image_data == NULL) {
         fprintf(stderr, "Fatal Error: Image processing aborted.\n");
         return 1;
