@@ -2,13 +2,14 @@
 #include <stdlib.h>
 #include <math.h>
 
-// Define M_PI explicitly as it's not guaranteed by the C standard
+// Define M_PI and M_SQRT1_2 explicitly as they are non-standard extensions
 #define M_PI 3.14159265358979323846
+#define M_SQRT1_2 0.70710678118654752440
 
 // --- Global Configuration ---
 #define GRID_SIZE 16
 #define NUM_DEFORMATIONS 2 // alpha_1 (Slant), alpha_2 (Curvature)
-#define NUM_FEATURES 8     // ADDED: Using 8 directional projections for loss calculation
+#define NUM_FEATURES 8     // Using 8 directional projections for loss calculation
 #define NUM_POINTS 200
 #define LEARNING_RATE 0.001 // Stable step size
 #define ITERATIONS 100
