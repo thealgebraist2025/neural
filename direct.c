@@ -20,7 +20,7 @@
 #define NUM_FEATURES (NUM_VECTORS * NUM_BINS) 
 #define PIXEL_LOSS_WEIGHT 2.5 
 #define NUM_POINTS 200
-#define ITERATIONS 200      // DECREASED from 500 to 200 for 3-minute limit
+#define ITERATIONS 100      // DECREASED from 500 to 200 for 3-minute limit
 #define GRADIENT_EPSILON 0.01 
 #define NUM_IDEAL_CHARS 62  // 26 A-Z + 26 a-z + 10 0-9
 #define NUM_CONTROL_POINTS 9 
@@ -1085,7 +1085,7 @@ int main(void) {
     srand(42); 
 
     // Using the image from the context
-    const char *input_filename = "1000000809.jpg"; 
+    const char *input_filename = "test1.jpg"; 
     double *full_image_data = NULL;
     int full_width = 0;
     int full_height = 0;
