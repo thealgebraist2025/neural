@@ -14,9 +14,12 @@
 #define ITERATIONS 5000     // 5000 iterations for stable convergence
 #define GRADIENT_EPSILON 0.01 
 #define NUM_IDEAL_CHARS 5   // J, 1, 2, 3, 4
-#define NUM_TESTS 5         // One test case for each character
 
-// NEW: 8 segments require 9 control points (P0 to P8)
+// The number of tests will automatically be 5, one for each character,
+// but the user can modify this if needed.
+#define NUM_TESTS 5         
+
+// 8 segments require 9 control points (P0 to P8)
 #define NUM_CONTROL_POINTS 9 
 
 // --- Data Structures ---
@@ -71,13 +74,17 @@ const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {"J", "1", "2", "3", "4"};
 
 // Updated Ideal Templates using 9 control points (8 segments)
 const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
-    // 0: 'J' (Curved stroke down, hook left at bottom) - CORRECTED
+    // 0: 'J' (Curved stroke down, hook left at bottom) - FINAL IMPROVED CURVATURE
     [0] = {.control_points = {
-        {.x = 0.6, .y = 0.1}, {.x = 0.6, .y = 0.2}, {.x = 0.6, .y = 0.3}, {.x = 0.55, .y = 0.4}, 
-        {.x = 0.5, .y = 0.5}, {.x = 0.45, .y = 0.65}, // Vertical stem ends here
-        {.x = 0.4, .y = 0.8}, // Start of tight curve
-        {.x = 0.3, .y = 0.9}, // Bottom center of hook
-        {.x = 0.2, .y = 0.85} // Curve up to finish the hook
+        {.x = 0.6, .y = 0.1}, // P0: Top
+        {.x = 0.6, .y = 0.2}, 
+        {.x = 0.6, .y = 0.4}, 
+        {.x = 0.6, .y = 0.5}, // P3: Mid-stem (Vertical section ends)
+        {.x = 0.5, .y = 0.6}, // P4: Transition point, moving left
+        {.x = 0.4, .y = 0.75},// P5: Beginning of the deep curve
+        {.x = 0.3, .y = 0.9}, // P6: Absolute lowest and farthest left point
+        {.x = 0.4, .y = 0.85},// P7: Curling back up and right slightly
+        {.x = 0.5, .y = 0.8}  // P8: Final position, creating a wide, open hook
     }},
     
     // 1: '1' (Mostly vertical line)
@@ -271,7 +278,7 @@ void calculate_gradient(const Feature_Vector observed_features, const Deformatio
  */
 void generate_target_image(Generated_Image image_out, const double true_alpha[NUM_DEFORMATIONS], const Ideal_Curve_Params *const ideal_params, int add_noise) {
     // 1. Rasterize the TRUE deformed curve (Signal)
-    draw_curve(true_alpha, image_out, ideal_params);
+    draw_curve(true_alpha, image_out, ideal_params, 0); 
 
     // 2. Add random noise if requested
     if (add_noise) {
