@@ -12,7 +12,7 @@
 #define NUM_FEATURES 8     // Using 8 directional projections for loss calculation
 #define NUM_POINTS 200
 #define LEARNING_RATE 0.0000001 // CRITICAL FIX: Drastically reduced for stability in feature space
-#define ITERATIONS 300     // Increased to allow slower, stable steps to converge
+#define ITERATIONS 2000     // Increased to allow slower, stable steps to converge
 #define GRADIENT_EPSILON 0.01 
 
 // --- OCaml-like Immutability & Const Correctness ---
