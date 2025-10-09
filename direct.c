@@ -8,7 +8,7 @@
 // Note: In a real environment, you need these headers in your compilation path.
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "stb_image.h"
+#include "stb_read.h"
 
 // Define M_PI explicitly (or use <tgmath.h> M_PI or <math.h> _USE_MATH_DEFINES)
 #define M_PI 3.14159265358979323846
