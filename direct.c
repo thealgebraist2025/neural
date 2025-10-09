@@ -9,6 +9,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_read.h"
+#include "stb_image_write.h"
 
 // Define M_PI explicitly (or use <tgmath.h> M_PI or <math.h> _USE_MATH_DEFINES)
 #define M_PI 3.14159265358979323846
