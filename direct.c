@@ -21,13 +21,14 @@
 #define ITERATIONS 2000     
 #define GRADIENT_EPSILON 0.01 
 #define NUM_IDEAL_CHARS 36  
-#define NUM_TESTS 36        
+#define TESTS_PER_CHAR 8    // New: 8 random tests per character
+#define NUM_TESTS (NUM_IDEAL_CHARS * TESTS_PER_CHAR) // 36 * 8 = 288 total tests
 #define NUM_CONTROL_POINTS 9 
 #define MAX_PIXEL_ERROR (GRID_SIZE * GRID_SIZE) 
 
 // Loss history configuration
 #define LOSS_HISTORY_STEP 20
-#define LOSS_HISTORY_SIZE (ITERATIONS / LOSS_HISTORY_STEP + 1) // 2000/20 + 1 = 101
+#define LOSS_HISTORY_SIZE (ITERATIONS / LOSS_HISTORY_STEP + 1) // 101
 
 // --- Data Structures ---
 
@@ -50,7 +51,7 @@ typedef struct {
     Generated_Image best_estimated_image; Generated_Image best_diff_image;
 } TestResult;
 
-TestResult all_results[NUM_TESTS];
+TestResult all_results[NUM_TESTS]; // Array size increased to 288
 
 // --- Fixed Ideal Curves (A-Z, 0-9) ---
 const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {
@@ -59,8 +60,7 @@ const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"
 };
 
-// Templates are omitted for brevity, but needed for compilation.
-// A placeholder is used here; assume the previous detailed list is in the actual file.
+// Templates are omitted for brevity, but kept here for completeness.
 const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
     [0] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.3, .y = 0.3}, {.x = 0.2, .y = 0.5}, {.x = 0.3, .y = 0.6}, 
         {.x = 0.7, .y = 0.6}, {.x = 0.8, .y = 0.5}, {.x = 0.7, .y = 0.3}, {.x = 0.5, .y = 0.1}, 
@@ -443,20 +443,22 @@ void run_classification_test(int test_id, int true_char_index, const double true
     memcpy(result->true_alpha, true_alpha, sizeof(double) * NUM_DEFORMATIONS);
     const Ideal_Curve_Params *true_params = &IDEAL_TEMPLATES[true_char_index];
     
+    // 1. Generate clean true image
     generate_target_image(result->true_image, true_alpha, true_params, 0); 
     
+    // 2. Generate noisy observed image
     Generated_Image observed_image; 
     generate_target_image(observed_image, true_alpha, true_params, 1);
     memcpy(result->observed_image, observed_image, sizeof(Generated_Image));
     
+    // 3. Extract features from observed image
     Feature_Vector observed_features;
     extract_geometric_features(observed_image, observed_features);
     
-    // printf removed here to keep console clean during optimization, summarized later
-
     double min_feature_loss = HUGE_VAL;
     int best_match_index = -1;
     
+    // 4. Run optimization against ALL ideal character templates
     for (int i = 0; i < NUM_IDEAL_CHARS; i++) {
         run_optimization(observed_image, observed_features, i, &result->classification_results[i]);
 
@@ -468,45 +470,43 @@ void run_classification_test(int test_id, int true_char_index, const double true
 
     result->best_match_index = best_match_index;
 
+    // 5. Generate the best-fit image and difference image
     EstimationResult *best_fit = &result->classification_results[best_match_index];
     
     draw_curve(best_fit->estimated_alpha, result->best_estimated_image, &IDEAL_TEMPLATES[best_match_index]);
     calculate_difference_image(result->observed_image, result->best_estimated_image, result->best_diff_image);
 }
 
-#define CONSOLE_SUMMARY_LIMIT 36 // Print all 36 in the summary
 
-/**
- * @brief Prints a detailed summary table of all classification results to the console.
- */
+#define CONSOLE_SUMMARY_LIMIT NUM_TESTS // Print all 288 in the summary
+
 void summarize_results_console() {
     printf("\n\n=================================================================================================\n");
-    printf("                                  CLASSIFICATION SUMMARY (%d TESTS)                              \n", NUM_TESTS);
+    printf("                  CLASSIFICATION SUMMARY (%d CHARS * %d TESTS = %d TOTAL TESTS)                    \n", NUM_IDEAL_CHARS, TESTS_PER_CHAR, NUM_TESTS);
     printf("=================================================================================================\n");
     
-    printf(" ID | TRUE | PRED | Feat Loss (Best Fit) | TRUE $a_1$ | TRUE $a_2$ | EST $a_1$ | EST $a_2$ | PIXEL ERROR %% | Result \n");
-    printf("----|------|------|----------------------|-----------|-----------|-----------|-----------|---------------|--------\n");
+    printf("  ID | TRUE | PRED | Feat Loss (Best Fit) | TRUE $a_1$ | TRUE $a_2$ | EST $a_1$ | EST $a_2$ | PIXEL ERROR %% | Result \n");
+    printf("-----|------|------|----------------------|-----------|-----------|-----------|-----------|---------------|--------\n");
 
     int correct_classifications = 0;
     for (int k = 0; k < CONSOLE_SUMMARY_LIMIT; k++) {
         TestResult *r = &all_results[k];
         const EstimationResult *best_fit = &r->classification_results[r->best_match_index];
         
-        // Calculate the pixel error percentage
         double pixel_error_sum = calculate_pixel_error_sum(r->observed_image, r->best_estimated_image);
         double pixel_error_percent = (pixel_error_sum / MAX_PIXEL_ERROR) * 100.0;
 
         int is_correct = (r->true_char_index == r->best_match_index);
         if (is_correct) correct_classifications++;
 
-        printf("%3d | %4s | %4s | %20.4f | %9.4f | %9.4f | %9.4f | %9.4f | %13.2f | %6s\n", 
+        printf("%4d | %4s | %4s | %20.4f | %9.4f | %9.4f | %9.4f | %9.4f | %13.2f | %6s\n", 
                r->id, CHAR_NAMES[r->true_char_index], CHAR_NAMES[r->best_match_index],
                best_fit->final_loss, 
                r->true_alpha[0], r->true_alpha[1], 
                best_fit->estimated_alpha[0], best_fit->estimated_alpha[1], 
                pixel_error_percent, is_correct ? "CORRECT" : "WRONG");
     }
-    printf("----|------|------|----------------------|-----------|-----------|-----------|-----------|---------------|--------\n");
+    printf("-----|------|------|----------------------|-----------|-----------|-----------|-----------|---------------|--------\n");
     printf("Overall Accuracy: %d/%d (%.2f%%)\n", correct_classifications, NUM_TESTS, 
            (double)correct_classifications / NUM_TESTS * 100.0);
     printf("=================================================================================================\n");
@@ -522,14 +522,12 @@ void summarize_results_console() {
 #define GRAPH_WIDTH 100 
 #define GRAPH_HEIGHT IMG_SIZE 
 
-// Width for 4 images, 3 spacings, the graph, and spacing around elements
+// PNG Dimensions (WIDTH is the same, HEIGHT is scaled up for 288 tests)
 #define PNG_WIDTH (IMG_SIZE * 4 + IMG_SPACING * 3 + GRAPH_WIDTH + SET_SPACING * 2) 
-// Height for 36 sets, top title, and spacing between sets
 #define PNG_HEIGHT (TEXT_HEIGHT + (IMG_SIZE + TEXT_HEIGHT + SET_SPACING) * NUM_TESTS) 
 #define NUM_CHANNELS 3 
 
 // --- PNG Rendering Functions ---
-// (Functions set_pixel, get_pixel_color, render_single_image_to_png, draw_text_placeholder are kept the same)
 
 void set_pixel(unsigned char *buffer, int x, int y, int width, unsigned char r, unsigned char g, unsigned char b) {
     if (x >= 0 && x < width && y >= 0 && y < PNG_HEIGHT) {
@@ -643,36 +641,44 @@ void draw_loss_graph(unsigned char *buffer, int buf_width, int x_offset, int y_o
 }
 
 void render_test_to_png(unsigned char *buffer, int buf_width, const TestResult *r, int x_set, int y_set) {
+    // Note: The loss graph displayed is for the optimization run using the TRUE template (r->true_char_index),
+    // as it represents the optimization targeting the correct shape.
     const EstimationResult *true_char_fit = &r->classification_results[r->true_char_index]; 
     const EstimationResult *best_fit = &r->classification_results[r->best_match_index]; 
-    char label[150];
+    char label[180];
     double pixel_error_sum = calculate_pixel_error_sum(r->observed_image, r->best_estimated_image);
     double pixel_error_percent = (pixel_error_sum / MAX_PIXEL_ERROR) * 100.0;
     
-    sprintf(label, "ID %02d: T:'%s' (%.2f,%.2f) | P:'%s' | $a_1$=%.2f, $a_2$=%.2f | Err:%.2f%% (%s)", 
+    // Label showing True Char, Predicted Char, True Alpha, Best Fit Alpha, and Pixel Error
+    sprintf(label, "ID %03d: T:'%s'(%.2f,%.2f) | P:'%s'($a_1$=%.2f,$a_2$=%.2f) | Err:%.2f%% (%s)", 
             r->id, CHAR_NAMES[r->true_char_index], r->true_alpha[0], r->true_alpha[1], 
             CHAR_NAMES[r->best_match_index], best_fit->estimated_alpha[0], best_fit->estimated_alpha[1],
             pixel_error_percent, 
-            (r->true_char_index == r->best_match_index) ? "YES" : "NO");
+            (r->true_char_index == r->best_match_index) ? "CORRECT" : "WRONG");
     
     int img_step = IMG_SIZE + IMG_SPACING;
     int current_x = x_set;
     
+    // 1. TRUE CLEAN
     render_single_image_to_png(buffer, buf_width, r->true_image, current_x, y_set + TEXT_HEIGHT, 0); 
     current_x += img_step;
     
+    // 2. OBSERVED NOISY
     render_single_image_to_png(buffer, buf_width, r->observed_image, current_x, y_set + TEXT_HEIGHT, 0);
     current_x += img_step;
     
+    // 3. BEST ESTIMATED
     render_single_image_to_png(buffer, buf_width, r->best_estimated_image, current_x, y_set + TEXT_HEIGHT, 0);
     current_x += img_step;
     
+    // 4. ERROR DIFF
     render_single_image_to_png(buffer, buf_width, r->best_diff_image, current_x, y_set + TEXT_HEIGHT, 1);
     current_x += img_step;
 
-    // Use the loss history for the TRUE character (index r->true_char_index) 
+    // 5. Loss Graph (for the TRUE character optimization)
     draw_loss_graph(buffer, buf_width, current_x + IMG_SPACING, y_set + TEXT_HEIGHT, true_char_fit);
 
+    // 6. Draw Text Label
     draw_text_placeholder(buffer, buf_width, x_set, y_set + 5, label, 255, 255, 255);
 }
 
@@ -684,6 +690,7 @@ void generate_png_file() {
         return;
     }
 
+    // Draw main column titles
     int title_y = 5;
     int current_x = SET_SPACING + IMG_SIZE / 2;
     int img_step = IMG_SIZE + IMG_SPACING;
@@ -696,6 +703,7 @@ void generate_png_file() {
     
     int x_set = SET_SPACING; 
     
+    // Render all 288 test sets vertically
     for (int k = 0; k < NUM_TESTS; k++) {
         int y_set = TEXT_HEIGHT + k * (IMG_SIZE + TEXT_HEIGHT + SET_SPACING);
         render_test_to_png(buffer, PNG_WIDTH, &all_results[k], x_set, y_set);
@@ -708,7 +716,7 @@ void generate_png_file() {
     if (success) {
         printf("\n\n======================================================\n");
         printf("PNG Output Complete: network_full_vertical.png created.\n");
-        printf("Size: %d x %d pixels.\n", PNG_WIDTH, PNG_HEIGHT);
+        printf("Size: %d x %d pixels (Total Rows: %d).\n", PNG_WIDTH, PNG_HEIGHT, NUM_TESTS);
         printf("======================================================\n");
     } else {
         printf("\nERROR: Failed to write network_full_vertical.png using stb_image_write.\n");
@@ -724,20 +732,30 @@ int main(void) {
     const double MIN_ALPHA = -0.15;
     const double MAX_ALPHA = 0.15;
 
-    printf("Starting %d classification tests with %d iterations each...\n", NUM_TESTS, ITERATIONS);
+    printf("Starting %d classification tests (%d chars * %d trials) with %d iterations each...\n", NUM_TESTS, NUM_IDEAL_CHARS, TESTS_PER_CHAR, ITERATIONS);
 
-    for (int i = 0; i < NUM_TESTS; i++) {
-        double true_alpha[NUM_DEFORMATIONS];
-        true_alpha[0] = MIN_ALPHA + ((double)rand() / RAND_MAX) * (MAX_ALPHA - MIN_ALPHA);
-        true_alpha[1] = MIN_ALPHA + ((double)rand() / RAND_MAX) * (MAX_ALPHA - MIN_ALPHA);
-        
-        run_classification_test(i + 1, i, true_alpha, &all_results[i]);
+    int test_counter = 0;
+    // Outer loop: Iterate through all 36 characters
+    for (int char_index = 0; char_index < NUM_IDEAL_CHARS; char_index++) {
+        // Inner loop: Run 8 tests with random parameters for each character
+        for (int test_run = 0; test_run < TESTS_PER_CHAR; test_run++) {
+            double true_alpha[NUM_DEFORMATIONS];
+            
+            // Generate random deformation in [-0.15, 0.15]
+            true_alpha[0] = MIN_ALPHA + ((double)rand() / RAND_MAX) * (MAX_ALPHA - MIN_ALPHA);
+            true_alpha[1] = MIN_ALPHA + ((double)rand() / RAND_MAX) * (MAX_ALPHA - MIN_ALPHA);
+            
+            run_classification_test(test_counter + 1, char_index, true_alpha, &all_results[test_counter]);
+            
+            test_counter++;
+            if (test_counter % (NUM_IDEAL_CHARS * 2) == 0) {
+                 printf("Processed %d/%d tests...\n", test_counter, NUM_TESTS);
+            }
+        }
     }
     
-    // **Restored Console Summary**
     summarize_results_console();
 
-    // **Retained PNG Output**
     generate_png_file();
 
     return 0;
