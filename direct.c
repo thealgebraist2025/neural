@@ -18,17 +18,17 @@
 #define NUM_FEATURES (NUM_VECTORS * NUM_BINS) 
 #define PIXEL_LOSS_WEIGHT 5.0 
 #define NUM_POINTS 200
-#define ITERATIONS 2000     
+#define ITERATIONS 500      // REDUCED from 2000 to 500 for speed
 #define GRADIENT_EPSILON 0.01 
 #define NUM_IDEAL_CHARS 36  
-#define TESTS_PER_CHAR 8    // New: 8 random tests per character
+#define TESTS_PER_CHAR 8    
 #define NUM_TESTS (NUM_IDEAL_CHARS * TESTS_PER_CHAR) // 36 * 8 = 288 total tests
 #define NUM_CONTROL_POINTS 9 
 #define MAX_PIXEL_ERROR (GRID_SIZE * GRID_SIZE) 
 
 // Loss history configuration
-#define LOSS_HISTORY_STEP 20
-#define LOSS_HISTORY_SIZE (ITERATIONS / LOSS_HISTORY_STEP + 1) // 101
+#define LOSS_HISTORY_STEP 5 // Adjusted for fewer iterations
+#define LOSS_HISTORY_SIZE (ITERATIONS / LOSS_HISTORY_STEP + 1) // 500/5 + 1 = 101
 
 // --- Data Structures ---
 
@@ -51,7 +51,7 @@ typedef struct {
     Generated_Image best_estimated_image; Generated_Image best_diff_image;
 } TestResult;
 
-TestResult all_results[NUM_TESTS]; // Array size increased to 288
+TestResult all_results[NUM_TESTS]; 
 
 // --- Fixed Ideal Curves (A-Z, 0-9) ---
 const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {
@@ -60,7 +60,8 @@ const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"
 };
 
-// Templates are omitted for brevity, but kept here for completeness.
+// Templates are included here for completeness but are very long.
+// (The full template array from the previous version remains here)
 const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
     [0] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.3, .y = 0.3}, {.x = 0.2, .y = 0.5}, {.x = 0.3, .y = 0.6}, 
         {.x = 0.7, .y = 0.6}, {.x = 0.8, .y = 0.5}, {.x = 0.7, .y = 0.3}, {.x = 0.5, .y = 0.1}, 
@@ -389,7 +390,7 @@ void run_optimization(const Generated_Image observed_image, const Feature_Vector
     const Ideal_Curve_Params *ideal_params = &IDEAL_TEMPLATES[ideal_char_index];
     
     Deformation_Coefficients alpha_hat = { .alpha = {0.0, 0.0} };
-    double learning_rate = 0.00000005; 
+    double learning_rate = 0.0000001; // Increased learning rate for faster convergence
     const double min_learning_rate = 0.00000000005;
     double gradient[NUM_DEFORMATIONS];
     Generated_Image generated_image;
@@ -478,7 +479,7 @@ void run_classification_test(int test_id, int true_char_index, const double true
 }
 
 
-#define CONSOLE_SUMMARY_LIMIT NUM_TESTS // Print all 288 in the summary
+#define CONSOLE_SUMMARY_LIMIT NUM_TESTS 
 
 void summarize_results_console() {
     printf("\n\n=================================================================================================\n");
@@ -579,8 +580,10 @@ void render_single_image_to_png(unsigned char *buffer, int buf_width, const Gene
 }
 
 void draw_text_placeholder(unsigned char *buffer, int buf_width, int x, int y, const char* text, unsigned char r, unsigned char g, unsigned char b) {
-    set_pixel(buffer, x, y, buf_width, r, g, b);
-    for(int i = 1; i < 50; i++) {
+    // This function provides a minimal visual representation for the text label
+    // by drawing a colored line segment.
+    int line_len = 20; 
+    for(int i = 0; i < line_len; i++) {
         set_pixel(buffer, x + i, y, buf_width, r, g, b);
     }
 }
@@ -595,11 +598,13 @@ void draw_loss_graph(unsigned char *buffer, int buf_width, int x_offset, int y_o
     }
     if (max_loss < 1.0) max_loss = 1.0; 
 
+    // Draw background
     for(int py = 0; py < GRAPH_HEIGHT; py++) {
         for(int px = 0; px < GRAPH_WIDTH; px++) {
             set_pixel(buffer, x_offset + px, y_offset + py, buf_width, 20, 20, 20); 
         }
     }
+    // Draw axes
     for(int i = 0; i < GRAPH_WIDTH; i++) set_pixel(buffer, x_offset + i, y_offset + GRAPH_HEIGHT - 1, buf_width, 255, 255, 255);
     for(int i = 0; i < GRAPH_HEIGHT; i++) set_pixel(buffer, x_offset, y_offset + i, buf_width, 255, 255, 255);
 
@@ -627,6 +632,7 @@ void draw_loss_graph(unsigned char *buffer, int buf_width, int x_offset, int y_o
             int px = prev_x;
             int py = prev_y;
 
+            // Simple line drawing (Bresenham's)
             while(1) {
                 set_pixel(buffer, px, py, buf_width, 50, 255, 50); 
 
@@ -641,8 +647,6 @@ void draw_loss_graph(unsigned char *buffer, int buf_width, int x_offset, int y_o
 }
 
 void render_test_to_png(unsigned char *buffer, int buf_width, const TestResult *r, int x_set, int y_set) {
-    // Note: The loss graph displayed is for the optimization run using the TRUE template (r->true_char_index),
-    // as it represents the optimization targeting the correct shape.
     const EstimationResult *true_char_fit = &r->classification_results[r->true_char_index]; 
     const EstimationResult *best_fit = &r->classification_results[r->best_match_index]; 
     char label[180];
@@ -678,7 +682,7 @@ void render_test_to_png(unsigned char *buffer, int buf_width, const TestResult *
     // 5. Loss Graph (for the TRUE character optimization)
     draw_loss_graph(buffer, buf_width, current_x + IMG_SPACING, y_set + TEXT_HEIGHT, true_char_fit);
 
-    // 6. Draw Text Label
+    // 6. Draw Text Label placeholder
     draw_text_placeholder(buffer, buf_width, x_set, y_set + 5, label, 255, 255, 255);
 }
 
@@ -690,7 +694,7 @@ void generate_png_file() {
         return;
     }
 
-    // Draw main column titles
+    // Draw main column titles (placeholder text only)
     int title_y = 5;
     int current_x = SET_SPACING + IMG_SIZE / 2;
     int img_step = IMG_SIZE + IMG_SPACING;
@@ -727,6 +731,10 @@ void generate_png_file() {
 // --- Main Execution ---
 
 int main(void) {
+    // Note: To enforce a *strict* 4-minute limit, you would typically use OS-specific functions
+    // (e.g., setitimer or alarm on POSIX, or threading/timers on Windows). 
+    // This revision focuses on drastic runtime reduction via iteration count.
+
     srand(42); 
 
     const double MIN_ALPHA = -0.15;
@@ -735,13 +743,11 @@ int main(void) {
     printf("Starting %d classification tests (%d chars * %d trials) with %d iterations each...\n", NUM_TESTS, NUM_IDEAL_CHARS, TESTS_PER_CHAR, ITERATIONS);
 
     int test_counter = 0;
-    // Outer loop: Iterate through all 36 characters
+    
     for (int char_index = 0; char_index < NUM_IDEAL_CHARS; char_index++) {
-        // Inner loop: Run 8 tests with random parameters for each character
         for (int test_run = 0; test_run < TESTS_PER_CHAR; test_run++) {
             double true_alpha[NUM_DEFORMATIONS];
             
-            // Generate random deformation in [-0.15, 0.15]
             true_alpha[0] = MIN_ALPHA + ((double)rand() / RAND_MAX) * (MAX_ALPHA - MIN_ALPHA);
             true_alpha[1] = MIN_ALPHA + ((double)rand() / RAND_MAX) * (MAX_ALPHA - MIN_ALPHA);
             
