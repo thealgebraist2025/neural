@@ -6,7 +6,7 @@
 
 // --- STB Image Write Configuration ---
 #define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "stb_image_write.h"
+//#include "stb_image_write.h"
 
 // --- STB Image Read Configuration (Placeholder) ---
 // We can't actually include this and load an image, but define the implementation guard
