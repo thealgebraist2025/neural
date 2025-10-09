@@ -3,7 +3,7 @@
 #include <string.h>
 #include <math.h>
 
-// Define M_PI explicitly as it is a non-standard extension
+// Define M_PI explicitly
 #define M_PI 3.14159265358979323846
 
 // --- Global Configuration ---
@@ -13,8 +13,8 @@
 #define NUM_POINTS 200
 #define ITERATIONS 5000     // 5000 iterations for stable convergence
 #define GRADIENT_EPSILON 0.01 
-#define NUM_TESTS 64        // We still run 64 random test cases
-#define SVG_RENDER_LIMIT 8  // CRITICAL: New limit for SVG output
+#define NUM_IDEAL_CHARS 5   // J, 1, 2, 3, 4
+#define NUM_TESTS 5         // One test case for each character
 
 // --- Data Structures ---
 
@@ -33,33 +33,51 @@ typedef struct {
     double alpha[NUM_DEFORMATIONS]; 
 } Deformation_Coefficients;
 
-typedef const double Observed_Image[GRID_SIZE][GRID_SIZE]; 
 typedef double Generated_Image[GRID_SIZE][GRID_SIZE]; 
 typedef double Feature_Vector[NUM_FEATURES]; 
 
-// Structure to hold results for final summary
+// Structure to hold one potential estimation result (Template vs. Observed)
 typedef struct {
-    double true_alpha[NUM_DEFORMATIONS];
     double estimated_alpha[NUM_DEFORMATIONS];
-    double true_image[GRID_SIZE][GRID_SIZE];      // New: Clean image of true parameters
-    double observed_image[GRID_SIZE][GRID_SIZE];
-    double estimated_image[GRID_SIZE][GRID_SIZE];
-    double diff_image[GRID_SIZE][GRID_SIZE];
     double final_loss;
+} EstimationResult;
+
+// Structure to hold results for one full test case (classification results)
+typedef struct {
     int id;
+    int true_char_index; // Index of the true character (0='J', 1='1', ...)
+    int best_match_index; // Index of the character with the minimum loss
+    double true_alpha[NUM_DEFORMATIONS];
+    double true_image[GRID_SIZE][GRID_SIZE];
+    double observed_image[GRID_SIZE][GRID_SIZE];
+    
+    // Stores the results of running the observation against all 5 ideal templates
+    EstimationResult classification_results[NUM_IDEAL_CHARS]; 
+    
+    // The final estimated image and diff image based on the BEST MATCH
+    Generated_Image best_estimated_image;
+    Generated_Image best_diff_image;
 } TestResult;
 
 // Global storage for all test results
 TestResult all_results[NUM_TESTS];
 
+// --- Fixed Ideal Curves ('J', '1', '2', '3', '4') ---
 
-// --- Fixed Ideal Curve and Basis Functions ---
+// Lookup table for character names
+const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {"J", "1", "2", "3", "4"};
 
-// Define the Ideal 'J' form in normalized coordinates [0, 1]
-const Ideal_Curve_Params IDEAL_J = {
-    .stroke_1_start = {.x = 0.5, .y = 0.1}, 
-    .stroke_1_mid = {.x = 0.5, .y = 0.7},   
-    .stroke_1_end = {.x = 0.2, .y = 0.9}    
+const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
+    // 0: 'J' (Curve)
+    [0] = {.stroke_1_start = {.x = 0.5, .y = 0.1}, .stroke_1_mid = {.x = 0.5, .y = 0.7}, .stroke_1_end = {.x = 0.2, .y = 0.9}},
+    // 1: '1' (Line)
+    [1] = {.stroke_1_start = {.x = 0.5, .y = 0.1}, .stroke_1_mid = {.x = 0.5, .y = 0.5}, .stroke_1_end = {.x = 0.5, .y = 0.9}},
+    // 2: '2' (S-curve approximation)
+    [2] = {.stroke_1_start = {.x = 0.2, .y = 0.1}, .stroke_1_mid = {.x = 0.8, .y = 0.5}, .stroke_1_end = {.x = 0.2, .y = 0.9}},
+    // 3: '3' (Double arc approximation)
+    [3] = {.stroke_1_start = {.x = 0.2, .y = 0.1}, .stroke_1_mid = {.x = 0.7, .y = 0.5}, .stroke_1_end = {.x = 0.2, .y = 0.9}},
+    // 4: '4' (Zig-zag approximation)
+    [4] = {.stroke_1_start = {.x = 0.8, .y = 0.1}, .stroke_1_mid = {.x = 0.2, .y = 0.6}, .stroke_1_end = {.x = 0.8, .y = 0.9}}
 };
 
 /**
@@ -74,7 +92,7 @@ void apply_deformation(Point *point, const double alpha[NUM_DEFORMATIONS]) {
 }
 
 /**
- * @brief Generates a point on the 'J' curve using the ideal form and deformations.
+ * @brief Generates a point on the curve using the ideal form and deformations.
  */
 Point get_deformed_point(const double t, const Ideal_Curve_Params *const params, const double alpha[NUM_DEFORMATIONS]) {
     Point p = {.x = 0.0, .y = 0.0};
@@ -102,7 +120,7 @@ Point get_deformed_point(const double t, const Ideal_Curve_Params *const params,
 /**
  * @brief Rasterizes the deformed curve onto the image grid (Forward Model G).
  */
-void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img) {
+void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img, const Ideal_Curve_Params *const ideal_params) {
     // Clear the canvas
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
@@ -113,7 +131,7 @@ void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img) {
     // Sample and draw points
     for (int i = 0; i <= NUM_POINTS; i++) {
         const double t = (double)i / NUM_POINTS;
-        const Point current_p = get_deformed_point(t, &IDEAL_J, alpha);
+        const Point current_p = get_deformed_point(t, ideal_params, alpha);
 
         // Main pixel
         const int px = (int)round(current_p.x);
@@ -157,7 +175,7 @@ void extract_geometric_features(const Generated_Image img, Feature_Vector featur
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
             const double intensity = img[i][j];
-            if (intensity < 0.1) continue; // Skip near-background pixels
+            if (intensity < 0.1) continue; 
 
             // Vector from center to pixel (j is x-axis, i is y-axis)
             const double vx = (double)j - center;
@@ -188,7 +206,7 @@ double calculate_feature_loss(const Feature_Vector generated, const Feature_Vect
 /**
  * @brief Simulates the Gradient calculation using Finite Differences.
  */
-void calculate_gradient(const Feature_Vector observed_features, const Deformation_Coefficients *const alpha, const double loss_base, double grad_out[NUM_DEFORMATIONS]) {
+void calculate_gradient(const Feature_Vector observed_features, const Deformation_Coefficients *const alpha, const double loss_base, double grad_out[NUM_DEFORMATIONS], const Ideal_Curve_Params *const ideal_params) {
     const double epsilon = GRADIENT_EPSILON; 
     Generated_Image generated_img_perturbed; 
     Feature_Vector generated_features_perturbed; 
@@ -199,7 +217,7 @@ void calculate_gradient(const Feature_Vector observed_features, const Deformatio
         alpha_perturbed.alpha[k] += epsilon; 
 
         // Forward Pass: Draw curve -> Extract Features
-        draw_curve(alpha_perturbed.alpha, generated_img_perturbed);
+        draw_curve(alpha_perturbed.alpha, generated_img_perturbed, ideal_params);
         extract_geometric_features(generated_img_perturbed, generated_features_perturbed);
         
         // Calculate Loss_perturbed (Feature Loss)
@@ -210,14 +228,90 @@ void calculate_gradient(const Feature_Vector observed_features, const Deformatio
     }
 }
 
-// --- Image Utility Functions ---
+/**
+ * @brief Creates a synthetic image based on true parameters and noise.
+ */
+void generate_target_image(Generated_Image image_out, const double true_alpha[NUM_DEFORMATIONS], const Ideal_Curve_Params *const ideal_params, int add_noise) {
+    // 1. Rasterize the TRUE deformed curve (Signal)
+    draw_curve(true_alpha, image_out, ideal_params);
 
-void print_image_row(const double image[GRID_SIZE][GRID_SIZE], int i) {
-    for (int j = 0; j < GRID_SIZE; j++) {
-        if (image[i][j] < 0.3) printf(" ");
-        else if (image[i][j] < 0.6) printf(":");
-        else printf("#");
+    // 2. Add random noise if requested
+    if (add_noise) {
+        for (int i = 0; i < GRID_SIZE; i++) {
+            for (int j = 0; j < GRID_SIZE; j++) {
+                // White noise [-0.15, 0.15]
+                double noise = ((double)rand() / RAND_MAX - 0.5) * 0.3; 
+                image_out[i][j] = fmax(0.0, fmin(1.0, image_out[i][j] + noise));
+            }
+        }
     }
+}
+
+/**
+ * @brief Runs a single optimization of a test image against one ideal template.
+ */
+void run_optimization(const Feature_Vector observed_features, int ideal_char_index, EstimationResult *result, int print_trace) {
+    const Ideal_Curve_Params *ideal_params = &IDEAL_TEMPLATES[ideal_char_index];
+    
+    // Initialization (MUTABLE data)
+    Deformation_Coefficients alpha_hat = {
+        .alpha = {0.0, 0.0} // Starting guess: Ideal (zero deformation)
+    };
+    
+    // Dynamic learning rate initialization and floor
+    double learning_rate = 0.0000001; 
+    const double min_learning_rate = 0.0000000001;
+    double gradient[NUM_DEFORMATIONS];
+    Generated_Image generated_image;
+    Feature_Vector generated_features;
+    double loss;
+    double prev_loss = HUGE_VAL; 
+
+    if (print_trace) {
+        printf("\n    --- Optimizing against '%s' ---\n", CHAR_NAMES[ideal_char_index]);
+        printf("    It | Loss     | L Rate  | a_1 (Slant) | a_2 (Curve)\n");
+        printf("    ------------------------------------------------------\n");
+    }
+
+    // Training/Estimation Loop 
+    for (int t = 0; t <= ITERATIONS; t++) {
+        // Forward Pass: Draw curve -> Extract Features
+        draw_curve(alpha_hat.alpha, generated_image, ideal_params);
+        extract_geometric_features(generated_image, generated_features);
+        
+        // Calculate Loss 
+        loss = calculate_feature_loss(generated_features, observed_features);
+        
+        // Check for bouncing/overshooting and decay learning rate
+        if (loss > prev_loss * 1.001 && learning_rate > min_learning_rate) { 
+            learning_rate *= 0.5; // Halve the learning rate
+        }
+
+        prev_loss = loss;
+
+        // Calculate Gradient 
+        calculate_gradient(observed_features, &alpha_hat, loss, gradient, ideal_params);
+        
+        // Print progress only every 200 iterations, and at start/end
+        if (print_trace && (t % 200 == 0 || t == ITERATIONS)) {
+            printf("    %04d | %8.5f | %7.8f | %8.4f | %8.4f\n", t, loss, learning_rate, alpha_hat.alpha[0], alpha_hat.alpha[1]);
+        }
+
+        // Gradient Descent Update
+        if (t < ITERATIONS) {
+            double step_rate = (learning_rate > min_learning_rate) ? learning_rate : min_learning_rate;
+            
+            const double delta_a1 = step_rate * gradient[0];
+            const double delta_a2 = step_rate * gradient[1];
+            
+            alpha_hat.alpha[0] -= delta_a1;
+            alpha_hat.alpha[1] -= delta_a2;
+        }
+    }
+
+    // Store Final Results
+    result->final_loss = loss;
+    memcpy(result->estimated_alpha, alpha_hat.alpha, sizeof(double) * NUM_DEFORMATIONS);
 }
 
 /**
@@ -233,162 +327,115 @@ void calculate_difference_image(const Generated_Image obs, const Generated_Image
 }
 
 /**
- * @brief Creates a synthetic observed image with known deformation and noise.
- * If 'add_noise' is false, it returns the clean, true image.
+ * @brief Runs one full classification test against all ideal characters.
  */
-void generate_target_image(Generated_Image image_out, const double true_alpha[NUM_DEFORMATIONS], int add_noise) {
-    // 1. Rasterize the TRUE deformed curve (Signal)
-    draw_curve(true_alpha, image_out);
-
-    // 2. Add random noise if requested
-    if (add_noise) {
-        for (int i = 0; i < GRID_SIZE; i++) {
-            for (int j = 0; j < GRID_SIZE; j++) {
-                // White noise [-0.15, 0.15]
-                double noise = ((double)rand() / RAND_MAX - 0.5) * 0.3; 
-                image_out[i][j] = fmax(0.0, fmin(1.0, image_out[i][j] + noise));
-            }
-        }
-    }
-}
-
-// --- Test Runner ---
-
-void run_test(int test_id, const double true_alpha[NUM_DEFORMATIONS], TestResult *result) {
-    // Copy true parameters to result structure
+void run_classification_test(int test_id, int true_char_index, const double true_alpha[NUM_DEFORMATIONS], TestResult *result) {
     result->id = test_id;
+    result->true_char_index = true_char_index;
     memcpy(result->true_alpha, true_alpha, sizeof(double) * NUM_DEFORMATIONS);
-
+    const Ideal_Curve_Params *true_params = &IDEAL_TEMPLATES[true_char_index];
+    
     // 1. Generate the CLEAN True Image and store it
-    generate_target_image(result->true_image, true_alpha, 0); 
+    generate_target_image(result->true_image, true_alpha, true_params, 0); 
     
     // 2. Generate the NOISY Observed Image and store it
     Generated_Image observed_image; 
-    generate_target_image(observed_image, true_alpha, 1);
+    generate_target_image(observed_image, true_alpha, true_params, 1);
     memcpy(result->observed_image, observed_image, sizeof(Generated_Image));
     
-    // Extract the target features once
+    // 3. Extract the TARGET features once
     Feature_Vector observed_features;
     extract_geometric_features(observed_image, observed_features);
     
-    // Console output for the start of the test
     printf("\n======================================================\n");
-    printf("TEST %02d/%02d: Target Slant (a_1)=%.4f, Curve (a_2)=%.4f\n", 
-           test_id, NUM_TESTS, true_alpha[0], true_alpha[1]);
+    printf("TEST %02d/%02d (TRUE: '%s'): Slant (a_1)=%.4f, Curve (a_2)=%.4f\n", 
+           test_id, NUM_TESTS, CHAR_NAMES[true_char_index], true_alpha[0], true_alpha[1]);
 
-    // Initialization (MUTABLE data)
-    Deformation_Coefficients alpha_hat = {
-        .alpha = {0.0, 0.0} // Starting guess: Ideal 'J'
-    };
+    // 4. Run Optimization against ALL ideal templates
+    double min_loss = HUGE_VAL;
+    int best_match_index = -1;
     
-    // Dynamic learning rate initialization and floor
-    double learning_rate = 0.0000001; 
-    const double min_learning_rate = 0.0000000001; // 1e-10 floor
-    double gradient[NUM_DEFORMATIONS];
-    Generated_Image generated_image;
-    Feature_Vector generated_features;
-    double loss;
-    double prev_loss = HUGE_VAL; 
-
-    printf("\n--- Optimization Trace (L Rate Decay) ---\n");
-    printf("It | Loss     | L Rate  | a_1 (Slant) | a_2 (Curve)\n");
-    printf("----------------------------------------------------------\n");
-    
-    // Training/Estimation Loop 
-    for (int t = 0; t <= ITERATIONS; t++) {
-        // Forward Pass: Draw curve -> Extract Features
-        draw_curve(alpha_hat.alpha, generated_image);
-        extract_geometric_features(generated_image, generated_features);
+    for (int i = 0; i < NUM_IDEAL_CHARS; i++) {
+        // Print trace only for the true character match for brevity
+        int print_trace = (i == true_char_index);
         
-        // Calculate Loss 
-        loss = calculate_feature_loss(generated_features, observed_features);
-        
-        // Check for bouncing/overshooting and decay learning rate
-        if (loss > prev_loss * 1.001 && learning_rate > min_learning_rate) { 
-            learning_rate *= 0.5; // Halve the learning rate
-        }
+        run_optimization(observed_features, i, &result->classification_results[i], print_trace);
 
-        // Store current loss for next iteration's check
-        prev_loss = loss;
-
-        // Calculate Gradient 
-        calculate_gradient(observed_features, &alpha_hat, loss, gradient);
-        
-        // Print progress only every 100 iterations, and at start/end
-        if (t % 100 == 0 || t == ITERATIONS) {
-            printf("%04d | %8.5f | %7.8f | %8.4f | %8.4f\n", t, loss, learning_rate, alpha_hat.alpha[0], alpha_hat.alpha[1]);
-        }
-
-        // Gradient Descent Update
-        if (t < ITERATIONS) {
-            double step_rate = (learning_rate > min_learning_rate) ? learning_rate : min_learning_rate;
-            
-            const double delta_a1 = step_rate * gradient[0];
-            const double delta_a2 = step_rate * gradient[1];
-            
-            alpha_hat.alpha[0] -= delta_a1;
-            alpha_hat.alpha[1] -= delta_a2;
+        if (result->classification_results[i].final_loss < min_loss) {
+            min_loss = result->classification_results[i].final_loss;
+            best_match_index = i;
         }
     }
 
-    // --- Store Final Results ---
-    result->final_loss = loss;
-    memcpy(result->estimated_alpha, alpha_hat.alpha, sizeof(double) * NUM_DEFORMATIONS);
-    
-    // Final image rasterization based on estimated parameters
-    draw_curve(alpha_hat.alpha, generated_image);
-    memcpy(result->estimated_image, generated_image, sizeof(Generated_Image));
-    
-    // Calculate the difference image
-    calculate_difference_image(observed_image, generated_image, result->diff_image);
-    
-    // Copy the difference image to result structure
-    memcpy(result->diff_image, result->diff_image, sizeof(Generated_Image));
-}
+    result->best_match_index = best_match_index;
 
+    // 5. Finalize the Best Match Images (for summary and SVG)
+    EstimationResult *best_fit = &result->classification_results[best_match_index];
+    
+    draw_curve(best_fit->estimated_alpha, result->best_estimated_image, &IDEAL_TEMPLATES[best_match_index]);
+    calculate_difference_image(observed_image, result->best_estimated_image, result->best_diff_image);
+}
 
 // --- Console Summary Function ---
 void summarize_results_console() {
-    printf("\n\n======================================================\n");
-    printf("            COLLECTED 64-TEST ERROR SUMMARY           \n");
-    printf("======================================================\n");
-    printf("  ID | TRUE (Slant, Curve) | ESTIMATED (Slant, Curve) | Loss \n");
-    printf("-----|---------------------|--------------------------|-----------------\n");
+    printf("\n\n==================================================================\n");
+    printf("                  CLASSIFICATION SUMMARY (5 Tests)                  \n");
+    printf("==================================================================\n");
+    printf("  ID | TRUE | PRED | Classification Losses (L2 Feature Error) \n");
+    printf("     | Char | Char |   'J'    |   '1'    |   '2'    |   '3'    |   '4'    \n");
+    printf("-----|------|------|----------|----------|----------|----------|----------\n");
     
     for (int k = 0; k < NUM_TESTS; k++) {
         TestResult *r = &all_results[k];
-        printf("%4d | (% .4f, % .4f) | (% .4f, % .4f) | %8.5f \n", 
-               r->id, 
-               r->true_alpha[0], r->true_alpha[1], 
-               r->estimated_alpha[0], r->estimated_alpha[1], 
-               r->final_loss);
-    }
-    printf("------------------------------------------------------\n");
-
-
-    printf("\n\n======================================================\n");
-    printf("            64-TEST IMAGE COMPARISON GRID             \n");
-    printf("         (Visual comparison filtered for noise)       \n");
-    printf("======================================================\n");
-    
-    for (int k = 0; k < NUM_TESTS; k++) {
-        TestResult *r = &all_results[k];
-        printf("\n--- TEST %02d (True: %.4f, %.4f | Est: %.4f, %.4f) ---\n", 
-               r->id, r->true_alpha[0], r->true_alpha[1], r->estimated_alpha[0], r->estimated_alpha[1]);
+        printf("%4d | %4s | %4s |", 
+               r->id, CHAR_NAMES[r->true_char_index], CHAR_NAMES[r->best_match_index]);
         
-        printf("| Observed Noisy Target | Estimated Clean Fit | Difference (Error) |\n");
-        printf("|-----------------------|---------------------|--------------------|\n");
+        for (int i = 0; i < NUM_IDEAL_CHARS; i++) {
+            printf(" %8.4f |", r->classification_results[i].final_loss);
+        }
+        printf("\n");
+    }
+    printf("------------------------------------------------------------------\n");
+
+
+    printf("\n\n======================================================\n");
+    printf("          TEST VISUAL SUMMARY (TRUE vs. BEST FIT)     \n");
+    printf("======================================================\n");
+    
+    for (int k = 0; k < NUM_TESTS; k++) {
+        TestResult *r = &all_results[k];
+        EstimationResult *best_fit = &r->classification_results[r->best_match_index];
+        
+        printf("\n--- TEST %02d (TRUE: '%s' | PRED: '%s') ---\n", 
+               r->id, CHAR_NAMES[r->true_char_index], CHAR_NAMES[r->best_match_index]);
+        printf("    TRUE Params (%.4f, %.4f) | BEST FIT Params (%.4f, %.4f) | Loss: %.4f\n", 
+               r->true_alpha[0], r->true_alpha[1], 
+               best_fit->estimated_alpha[0], best_fit->estimated_alpha[1], 
+               best_fit->final_loss);
+        
+        printf("| Observed Noisy Target | Best Estimated Fit | Difference (Error) |\n");
+        printf("|-----------------------|--------------------|--------------------|\n");
 
         for (int i = 0; i < GRID_SIZE; i++) {
             printf("| ");
-            print_image_row(r->observed_image, i);
+            // Observed Image (Noisy Target)
+            for (int j = 0; j < GRID_SIZE; j++) {
+                if (r->observed_image[i][j] < 0.3) printf(" ");
+                else if (r->observed_image[i][j] < 0.6) printf(":");
+                else printf("#");
+            }
             printf(" | ");
-            print_image_row(r->estimated_image, i);
+            // Best Estimated Image
+            for (int j = 0; j < GRID_SIZE; j++) {
+                if (r->best_estimated_image[i][j] < 0.3) printf(" ");
+                else if (r->best_estimated_image[i][j] < 0.6) printf(":");
+                else printf("#");
+            }
             printf(" | ");
             // Error visualization (threshold > 0.2 to filter out background noise)
             for (int j = 0; j < GRID_SIZE; j++) {
-                if (r->diff_image[i][j] > 0.3) printf("*"); 
-                else if (r->diff_image[i][j] > 0.2) printf("+"); 
+                if (r->best_diff_image[i][j] > 0.3) printf("*"); 
+                else if (r->best_diff_image[i][j] > 0.2) printf("+"); 
                 else printf(" "); 
             }
             printf(" |\n");
@@ -401,26 +448,22 @@ void summarize_results_console() {
 // --- SVG Generation Functions ---
 
 // Constants for SVG rendering
-#define PIXEL_SIZE 5    // Size of one pixel rectangle in SVG units
+#define PIXEL_SIZE 5    
 #define IMG_SIZE (GRID_SIZE * PIXEL_SIZE) // 80
-#define IMG_SPACING 5   // Spacing between the four images in a set
-#define SET_SPACING 25  // Spacing between different test sets
+#define IMG_SPACING 5   
+#define SET_SPACING 25  
 #define SET_WIDTH (4 * IMG_SIZE + 3 * IMG_SPACING) // 335
-// Dimensions calculated for 8 sets in a single row
-#define SVG_WIDTH (SVG_RENDER_LIMIT * SET_WIDTH + (SVG_RENDER_LIMIT - 1) * SET_SPACING + 2 * SET_SPACING) // 2905
-#define SVG_HEIGHT (IMG_SIZE + 15 + 2 * SET_SPACING) // 130 + 15 + 50 = 195 (using 195 for safety)
+// Dimensions calculated for 5 sets in a single row
+#define SVG_RENDER_LIMIT 5
+#define SVG_WIDTH (SVG_RENDER_LIMIT * SET_WIDTH + (SVG_RENDER_LIMIT - 1) * SET_SPACING + 2 * SET_SPACING) // 1805
+#define SVG_HEIGHT (IMG_SIZE + 15 + 2 * SET_SPACING) // 130
 
 /**
  * @brief Maps an intensity [0.0, 1.0] to an RGB grayscale color string.
  */
 void get_grayscale_color(double intensity, char *color_out) {
-    // Clamp intensity to [0.0, 1.0]
     double clamped_intensity = fmax(0.0, fmin(1.0, intensity));
-    
-    // Map to 0-255 range (0=black, 255=white)
     int value = (int)round(clamped_intensity * 255.0);
-    
-    // Format the RGB string
     sprintf(color_out, "rgb(%d,%d,%d)", value, value, value);
 }
 
@@ -450,23 +493,25 @@ void render_test_to_svg(FILE *fp, const TestResult *r, double x_set, double y_se
     // 2. Target Image (Noisy)
     render_single_image_to_svg(fp, r->observed_image, x_set + IMG_SIZE + IMG_SPACING, y_set);
 
-    // 3. Estimated Image (Clean Fit)
-    render_single_image_to_svg(fp, r->estimated_image, x_set + 2 * (IMG_SIZE + IMG_SPACING), y_set);
+    // 3. Best Estimated Image (Clean Fit from Best Match)
+    render_single_image_to_svg(fp, r->best_estimated_image, x_set + 2 * (IMG_SIZE + IMG_SPACING), y_set);
 
-    // 4. Difference Image (Error Magnitude) - Normalized to [0.0, 1.0]
-    render_single_image_to_svg(fp, r->diff_image, x_set + 3 * (IMG_SIZE + IMG_SPACING), y_set);
+    // 4. Difference Image (Error Magnitude)
+    render_single_image_to_svg(fp, r->best_diff_image, x_set + 3 * (IMG_SIZE + IMG_SPACING), y_set);
     
-    // Add text label for the test ID and parameters
-    char label[100];
-    sprintf(label, "ID %02d (T: %.2f, %.2f | E: %.2f, %.2f)", r->id, 
-            r->true_alpha[0], r->true_alpha[1], r->estimated_alpha[0], r->estimated_alpha[1]);
+    // Add text label for the test ID and classification result
+    char label[150];
+    EstimationResult *best_fit = &r->classification_results[r->best_match_index];
+    sprintf(label, "T:'%s' (%.2f,%.2f) | P:'%s' L:%.2f", 
+            CHAR_NAMES[r->true_char_index], r->true_alpha[0], r->true_alpha[1], 
+            CHAR_NAMES[r->best_match_index], best_fit->final_loss);
     
     fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"10\" fill=\"white\">%s</text>\n",
             x_set, y_set + IMG_SIZE + 10, label);
 }
 
 /**
- * @brief Generates the final SVG file with the first 8 test results.
+ * @brief Generates the final SVG file with the 5 test results.
  */
 void generate_svg_file() {
     FILE *fp = fopen("network.svg", "w");
@@ -480,25 +525,23 @@ void generate_svg_file() {
             SVG_WIDTH, SVG_HEIGHT, SVG_WIDTH, SVG_HEIGHT);
     fprintf(fp, "<rect width=\"100%%\" height=\"100%%\" fill=\"black\"/>\n");
 
-    // Add general titles for the 4 image columns (for the first set)
+    // Add general titles for the 4 image columns
     double initial_x = SET_SPACING + IMG_SIZE / 2.0;
     double initial_y = SET_SPACING / 2.0;
-    fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"12\" fill=\"white\" text-anchor=\"middle\">TRUE</text>\n", initial_x, initial_y);
-    fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"12\" fill=\"white\" text-anchor=\"middle\">TARGET</text>\n", initial_x + IMG_SIZE + IMG_SPACING, initial_y);
-    fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"12\" fill=\"white\" text-anchor=\"middle\">ESTIMATED</text>\n", initial_x + 2 * (IMG_SIZE + IMG_SPACING), initial_y);
-    fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"12\" fill=\"white\" text-anchor=\"middle\">ERROR</text>\n", initial_x + 3 * (IMG_SIZE + IMG_SPACING), initial_y);
+    fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"12\" fill=\"white\" text-anchor=\"middle\">TRUE CLEAN</text>\n", initial_x, initial_y);
+    fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"12\" fill=\"white\" text-anchor=\"middle\">OBSERVED NOISY</text>\n", initial_x + IMG_SIZE + IMG_SPACING, initial_y);
+    fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"12\" fill=\"white\" text-anchor=\"middle\">BEST ESTIMATED</text>\n", initial_x + 2 * (IMG_SIZE + IMG_SPACING), initial_y);
+    fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"12\" fill=\"white\" text-anchor=\"middle\">ERROR DIFF</text>\n", initial_x + 3 * (IMG_SIZE + IMG_SPACING), initial_y);
 
 
-    // Render the first 8 test sets in a single row
-    const int sets_per_row = SVG_RENDER_LIMIT;
-    for (int k = 0; k < SVG_RENDER_LIMIT; k++) {
-        int row = k / sets_per_row; // Always 0 for the first 8
-        int col = k % sets_per_row; 
+    // Render the 5 test sets in a single row
+    for (int k = 0; k < NUM_TESTS; k++) {
+        int col = k; 
         
         // Calculate top-left corner position for the current 4-image set
         double x_set = SET_SPACING + col * (SET_WIDTH + SET_SPACING);
         // Offset y to leave room for the title text at the top
-        double y_set = SET_SPACING + 15 + row * (IMG_SIZE + 15 + SET_SPACING); 
+        double y_set = SET_SPACING + 15; 
         
         render_test_to_svg(fp, &all_results[k], x_set, y_set);
     }
@@ -518,24 +561,24 @@ void generate_svg_file() {
 int main(void) {
     srand(42); // Seed for reproducible results
 
-    // Generate 64 random test cases
-    const double MIN_ALPHA = -0.25;
-    const double MAX_ALPHA = 0.25;
+    // Test data: We use one test case for each of the 5 ideal characters, 
+    // each with a random deformation.
+    const double MIN_ALPHA = -0.15;
+    const double MAX_ALPHA = 0.15;
 
     for (int i = 0; i < NUM_TESTS; i++) {
         double true_alpha[NUM_DEFORMATIONS];
-        // Generate random alpha[0] (Slant) in [-0.25, 0.25]
+        // Generate random deformation in [-0.15, 0.15]
         true_alpha[0] = MIN_ALPHA + ((double)rand() / RAND_MAX) * (MAX_ALPHA - MIN_ALPHA);
-        // Generate random alpha[1] (Curvature) in [-0.25, 0.25]
         true_alpha[1] = MIN_ALPHA + ((double)rand() / RAND_MAX) * (MAX_ALPHA - MIN_ALPHA);
         
-        run_test(i + 1, true_alpha, &all_results[i]);
+        run_classification_test(i + 1, i, true_alpha, &all_results[i]);
     }
     
     // 1. Print the console-based summary
     summarize_results_console();
 
-    // 2. Generate the SVG file (only first 8 tests)
+    // 2. Generate the SVG file (only first 5 tests)
     generate_svg_file();
 
     return 0;
