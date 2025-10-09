@@ -13,7 +13,8 @@
 #define NUM_POINTS 200
 #define ITERATIONS 5000     // 5000 iterations for stable convergence
 #define GRADIENT_EPSILON 0.01 
-#define NUM_TESTS 64        // 64 random test cases
+#define NUM_TESTS 64        // We still run 64 random test cases
+#define SVG_RENDER_LIMIT 8  // CRITICAL: New limit for SVG output
 
 // --- Data Structures ---
 
@@ -401,12 +402,13 @@ void summarize_results_console() {
 
 // Constants for SVG rendering
 #define PIXEL_SIZE 5    // Size of one pixel rectangle in SVG units
-#define IMG_SIZE (GRID_SIZE * PIXEL_SIZE)
+#define IMG_SIZE (GRID_SIZE * PIXEL_SIZE) // 80
 #define IMG_SPACING 5   // Spacing between the four images in a set
 #define SET_SPACING 25  // Spacing between different test sets
-#define SET_WIDTH (4 * IMG_SIZE + 3 * IMG_SPACING)
-#define SVG_WIDTH (8 * SET_WIDTH + 7 * SET_SPACING + 2 * SET_SPACING)
-#define SVG_HEIGHT (8 * IMG_SIZE + 7 * SET_SPACING + 2 * SET_SPACING)
+#define SET_WIDTH (4 * IMG_SIZE + 3 * IMG_SPACING) // 335
+// Dimensions calculated for 8 sets in a single row
+#define SVG_WIDTH (SVG_RENDER_LIMIT * SET_WIDTH + (SVG_RENDER_LIMIT - 1) * SET_SPACING + 2 * SET_SPACING) // 2905
+#define SVG_HEIGHT (IMG_SIZE + 15 + 2 * SET_SPACING) // 130 + 15 + 50 = 195 (using 195 for safety)
 
 /**
  * @brief Maps an intensity [0.0, 1.0] to an RGB grayscale color string.
@@ -452,7 +454,6 @@ void render_test_to_svg(FILE *fp, const TestResult *r, double x_set, double y_se
     render_single_image_to_svg(fp, r->estimated_image, x_set + 2 * (IMG_SIZE + IMG_SPACING), y_set);
 
     // 4. Difference Image (Error Magnitude) - Normalized to [0.0, 1.0]
-    // The diff image intensity is already [0, 1.0] (max difference between 0 and 1 pixel)
     render_single_image_to_svg(fp, r->diff_image, x_set + 3 * (IMG_SIZE + IMG_SPACING), y_set);
     
     // Add text label for the test ID and parameters
@@ -465,7 +466,7 @@ void render_test_to_svg(FILE *fp, const TestResult *r, double x_set, double y_se
 }
 
 /**
- * @brief Generates the final SVG file with all test results.
+ * @brief Generates the final SVG file with the first 8 test results.
  */
 void generate_svg_file() {
     FILE *fp = fopen("network.svg", "w");
@@ -474,12 +475,12 @@ void generate_svg_file() {
         return;
     }
 
-    // SVG Header (Black Background for all images)
+    // SVG Header
     fprintf(fp, "<svg width=\"%d\" height=\"%d\" viewBox=\"0 0 %d %d\" xmlns=\"http://www.w3.org/2000/svg\">\n",
             SVG_WIDTH, SVG_HEIGHT, SVG_WIDTH, SVG_HEIGHT);
     fprintf(fp, "<rect width=\"100%%\" height=\"100%%\" fill=\"black\"/>\n");
 
-    // Add general titles for the 4 image columns
+    // Add general titles for the 4 image columns (for the first set)
     double initial_x = SET_SPACING + IMG_SIZE / 2.0;
     double initial_y = SET_SPACING / 2.0;
     fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"12\" fill=\"white\" text-anchor=\"middle\">TRUE</text>\n", initial_x, initial_y);
@@ -488,11 +489,11 @@ void generate_svg_file() {
     fprintf(fp, "<text x=\"%.1f\" y=\"%.1f\" font-family=\"sans-serif\" font-size=\"12\" fill=\"white\" text-anchor=\"middle\">ERROR</text>\n", initial_x + 3 * (IMG_SIZE + IMG_SPACING), initial_y);
 
 
-    // Render all 64 test sets (8x8 grid)
-    const int sets_per_row = 8;
-    for (int k = 0; k < NUM_TESTS; k++) {
-        int row = k / sets_per_row;
-        int col = k % sets_per_row;
+    // Render the first 8 test sets in a single row
+    const int sets_per_row = SVG_RENDER_LIMIT;
+    for (int k = 0; k < SVG_RENDER_LIMIT; k++) {
+        int row = k / sets_per_row; // Always 0 for the first 8
+        int col = k % sets_per_row; 
         
         // Calculate top-left corner position for the current 4-image set
         double x_set = SET_SPACING + col * (SET_WIDTH + SET_SPACING);
@@ -507,7 +508,7 @@ void generate_svg_file() {
     
     fclose(fp);
     printf("\n\n======================================================\n");
-    printf("SVG Output Complete: network.svg created.\n");
+    printf("SVG Output Complete: network.svg created (First %d tests).\n", SVG_RENDER_LIMIT);
     printf("======================================================\n");
 }
 
@@ -534,7 +535,7 @@ int main(void) {
     // 1. Print the console-based summary
     summarize_results_console();
 
-    // 2. Generate the SVG file
+    // 2. Generate the SVG file (only first 8 tests)
     generate_svg_file();
 
     return 0;
