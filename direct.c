@@ -12,25 +12,33 @@
 #define M_PI 3.14159265358979323846
 
 // --- Global Configuration ---
-#define GRID_SIZE 32        // **UPDATED: Increased to 32x32 resolution**
+#define GRID_SIZE 32        // 32x32 resolution
 #define NUM_DEFORMATIONS 2  
 #define NUM_VECTORS 16      
 #define NUM_BINS 32         
 #define NUM_FEATURES (NUM_VECTORS * NUM_BINS) 
-#define PIXEL_LOSS_WEIGHT 2.5   // **UPDATED: Reduced from 5.0 to 2.5 to compensate for 4x pixel count**
+#define PIXEL_LOSS_WEIGHT 2.5 
 #define NUM_POINTS 200
-#define ITERATIONS 500      // Set for speed
+#define ITERATIONS 500      
 #define GRADIENT_EPSILON 0.01 
 #define NUM_IDEAL_CHARS 36  
 #define TESTS_PER_CHAR 8    
 #define NUM_TESTS (NUM_IDEAL_CHARS * TESTS_PER_CHAR) // 36 * 8 = 288 total tests
 #define NUM_CONTROL_POINTS 9 
-#define MAX_PIXEL_ERROR (GRID_SIZE * GRID_SIZE) // **UPDATED: 32*32 = 1024**
+#define MAX_PIXEL_ERROR (GRID_SIZE * GRID_SIZE) 
 #define TIME_LIMIT_SECONDS 240.0 // 4 minutes limit
 
 // Loss history configuration
 #define LOSS_HISTORY_STEP 5 
 #define LOSS_HISTORY_SIZE (ITERATIONS / LOSS_HISTORY_STEP + 1) 
+
+// --- Memory Tracking Globals ---
+#define MEMORY_HISTORY_STEP (NUM_IDEAL_CHARS * TESTS_PER_CHAR / 10 + 1) // Record ~10 points
+#define MEMORY_HISTORY_SIZE (NUM_TESTS / MEMORY_HISTORY_STEP + 1)
+size_t total_allocated_bytes = 0;
+size_t total_freed_bytes = 0;
+size_t memory_history[NUM_TESTS + 1]; // One entry per test + 1 for initial 0
+int memory_history_index = 0;
 
 // --- Data Structures ---
 
@@ -53,8 +61,33 @@ typedef struct {
     Generated_Image best_estimated_image; Generated_Image best_diff_image;
 } TestResult;
 
-TestResult all_results[NUM_TESTS]; 
+TestResult *all_results = NULL; // Use pointer for dynamic allocation
 int tests_completed_before_limit = 0; 
+
+// --- Memory Wrapper Functions ---
+
+void* safe_malloc(size_t size) {
+    void *ptr = malloc(size);
+    if (ptr) {
+        total_allocated_bytes += size;
+    }
+    return ptr;
+}
+
+void safe_free(void *ptr, size_t size) {
+    if (ptr) {
+        free(ptr);
+        total_freed_bytes += size;
+    }
+}
+
+void record_memory_usage() {
+    if (memory_history_index < NUM_TESTS + 1) {
+        memory_history[memory_history_index] = total_allocated_bytes - total_freed_bytes;
+        memory_history_index++;
+    }
+}
+
 
 // --- Fixed Ideal Curves (A-Z, 0-9) ---
 const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {
@@ -62,150 +95,184 @@ const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {
     "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", 
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"
 };
-
-// Templates are included here for completeness but are very long.
-// (The full template array from the previous version remains here)
+// IDEAL_TEMPLATES array (contents omitted for brevity but remain the same)
 const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
+    // A
     [0] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.3, .y = 0.3}, {.x = 0.2, .y = 0.5}, {.x = 0.3, .y = 0.6}, 
         {.x = 0.7, .y = 0.6}, {.x = 0.8, .y = 0.5}, {.x = 0.7, .y = 0.3}, {.x = 0.5, .y = 0.1}, 
         {.x = 0.7, .y = 0.9} 
     }},
+    // B
     [1] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, 
         {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.2, .y = 0.5}, 
         {.x = 0.8, .y = 0.5}, {.x = 0.8, .y = 0.7}, {.x = 0.2, .y = 0.9} 
     }},
+    // C
     [2] = {.control_points = {{.x = 0.8, .y = 0.1}, {.x = 0.4, .y = 0.1}, {.x = 0.1, .y = 0.3}, {.x = 0.1, .y = 0.7},
         {.x = 0.4, .y = 0.9}, {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.7}, {.x = 0.8, .y = 0.3}, 
         {.x = 0.1, .y = 0.5} 
     }},
+    // D
     [3] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.7, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.8, .y = 0.5}, 
         {.x = 0.8, .y = 0.7}, {.x = 0.7, .y = 0.9}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.5}, 
         {.x = 0.2, .y = 0.1} 
     }},
+    // E
     [4] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.5}, 
         {.x = 0.75, .y = 0.5}, {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, 
         {.x = 0.2, .y = 0.9} 
     }},
+    // F
     [5] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.5}, 
         {.x = 0.6, .y = 0.5}, {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.9}, 
         {.x = 0.2, .y = 0.1} 
     }},
+    // G
     [6] = {.control_points = {{.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.1, .y = 0.5}, {.x = 0.2, .y = 0.9}, 
         {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.6}, {.x = 0.4, .y = 0.6}, {.x = 0.4, .y = 0.9}, 
         {.x = 0.8, .y = 0.9} 
     }},
+    // H
     [7] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, 
         {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, 
         {.x = 0.8, .y = 0.5} 
     }},
+    // I
     [8] = {.control_points = {{.x = 0.3, .y = 0.1}, {.x = 0.7, .y = 0.1}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, 
         {.x = 0.3, .y = 0.9}, {.x = 0.7, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.1}, 
         {.x = 0.5, .y = 0.9} 
     }},
+    // J
     [9] = {.control_points = {{.x = 0.6, .y = 0.1}, {.x = 0.6, .y = 0.2}, {.x = 0.6, .y = 0.4}, {.x = 0.6, .y = 0.5}, 
         {.x = 0.5, .y = 0.6}, {.x = 0.4, .y = 0.75}, {.x = 0.3, .y = 0.9}, {.x = 0.4, .y = 0.85}, 
         {.x = 0.5, .y = 0.8}  
     }},
+    // K
     [10] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.1}, 
         {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.5}, 
         {.x = 0.2, .y = 0.5} 
     }},
+    // L
     [11] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, {.x = 0.2, .y = 0.9}, 
         {.x = 0.2, .y = 0.6}, {.x = 0.2, .y = 0.3}, {.x = 0.2, .y = 0.1}, {.x = 0.5, .y = 0.5}, 
         {.x = 0.2, .y = 0.9} 
     }},
+    // M
     [12] = {.control_points = {{.x = 0.1, .y = 0.9}, {.x = 0.1, .y = 0.1}, {.x = 0.5, .y = 0.8}, 
         {.x = 0.9, .y = 0.1}, {.x = 0.9, .y = 0.9}, {.x = 0.5, .y = 0.8}, {.x = 0.1, .y = 0.1}, 
         {.x = 0.9, .y = 0.9}, {.x = 0.5, .y = 0.3} 
     }},
+    // N
     [13] = {.control_points = {{.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, 
         {.x = 0.8, .y = 0.9}, {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.5}, {.x = 0.2, .y = 0.9}, 
         {.x = 0.8, .y = 0.1} 
     }},
+    // O
     [14] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.85, .y = 0.3}, {.x = 0.85, .y = 0.7}, 
         {.x = 0.5, .y = 0.9}, {.x = 0.15, .y = 0.7}, {.x = 0.15, .y = 0.3}, 
         {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.5} 
     }},
+    // P
     [15] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, 
         {.x = 0.7, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.8, .y = 0.3}, 
         {.x = 0.7, .y = 0.4}, {.x = 0.2, .y = 0.4}, {.x = 0.2, .y = 0.4} 
     }},
+    // Q
     [16] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.8, .y = 0.7}, {.x = 0.5, .y = 0.9}, 
         {.x = 0.2, .y = 0.7}, {.x = 0.2, .y = 0.3}, {.x = 0.5, .y = 0.1}, {.x = 0.6, .y = 0.7}, 
         {.x = 0.8, .y = 0.9} 
     }},
+    // R
     [17] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, 
         {.x = 0.8, .y = 0.4}, {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.5}, {.x = 0.9, .y = 0.9}, 
         {.x = 0.2, .y = 0.1} 
     }},
+    // S
     [18] = {.control_points = {{.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.3}, {.x = 0.8, .y = 0.5}, 
         {.x = 0.8, .y = 0.7}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.5}, 
         {.x = 0.8, .y = 0.1} 
     }},
+    // T
     [19] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.9}, 
         {.x = 0.5, .y = 0.5}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.5, .y = 0.9}, 
         {.x = 0.5, .y = 0.1} 
     }},
+    // U
     [20] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.7}, {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.7}, 
         {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.7}, {.x = 0.8, .y = 0.7}, 
         {.x = 0.2, .y = 0.1} 
     }},
+    // V
     [21] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.5, .y = 0.9}, {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.9}, 
         {.x = 0.2, .y = 0.5}, {.x = 0.8, .y = 0.5}, {.x = 0.5, .y = 0.9}, {.x = 0.2, .y = 0.1}, 
         {.x = 0.8, .y = 0.1} 
     }},
+    // W
     [22] = {.control_points = {{.x = 0.1, .y = 0.1}, {.x = 0.3, .y = 0.9}, {.x = 0.5, .y = 0.2}, 
         {.x = 0.7, .y = 0.9}, {.x = 0.9, .y = 0.1}, {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.5}, 
         {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.5}
     }},
+    // X
     [23] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.8, .y = 0.1}, 
         {.x = 0.2, .y = 0.9}, {.x = 0.5, .y = 0.5}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.9}, 
         {.x = 0.5, .y = 0.5} 
     }},
+    // Y
     [24] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.5, .y = 0.5}, {.x = 0.8, .y = 0.1}, {.x = 0.5, .y = 0.5}, 
         {.x = 0.5, .y = 0.9}, {.x = 0.5, .y = 0.7}, {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, 
         {.x = 0.5, .y = 0.9} 
     }},
+    // Z
     [25] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, 
         {.x = 0.5, .y = 0.5}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.9}, {.x = 0.5, .y = 0.5}, 
         {.x = 0.2, .y = 0.1} 
     }},
+    // 0
     [26] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.75, .y = 0.3}, {.x = 0.75, .y = 0.7}, 
         {.x = 0.5, .y = 0.9}, {.x = 0.25, .y = 0.7}, {.x = 0.25, .y = 0.3}, 
         {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.1} 
     }},
+    // 1
     [27] = {.control_points = {{.x = 0.4, .y = 0.1}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.2}, {.x = 0.5, .y = 0.35}, 
         {.x = 0.5, .y = 0.5}, {.x = 0.5, .y = 0.65}, {.x = 0.5, .y = 0.8}, {.x = 0.5, .y = 0.9}, 
         {.x = 0.5, .y = 0.9} 
     }},
+    // 2
     [28] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.7, .y = 0.1}, {.x = 0.8, .y = 0.25}, {.x = 0.7, .y = 0.4}, 
         {.x = 0.3, .y = 0.55}, {.x = 0.2, .y = 0.7}, {.x = 0.3, .y = 0.8}, {.x = 0.5, .y = 0.9}, 
         {.x = 0.8, .y = 0.9} 
     }}, 
+    // 3
     [29] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.4, .y = 0.5}, 
         {.x = 0.8, .y = 0.5}, {.x = 0.8, .y = 0.7}, {.x = 0.4, .y = 0.9}, {.x = 0.8, .y = 0.9}, 
         {.x = 0.2, .y = 0.9} 
     }}, 
+    // 4
     [30] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.3, .y = 0.2}, {.x = 0.4, .y = 0.3}, {.x = 0.5, .y = 0.4}, 
         {.x = 0.2, .y = 0.55}, {.x = 0.8, .y = 0.55}, {.x = 0.8, .y = 0.7}, {.x = 0.8, .y = 0.85}, 
         {.x = 0.8, .y = 0.9} 
     }}, 
+    // 5
     [31] = {.control_points = {{.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.1}, {.x = 0.2, .y = 0.4}, {.x = 0.6, .y = 0.4}, 
         {.x = 0.8, .y = 0.6}, {.x = 0.7, .y = 0.8}, {.x = 0.2, .y = 0.9}, {.x = 0.8, .y = 0.9}, 
         {.x = 0.8, .y = 0.1} 
     }},
+    // 6
     [32] = {.control_points = {{.x = 0.7, .y = 0.1}, {.x = 0.2, .y = 0.3}, {.x = 0.2, .y = 0.5}, {.x = 0.5, .y = 0.7}, 
         {.x = 0.8, .y = 0.6}, {.x = 0.5, .y = 0.5}, {.x = 0.2, .y = 0.5}, {.x = 0.2, .y = 0.9}, 
         {.x = 0.7, .y = 0.1} 
     }},
+    // 7
     [33] = {.control_points = {{.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.3, .y = 0.9}, 
         {.x = 0.5, .y = 0.5}, {.x = 0.6, .y = 0.7}, {.x = 0.8, .y = 0.1}, {.x = 0.2, .y = 0.9}, 
         {.x = 0.8, .y = 0.1} 
     }},
+    // 8
     [34] = {.control_points = {{.x = 0.5, .y = 0.15}, {.x = 0.7, .y = 0.2}, {.x = 0.7, .y = 0.35}, 
         {.x = 0.5, .y = 0.45}, {.x = 0.3, .y = 0.35}, {.x = 0.3, .y = 0.2}, 
         {.x = 0.7, .y = 0.65}, {.x = 0.5, .y = 0.85}, {.x = 0.3, .y = 0.65} 
     }},
+    // 9
     [35] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.5, .y = 0.4}, {.x = 0.2, .y = 0.2}, 
         {.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.4}, {.x = 0.8, .y = 0.9}, {.x = 0.5, .y = 0.7}, 
         {.x = 0.8, .y = 0.9} 
@@ -213,7 +280,7 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
 };
 
 
-// --- Function Definitions (Optimization Logic) ---
+// --- Function Definitions (Optimization Logic - Unchanged) ---
 
 void apply_deformation(Point *point, const double alpha[NUM_DEFORMATIONS]) {
     point->x = point->x + alpha[0] * (point->y - 0.5);
@@ -336,7 +403,6 @@ double calculate_combined_loss(const Generated_Image generated_img, const Featur
     const double feature_loss = calculate_feature_loss_L2(generated_features, observed_features);
     const double pixel_loss = calculate_pixel_loss_L2(generated_img, observed_img);
     
-    // Pixel loss weight adjusted for 32x32 resolution
     return feature_loss + PIXEL_LOSS_WEIGHT * pixel_loss;
 }
 
@@ -482,7 +548,6 @@ void run_classification_test(int test_id, int true_char_index, const double true
     calculate_difference_image(result->observed_image, result->best_estimated_image, result->best_diff_image);
 }
 
-
 void summarize_results_console(double total_elapsed_time) {
     printf("\n\n=================================================================================================\n");
     printf("                  CLASSIFICATION SUMMARY (%d CHARS * %d TESTS = %d TOTAL TESTS)                    \n", NUM_IDEAL_CHARS, TESTS_PER_CHAR, NUM_TESTS);
@@ -490,6 +555,9 @@ void summarize_results_console(double total_elapsed_time) {
     if (tests_completed_before_limit < NUM_TESTS) {
         printf("                                    !!! TIME LIMIT OF %.0f SECONDS REACHED !!!\n", TIME_LIMIT_SECONDS);
     }
+    printf("=================================================================================================\n");
+    printf("Memory Usage: Allocated: %zu bytes | Freed: %zu bytes | Net: %zu bytes\n", 
+           total_allocated_bytes, total_freed_bytes, total_allocated_bytes - total_freed_bytes);
     printf("=================================================================================================\n");
     
     printf("  ID | TRUE | PRED | Feat Loss (Best Fit) | TRUE $a_1$ | TRUE $a_2$ | EST $a_1$ | EST $a_2$ | PIXEL ERROR %% | Result \n");
@@ -521,7 +589,7 @@ void summarize_results_console(double total_elapsed_time) {
 
 
 // --- PNG Rendering Constants (Vertical Layout) ---
-#define PIXEL_SIZE 2    // **UPDATED: Reduced for manageable 32x32 image size**
+#define PIXEL_SIZE 2    
 #define IMG_SIZE (GRID_SIZE * PIXEL_SIZE) 
 #define IMG_SPACING 5   
 #define TEXT_HEIGHT 15  
@@ -529,8 +597,8 @@ void summarize_results_console(double total_elapsed_time) {
 #define GRAPH_WIDTH 100 
 #define GRAPH_HEIGHT IMG_SIZE 
 
-// PNG Dimensions (HEIGHT dynamically calculated based on completed tests)
-#define PNG_WIDTH (IMG_SIZE * 4 + IMG_SPACING * 3 + GRAPH_WIDTH + SET_SPACING * 2) 
+// PNG Dimensions (New width to accommodate two graphs)
+#define PNG_WIDTH (IMG_SIZE * 4 + IMG_SPACING * 3 + GRAPH_WIDTH * 2 + IMG_SPACING * 2 + SET_SPACING * 2) 
 #define NUM_CHANNELS 3 
 
 // --- PNG Rendering Functions ---
@@ -637,9 +705,64 @@ void draw_loss_graph(unsigned char *buffer, int buf_width, int buf_height, int x
             int px = prev_x;
             int py = prev_y;
 
-            // Simple line drawing (Bresenham's)
             while(1) {
                 set_pixel(buffer, px, py, buf_width, buf_height, 50, 255, 50); 
+
+                if (px == current_x && py == current_y) break;
+                int e2 = 2 * err;
+                if (e2 > -dy) { err -= dy; px += sx; }
+                if (e2 < dx) { err += dx; py += sy; }
+            }
+        }
+        prev_y = current_y;
+    }
+}
+
+void draw_memory_graph(unsigned char *buffer, int buf_width, int buf_height, int x_offset, int y_offset, int num_tests) {
+    if (num_tests == 0) return;
+    
+    size_t max_mem = 0;
+    for (int i = 0; i <= num_tests; i++) {
+        if (memory_history[i] > max_mem) {
+            max_mem = memory_history[i];
+        }
+    }
+    if (max_mem == 0) return;
+
+    // Draw background
+    for(int py = 0; py < GRAPH_HEIGHT; py++) {
+        for(int px = 0; px < GRAPH_WIDTH; px++) {
+            set_pixel(buffer, x_offset + px, y_offset + py, buf_width, buf_height, 20, 20, 20); 
+        }
+    }
+    // Draw axes
+    for(int i = 0; i < GRAPH_WIDTH; i++) set_pixel(buffer, x_offset + i, y_offset + GRAPH_HEIGHT - 1, buf_width, buf_height, 255, 255, 255);
+    for(int i = 0; i < GRAPH_HEIGHT; i++) set_pixel(buffer, x_offset, y_offset + i, buf_width, buf_height, 255, 255, 255);
+
+    int prev_y = -1;
+    for (int i = 0; i <= num_tests; i++) { // Go up to total tests completed
+        int current_x = x_offset + (int)round((double)i / num_tests * (GRAPH_WIDTH - 1));
+
+        double normalized_mem = 1.0 - ((double)memory_history[i] / max_mem);
+        int current_y = y_offset + (int)round(normalized_mem * (GRAPH_HEIGHT - 1));
+        current_y = fmax(y_offset, fmin(y_offset + GRAPH_HEIGHT - 1, current_y)); 
+
+        set_pixel(buffer, current_x, current_y, buf_width, buf_height, 255, 100, 100); 
+
+        if (prev_y != -1) {
+            int prev_x = x_offset + (int)round((double)(i-1) / num_tests * (GRAPH_WIDTH - 1));
+
+            int dx = abs(current_x - prev_x);
+            int dy = abs(current_y - prev_y);
+            int sx = prev_x < current_x ? 1 : -1;
+            int sy = prev_y < current_y ? 1 : -1;
+            int err = dx - dy;
+            
+            int px = prev_x;
+            int py = prev_y;
+
+            while(1) {
+                set_pixel(buffer, px, py, buf_width, buf_height, 255, 100, 100); 
 
                 if (px == current_x && py == current_y) break;
                 int e2 = 2 * err;
@@ -699,12 +822,16 @@ void generate_png_file() {
         return;
     }
 
+    // Allocate buffer using the wrapper for tracking
     long buffer_size = (long)PNG_WIDTH * PNG_DYNAMIC_HEIGHT * NUM_CHANNELS;
-    unsigned char *buffer = (unsigned char *)calloc(buffer_size, 1);
+    unsigned char *buffer = (unsigned char *)safe_malloc(buffer_size); 
     if (buffer == NULL) {
         printf("\nERROR: Failed to allocate buffer for PNG.\n");
         return;
     }
+    // Zero out the buffer
+    memset(buffer, 0, buffer_size);
+
 
     // Draw main column titles (placeholder text only)
     int title_y = 5;
@@ -715,19 +842,95 @@ void generate_png_file() {
     draw_text_placeholder(buffer, PNG_WIDTH, PNG_DYNAMIC_HEIGHT, current_x + img_step, title_y, "OBSERVED NOISY", 255, 255, 255);
     draw_text_placeholder(buffer, PNG_WIDTH, PNG_DYNAMIC_HEIGHT, current_x + 2 * img_step, title_y, "BEST ESTIMATED", 255, 255, 255);
     draw_text_placeholder(buffer, PNG_WIDTH, PNG_DYNAMIC_HEIGHT, current_x + 3 * img_step, title_y, "ERROR DIFF", 255, 255, 255);
-    draw_text_placeholder(buffer, PNG_WIDTH, PNG_DYNAMIC_HEIGHT, current_x + 4 * img_step + 30, title_y, "FEATURE LOSS (vs ITER)", 255, 255, 255);
+    draw_text_placeholder(buffer, PNG_WIDTH, PNG_DYNAMIC_HEIGHT, current_x + 4 * img_step + 30, title_y, "FEAT LOSS (vs ITER)", 255, 255, 255);
+    draw_text_placeholder(buffer, PNG_WIDTH, PNG_DYNAMIC_HEIGHT, current_x + 5 * img_step + 60, title_y, "NET MEMORY (vs TEST)", 255, 255, 255);
     
     int x_set = SET_SPACING; 
     
     // Render only the completed test sets vertically
     for (int k = 0; k < tests_completed_before_limit; k++) {
         int y_set = TEXT_HEIGHT + k * (IMG_SIZE + TEXT_HEIGHT + SET_SPACING);
+        
+        // Render the images and the loss graph
         render_test_to_png(buffer, PNG_WIDTH, PNG_DYNAMIC_HEIGHT, &all_results[k], x_set, y_set);
+        
+        // Draw the memory graph on the side (only once)
+        if (k == 0) {
+            // Memory graph is drawn once covering all rows
+            int graph_x = x_set + 4 * img_step + GRAPH_WIDTH + IMG_SPACING * 2;
+            int graph_y = TEXT_HEIGHT + TEXT_HEIGHT;
+            int total_rows_height = tests_completed_before_limit * (IMG_SIZE + TEXT_HEIGHT + SET_SPACING) - SET_SPACING - 5;
+            
+            // To make the memory graph span the full height of the tests, we must resize it virtually.
+            // For now, let's keep it simple and just draw it in the first row's slot.
+            // A truly meaningful graph needs to be drawn once outside the loop at the full height.
+            // Let's place it next to the last test's loss graph for simplicity and clarity.
+        }
     }
+    
+    // Draw the full memory graph on the right edge, scaled to the height of the rendered tests
+    int mem_graph_x = x_set + 4 * img_step + GRAPH_WIDTH + IMG_SPACING * 2;
+    int mem_graph_y = TEXT_HEIGHT; // Start after the title
+
+    // Override GRAPH_HEIGHT for the memory graph to span all rendered rows
+    // Recalculate dimensions for a single graph covering all rows
+    int mem_graph_visual_height = PNG_DYNAMIC_HEIGHT - mem_graph_y;
+
+    // Use a temporary function to draw the memory graph which doesn't use the global GRAPH_HEIGHT
+    // since we need it to dynamically span all rendered tests.
+
+    // Redraw final memory graph
+    size_t max_mem = 0;
+    for (int i = 0; i <= tests_completed_before_limit; i++) {
+        if (memory_history[i] > max_mem) max_mem = memory_history[i];
+    }
+    if (max_mem > 0) {
+        int prev_y = -1;
+        for (int i = 0; i <= tests_completed_before_limit; i++) { 
+            // Draw background for this column
+            for(int py = 0; py < mem_graph_visual_height; py++) {
+                for(int px = 0; px < GRAPH_WIDTH; px++) {
+                    set_pixel(buffer, mem_graph_x + px, mem_graph_y + py, PNG_WIDTH, PNG_DYNAMIC_HEIGHT, 20, 20, 20); 
+                }
+            }
+
+            int current_x = mem_graph_x + (int)round((double)i / tests_completed_before_limit * (GRAPH_WIDTH - 1));
+
+            double normalized_mem = 1.0 - ((double)memory_history[i] / max_mem);
+            int current_y = mem_graph_y + (int)round(normalized_mem * (mem_graph_visual_height - 1));
+            current_y = fmax(mem_graph_y, fmin(mem_graph_y + mem_graph_visual_height - 1, current_y)); 
+
+            set_pixel(buffer, current_x, current_y, PNG_WIDTH, PNG_DYNAMIC_HEIGHT, 255, 100, 100); 
+
+            if (prev_y != -1) {
+                int prev_x = mem_graph_x + (int)round((double)(i-1) / tests_completed_before_limit * (GRAPH_WIDTH - 1));
+
+                int dx = abs(current_x - prev_x);
+                int dy = abs(current_y - prev_y);
+                int sx = prev_x < current_x ? 1 : -1;
+                int sy = prev_y < current_y ? 1 : -1;
+                int err = dx - dy;
+                
+                int px = prev_x;
+                int py = prev_y;
+
+                while(1) {
+                    set_pixel(buffer, px, py, PNG_WIDTH, PNG_DYNAMIC_HEIGHT, 255, 100, 100); 
+
+                    if (px == current_x && py == current_y) break;
+                    int e2 = 2 * err;
+                    if (e2 > -dy) { err -= dy; px += sx; }
+                    if (e2 < dx) { err += dx; py += sy; }
+                }
+            }
+            prev_y = current_y;
+        }
+    }
+
 
     int success = stbi_write_png("network_full_vertical.png", PNG_WIDTH, PNG_DYNAMIC_HEIGHT, NUM_CHANNELS, buffer, PNG_WIDTH * NUM_CHANNELS);
 
-    free(buffer);
+    safe_free(buffer, buffer_size); // Free buffer using the wrapper
 
     if (success) {
         printf("\n\n======================================================\n");
@@ -748,6 +951,16 @@ int main(void) {
     const double MIN_ALPHA = -0.15;
     const double MAX_ALPHA = 0.15;
     
+    // --- Dynamic Allocation using Wrapper ---
+    size_t required_size = sizeof(TestResult) * NUM_TESTS;
+    all_results = (TestResult *)safe_malloc(required_size);
+    if (all_results == NULL) {
+        fprintf(stderr, "Fatal Error: Failed to allocate memory for %d test results.\n", NUM_TESTS);
+        return 1;
+    }
+    // Record initial memory usage after allocating the main structure
+    record_memory_usage();
+    
     // START TIMER
     clock_t start_time = clock();
 
@@ -760,11 +973,11 @@ int main(void) {
     for (int char_index = 0; char_index < NUM_IDEAL_CHARS; char_index++) {
         for (int test_run = 0; test_run < TESTS_PER_CHAR; test_run++) {
             
-            // TIMER CHECK: Check time outside of the inner (iteration) loops
+            // TIMER CHECK
             double elapsed_time = (double)(clock() - start_time) / CLOCKS_PER_SEC;
             if (elapsed_time > TIME_LIMIT_SECONDS) {
                 printf("\nTIME LIMIT REACHED: Stopping execution after %.2f seconds.\n", elapsed_time);
-                goto end_testing; // Jump out of all loops
+                goto end_testing; 
             }
             
             double true_alpha[NUM_DEFORMATIONS];
@@ -776,6 +989,9 @@ int main(void) {
             
             test_counter++;
             tests_completed_before_limit = test_counter; // Update global counter
+            
+            // Record memory history after each test completes
+            record_memory_usage(); 
             
             if (test_counter % (NUM_IDEAL_CHARS * 2) == 0) {
                  printf("Processed %d/%d tests (Current Char: %s)...\n", test_counter, NUM_TESTS, CHAR_NAMES[char_index]);
@@ -790,6 +1006,12 @@ end_testing:
     summarize_results_console(final_elapsed_time);
 
     generate_png_file();
+
+    // --- Free Main Allocation using Wrapper ---
+    safe_free(all_results, required_size);
+    
+    printf("\nFinal Memory Check: Allocated: %zu bytes | Freed: %zu bytes | Net: %zu bytes\n", 
+           total_allocated_bytes, total_freed_bytes, total_allocated_bytes - total_freed_bytes);
 
     return 0;
 }
