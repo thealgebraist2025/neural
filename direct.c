@@ -67,17 +67,22 @@ TestResult all_results[NUM_TESTS];
 // Lookup table for character names
 const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {"J", "1", "2", "3", "4"};
 
+// Updated Ideal Templates for better visual fidelity using a single piecewise stroke
 const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
-    // 0: 'J' (Curve)
+    // 0: 'J' (Hook)
     [0] = {.stroke_1_start = {.x = 0.5, .y = 0.1}, .stroke_1_mid = {.x = 0.5, .y = 0.7}, .stroke_1_end = {.x = 0.2, .y = 0.9}},
-    // 1: '1' (Line)
+    
+    // 1: '1' (Straight Line)
     [1] = {.stroke_1_start = {.x = 0.5, .y = 0.1}, .stroke_1_mid = {.x = 0.5, .y = 0.5}, .stroke_1_end = {.x = 0.5, .y = 0.9}},
-    // 2: '2' (S-curve approximation)
-    [2] = {.stroke_1_start = {.x = 0.2, .y = 0.1}, .stroke_1_mid = {.x = 0.8, .y = 0.5}, .stroke_1_end = {.x = 0.2, .y = 0.9}},
-    // 3: '3' (Double arc approximation)
-    [3] = {.stroke_1_start = {.x = 0.2, .y = 0.1}, .stroke_1_mid = {.x = 0.7, .y = 0.5}, .stroke_1_end = {.x = 0.2, .y = 0.9}},
-    // 4: '4' (Zig-zag approximation)
-    [4] = {.stroke_1_start = {.x = 0.8, .y = 0.1}, .stroke_1_mid = {.x = 0.2, .y = 0.6}, .stroke_1_end = {.x = 0.8, .y = 0.9}}
+    
+    // 2: '2' (S-curve approximation: Top right loop, bottom left baseline)
+    [2] = {.stroke_1_start = {.x = 0.2, .y = 0.1}, .stroke_1_mid = {.x = 0.7, .y = 0.4}, .stroke_1_end = {.x = 0.3, .y = 0.9}}, 
+    
+    // 3: '3' (Double arc approximation: Two open arcs facing right)
+    [3] = {.stroke_1_start = {.x = 0.2, .y = 0.1}, .stroke_1_mid = {.x = 0.8, .y = 0.5}, .stroke_1_end = {.x = 0.2, .y = 0.9}}, 
+    
+    // 4: '4' (Zig-zag approximation: Down-right, horizontal corner, then vertical line)
+    [4] = {.stroke_1_start = {.x = 0.2, .y = 0.1}, .stroke_1_mid = {.x = 0.8, .y = 0.7}, .stroke_1_end = {.x = 0.8, .y = 0.9}} 
 };
 
 /**
