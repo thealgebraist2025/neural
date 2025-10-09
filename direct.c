@@ -9,14 +9,13 @@
 #define GRID_SIZE 16
 #define NUM_DEFORMATIONS 2 // alpha_1 (Slant), alpha_2 (Curvature)
 #define NUM_POINTS 200     // Number of points to sample the curve
-#define LEARNING_RATE 0.001
+#define LEARNING_RATE 0.05 // ADJUSTED: Increased learning rate for faster convergence
 #define ITERATIONS 10
+#define GRADIENT_EPSILON 1e-3 // ADJUSTED: Increased epsilon for detectable change in discrete image
 
 // --- OCaml-like Immutability & Const Correctness ---
 
 // Mutable/Immutable Type: Represents a coordinate.
-// Members are NOT const here, allowing calculations (MUTABLE).
-// Immutability is enforced via const pointers in function signatures.
 typedef struct {
     double x; // MUTABLE during calculation
     double y; // MUTABLE during calculation
@@ -30,7 +29,6 @@ typedef struct {
 } Ideal_Curve_Params;
 
 // Mutable Type: The Learnable Deformation Coefficients (alpha_k)
-// These are the parameters we are trying to estimate.
 typedef struct {
     double alpha[NUM_DEFORMATIONS]; // MUTABLE
 } Deformation_Coefficients;
@@ -53,13 +51,9 @@ const Ideal_Curve_Params IDEAL_J = {
 // Deformation Basis Function Phi_k(t)
 void apply_deformation(Point *point, const double alpha[NUM_DEFORMATIONS]) {
     // Deformation 1: Slant (Shear Transform)
-    // Horizontal shift is proportional to alpha_1 and the y-coordinate.
-    // MUTABLE operation on point->x
     point->x = point->x + alpha[0] * (point->y - 0.5);
 
     // Deformation 2: Curvature/Width
-    // Horizontal shift is proportional to alpha_2 and a parabolic function
-    // MUTABLE operation on point->x
     point->x = point->x + alpha[1] * sin(M_PI * point->y);
 }
 
@@ -67,34 +61,25 @@ void apply_deformation(Point *point, const double alpha[NUM_DEFORMATIONS]) {
 
 /**
  * @brief Generates a point on the 'J' curve using the ideal form and deformations.
- * @param t The path parameter, t in [0, 1].
- * @param params The immutable ideal curve definition.
- * @param alpha The immutable deformation coefficients used for calculation.
- * @return A Point structure representing the deformed curve coordinate (mutable copy).
  */
 Point get_deformed_point(const double t, const Ideal_Curve_Params *const params, const double alpha[NUM_DEFORMATIONS]) {
-    // p must be MUTABLE as its fields will be assigned and modified
     Point p = {.x = 0.0, .y = 0.0};
     
     // Simplified J curve as a piecewise linear approximation for t in [0, 1]
     if (t < 0.3) {
-        // Top line/start of stem (0.0 to 0.3)
         const double segment_t = t / 0.3;
         p.x = params->stroke_1_start.x;
         p.y = params->stroke_1_start.y + (params->stroke_1_mid.y - params->stroke_1_start.y) * segment_t;
     } else if (t < 0.8) {
-        // Vertical stem (0.3 to 0.8)
         const double segment_t = (t - 0.3) / 0.5;
         p.x = params->stroke_1_mid.x;
         p.y = params->stroke_1_mid.y + (params->stroke_1_mid.y - params->stroke_1_end.y) * segment_t;
     } else {
-        // Hook (0.8 to 1.0)
         const double segment_t = (t - 0.8) / 0.2;
         p.x = params->stroke_1_mid.x + (params->stroke_1_end.x - params->stroke_1_mid.x) * segment_t;
         p.y = params->stroke_1_end.y;
     }
 
-    // Apply the deformation (Phi_k * alpha_k). p is passed by pointer, allowing modification.
     apply_deformation(&p, alpha);
 
     // Scale to pixel grid and clamp (MUTABLE operations on p)
@@ -106,8 +91,6 @@ Point get_deformed_point(const double t, const Ideal_Curve_Params *const params,
 
 /**
  * @brief Rasterizes the deformed curve onto the image grid (Forward Model G).
- * @param alpha The immutable deformation coefficients.
- * @param img The mutable image buffer to draw onto.
  */
 void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img) {
     // 1. Clear the canvas (MUTABLE operation on img)
@@ -143,9 +126,6 @@ void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img) {
 
 /**
  * @brief Calculates the L2 Loss (Squared Error) between generated and observed image.
- * @param generated The immutable generated image.
- * @param observed The immutable observed input image.
- * @return The calculated loss value.
  */
 double calculate_loss(const Generated_Image generated, const Observed_Image observed) {
     double loss = 0.0;
@@ -160,13 +140,9 @@ double calculate_loss(const Generated_Image generated, const Observed_Image obse
 
 /**
  * @brief Simulates the Gradient calculation using Finite Differences.
- * @param observed The immutable observed input image.
- * @param alpha The immutable coefficients to calculate gradient around.
- * @param loss_base The calculated loss at the current alpha.
- * @param grad_out The mutable array to store the calculated gradients.
  */
 void calculate_gradient(const Observed_Image observed, const Deformation_Coefficients *const alpha, const double loss_base, double grad_out[NUM_DEFORMATIONS]) {
-    const double epsilon = 1e-4; // Step size for finite difference
+    const double epsilon = GRADIENT_EPSILON; 
     Generated_Image generated_perturbed; // MUTABLE buffer for perturbed image
 
     for (int k = 0; k < NUM_DEFORMATIONS; k++) {
@@ -241,7 +217,7 @@ int main(void) {
     double loss;
 
     printf("\n--- Optimization (Gradient Descent) ---\n");
-    printf("It | Loss     | a_1 (Slant) | a_2 (Curve) | Est. Change\n");
+    printf("It | Loss     | a_1 (Slant) | a_2 (Curve) | da_1 | da_2\n");
     printf("----------------------------------------------------------\n");
 
     // 3. Training/Estimation Loop (MUTABLE iterations)
@@ -256,7 +232,7 @@ int main(void) {
         calculate_gradient(observed_image, &alpha_hat, loss, gradient);
         
         // Print status
-        printf("%02d | %8.5f | %8.4f | %8.4f | ", t, loss, alpha_hat.alpha[0], alpha_hat.alpha[1]);
+        printf("%02d | %8.5f | %8.4f | %8.4f |", t, loss, alpha_hat.alpha[0], alpha_hat.alpha[1]);
 
         // Gradient Descent Update (MUTABLE operation on alpha_hat)
         if (t < ITERATIONS) {
@@ -266,11 +242,10 @@ int main(void) {
             alpha_hat.alpha[0] -= delta_a1;
             alpha_hat.alpha[1] -= delta_a2;
 
-            printf("da1: %+.4f", delta_a1);
+            printf(" %+.4f | %+.4f\n", delta_a1, delta_a2);
         } else {
-            printf("--- Final ---");
+            printf(" --- Final ---\n");
         }
-        printf("\n");
     }
 
     // 4. Final Result (IMMUTABLE visualization)
