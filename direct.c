@@ -11,8 +11,8 @@
 #define NUM_DEFORMATIONS 2 // alpha_1 (Slant), alpha_2 (Curvature)
 #define NUM_FEATURES 8     // Using 8 directional projections for loss calculation
 #define NUM_POINTS 200
-#define LEARNING_RATE 0.001 // Stable step size
-#define ITERATIONS 100
+#define LEARNING_RATE 0.0000001 // CRITICAL FIX: Drastically reduced for stability in feature space
+#define ITERATIONS 300     // Increased to allow slower, stable steps to converge
 #define GRADIENT_EPSILON 0.01 
 
 // --- OCaml-like Immutability & Const Correctness ---
@@ -116,7 +116,6 @@ void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img) {
 
 /**
  * @brief Extracts 8 geometric projection features from the image (Directional Moments).
- * Projections are onto (1,0), (1,1), (0,1), (-1,1), (-1,0), (-1,-1), (0,-1), (1,-1).
  */
 void extract_geometric_features(const Generated_Image img, Feature_Vector features_out) {
     // 8 normalized basis vectors (x, y)
@@ -140,6 +139,8 @@ void extract_geometric_features(const Generated_Image img, Feature_Vector featur
             if (intensity < 0.1) continue; // Skip near-background pixels
 
             // Vector from center to pixel (j is x-axis, i is y-axis)
+            // Note: In image coordinates, i (row) is usually Y, j (col) is X.
+            // But projection calculations typically use x = col, y = row.
             const double vx = (double)j - center;
             const double vy = (double)i - center;
             
@@ -264,7 +265,7 @@ void run_test(int test_id, const double true_alpha[NUM_DEFORMATIONS]) {
         // Calculate Gradient (IMMUTABLE operation)
         calculate_gradient(observed_features, &alpha_hat, loss, gradient);
         
-        printf("%02d | %8.5f | %8.4f | %8.4f |", t, loss, alpha_hat.alpha[0], alpha_hat.alpha[1]);
+        printf("%03d | %8.5f | %8.4f | %8.4f |", t, loss, alpha_hat.alpha[0], alpha_hat.alpha[1]);
 
         // Gradient Descent Update (MUTABLE operation on alpha_hat)
         if (t < ITERATIONS) {
