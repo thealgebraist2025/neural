@@ -20,7 +20,7 @@
 #define NUM_FEATURES (NUM_VECTORS * NUM_BINS) 
 #define PIXEL_LOSS_WEIGHT 2.5 
 #define NUM_POINTS 200
-#define ITERATIONS 100      // DECREASED from 500 to 200 for 3-minute limit
+#define ITERATIONS 200      // INCREASED from 100 to 200 for better convergence
 #define GRADIENT_EPSILON 0.01 
 #define NUM_IDEAL_CHARS 62  // 26 A-Z + 26 a-z + 10 0-9
 #define NUM_CONTROL_POINTS 9 
@@ -32,6 +32,7 @@
 #define SET_SPACING 25  
 #define NUM_CHANNELS 3 
 #define SEGMENTATION_THRESHOLD 0.5 // Intensity > 0.5 (i.e., pixel value < 128)
+#define MAX_SEGMENTS_PER_ROW 10 // INCREASED for wider output PNG
 
 // Stroke widths to test (in GRID_SIZE pixels)
 const int STROKE_WIDTHS[] = {1, 2, 4, 8};
@@ -512,7 +513,7 @@ void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img, const
     }
 
     const double sigma = (double)stroke_width / 4.0; 
-    const int radius = stroke_width / 2;
+    const int radius = stroke_width / 2 + 1; // Slight increase in radius for better smoothing
 
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
@@ -644,8 +645,9 @@ void run_optimization(const Generated_Image observed_image, const Feature_Vector
     
     const Ideal_Curve_Params *ideal_params = &IDEAL_TEMPLATES[ideal_char_index];
     
-    Deformation_Coefficients alpha_hat = { .alpha = {0.0, 0.0} };
-    double learning_rate = 0.0000001; 
+    Deformation_Coefficients alpha_hat; 
+    // Increased base learning rate
+    double learning_rate = 0.0000003; 
     const double min_learning_rate = 0.00000000005;
     double gradient[NUM_DEFORMATIONS];
     Generated_Image generated_image;
@@ -654,9 +656,10 @@ void run_optimization(const Generated_Image observed_image, const Feature_Vector
     double prev_combined_loss = HUGE_VAL; 
     double current_feature_loss_only = HUGE_VAL;
     
-    // Set initial alpha based on a basic guess (can be improved)
-    alpha_hat.alpha[0] = 0.0;
-    alpha_hat.alpha[1] = 0.0;
+    // **Improvement 2: Random Initialization**
+    // Introduce a small random jitter to avoid starting exactly at a local minimum for (0,0)
+    alpha_hat.alpha[0] = ((double)rand() / RAND_MAX - 0.5) * 0.2; 
+    alpha_hat.alpha[1] = ((double)rand() / RAND_MAX - 0.5) * 0.2;
 
     for (int t = 0; t <= ITERATIONS; t++) {
         draw_curve(alpha_hat.alpha, generated_image, ideal_params, stroke_width);
@@ -665,8 +668,9 @@ void run_optimization(const Generated_Image observed_image, const Feature_Vector
         current_feature_loss_only = calculate_feature_loss_L2(generated_features, observed_features);
         combined_loss = current_feature_loss_only + PIXEL_LOSS_WEIGHT * calculate_pixel_loss_L2(generated_image, observed_image);
 
-        if (combined_loss > prev_combined_loss * 1.001 && learning_rate > min_learning_rate) { 
-            learning_rate *= 0.5;
+        // More aggressive learning rate decay
+        if (combined_loss > prev_combined_loss * 1.0005 && learning_rate > min_learning_rate) { 
+            learning_rate *= 0.75; // More aggressive decay (0.75 vs 0.5)
         }
 
         prev_combined_loss = combined_loss;
@@ -704,6 +708,7 @@ void recognize_segment(SegmentResult *segment) {
         for (int i = 0; i < NUM_IDEAL_CHARS; i++) {
             run_optimization(segment->resized_img, observed_features, i, &current_result, sw); 
 
+            // Only compare based on feature loss, which is more robust to stroke width differences.
             if (current_result.final_loss < min_feature_loss) {
                 min_feature_loss = current_result.final_loss;
                 best_match_index = i;
@@ -962,7 +967,8 @@ int segment_image_naive(const double *full_data, int full_width, int full_height
 // --- PNG Rendering for Segmentation Output ---
 
 #define SEG_ROW_HEIGHT (IMG_SIZE + TEXT_HEIGHT + SET_SPACING) 
-#define SEG_PNG_WIDTH (IMG_SIZE * 2 + IMG_SPACING * 3 + SET_SPACING * 2) 
+// The actual PNG width is calculated in generate_segment_png dynamically
+// #define SEG_PNG_WIDTH (IMG_SIZE * 2 + IMG_SPACING * 3 + SET_SPACING * 2) 
 
 void draw_segment_info_box(unsigned char *buffer, int buf_width, int buf_height, int x, int y, int width, int height, const SegmentResult *seg) {
     char info[100];
@@ -998,14 +1004,20 @@ void generate_segment_png(const SegmentResult *segments, int num_segments, const
         return;
     }
     
-    const int MAX_SEGMENTS_PER_ROW = 5;
+    // **Improvement 1: Dynamic Width Calculation**
+    const int SEGMENT_SET_WIDTH = (IMG_SIZE * 2 + IMG_SPACING); // Width of a single observed + generated pair
+    const int MAX_SEGMENTS_PER_ROW = 10; // Use the updated max per row
     const int SEGMENTS_PER_ROW = fmin(MAX_SEGMENTS_PER_ROW, num_segments);
     
     int full_img_row_height = (full_height * PIXEL_SIZE) + TEXT_HEIGHT + SET_SPACING;
     int seg_row_height = SEG_ROW_HEIGHT;
     int num_seg_rows = (num_segments + SEGMENTS_PER_ROW - 1) / SEGMENTS_PER_ROW; 
     
-    int png_width = SET_SPACING * 2 + SEGMENTS_PER_ROW * (IMG_SIZE * 2 + IMG_SPACING) + (SEGMENTS_PER_ROW - 1) * IMG_SPACING;
+    // Calculate required width based on MAX_SEGMENTS_PER_ROW
+    int max_seg_row_width = SET_SPACING * 2 + SEGMENTS_PER_ROW * SEGMENT_SET_WIDTH + (SEGMENTS_PER_ROW - 1) * IMG_SPACING;
+    int full_img_width = full_width * PIXEL_SIZE + SET_SPACING * 2;
+    
+    int png_width = fmax(max_seg_row_width, full_img_width); // Ensure width is enough for the widest row/full image
     int png_height = full_img_row_height + num_seg_rows * seg_row_height + SET_SPACING;
     
     long buffer_size = (long)png_width * png_height * NUM_CHANNELS;
@@ -1058,10 +1070,10 @@ void generate_segment_png(const SegmentResult *segments, int num_segments, const
 
     // 3. Draw Letter Segments
     for (int k = 0; k < num_segments; k++) {
-        int row_index = k / SEGMENTS_PER_ROW;
-        int col_index = k % SEGMENTS_PER_ROW;
+        int row_index = k / MAX_SEGMENTS_PER_ROW;
+        int col_index = k % MAX_SEGMENTS_PER_ROW;
         
-        int seg_x = SET_SPACING + col_index * (IMG_SIZE * 2 + IMG_SPACING);
+        int seg_x = SET_SPACING + col_index * (SEGMENT_SET_WIDTH + IMG_SPACING);
         int seg_y = y_set + row_index * seg_row_height;
         
         render_segment_to_png(buffer, png_width, png_height, &segments[k], seg_x, seg_y);
@@ -1085,7 +1097,9 @@ int main(void) {
     srand(42); 
 
     // Using the image from the context
-    const char *input_filename = "test1.jpg"; 
+    // NOTE: The name 'test1.jpg' is used for the previous placeholder. 
+    // The name '1000000825.png' from the upload is used here directly.
+    const char *input_filename = "1000000825.png"; 
     double *full_image_data = NULL;
     int full_width = 0;
     int full_height = 0;
