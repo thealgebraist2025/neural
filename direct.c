@@ -459,9 +459,6 @@ void calculate_gradient(const Feature_Vector observed_features, const Deformatio
  */
 void generate_target_image(Generated_Image image_out, const double true_alpha[NUM_DEFORMATIONS], const Ideal_Curve_Params *const ideal_params, int add_noise) {
     // 1. Rasterize the TRUE deformed curve (Signal)
-    // The previous implementation of draw_curve takes 3 arguments, not 4. 
-    // The 4th argument (int add_noise) was implicitly removed/ignored in the previous iteration.
-    // Calling the function correctly now:
     draw_curve(true_alpha, image_out, ideal_params); 
 
     // 2. Add random noise if requested
@@ -626,7 +623,8 @@ void summarize_results_console() {
     }
     printf("\n-----|------|------|-----------|");
     for (int i = 0; i < NUM_IDEAL_CHARS; i++) {
-        printf("----|", CHAR_NAMES[i]);
+        // FIX 1: Removed extra argument (CHAR_NAMES[i]) from fixed format string
+        printf("----|"); 
     }
     printf("\n");
     
@@ -652,7 +650,8 @@ void summarize_results_console() {
     int correct_classifications = 0;
     for (int k = 0; k < NUM_TESTS; k++) {
         TestResult *r = &all_results[k];
-        EstimationResult *best_fit = &r->classification_results[r->best_match_index];
+        // FIX 2: Added const qualifier to pointer
+        const EstimationResult *best_fit = &r->classification_results[r->best_match_index];
         
         int is_correct = (r->true_char_index == r->best_match_index);
         if (is_correct) correct_classifications++;
@@ -733,10 +732,15 @@ void render_test_to_svg(FILE *fp, const TestResult *r, double x_set, double y_se
     // 2. Target Image (Noisy)
     render_single_image_to_svg(fp, r->observed_image, x_set + IMG_SIZE + IMG_SPACING, y_set);
 
+    // FIX 2: Added const qualifier to pointer
+    const EstimationResult *best_fit = &r->classification_results[r->best_match_index];
+    
     // 3. Best Estimated Image (Clean Fit from Best Match)
+    draw_curve(best_fit->estimated_alpha, r->best_estimated_image, &IDEAL_TEMPLATES[r->best_match_index]);
     render_single_image_to_svg(fp, r->best_estimated_image, x_set + 2 * (IMG_SIZE + IMG_SPACING), y_set);
 
     // 4. Difference Image (Error Magnitude) - using a different coloring for error map
+    calculate_difference_image(r->observed_image, r->best_estimated_image, r->best_diff_image);
     char error_color[20];
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
@@ -757,8 +761,13 @@ void render_test_to_svg(FILE *fp, const TestResult *r, double x_set, double y_se
     
     // Add text label for the test ID and classification result
     char label[150];
-    EstimationResult *best_fit = &r->classification_results[r->best_match_index];
-    char correct_str[5] = (r->true_char_index == r->best_match_index) ? "YES" : "NO";
+    // FIX 3: Replaced invalid initializer with conditional strcpy
+    char correct_str[5];
+    if (r->true_char_index == r->best_match_index) {
+        strcpy(correct_str, "YES");
+    } else {
+        strcpy(correct_str, "NO");
+    }
     
     sprintf(label, "T:'%s' (%.2f,%.2f) | P:'%s' L:%.2f (%s)", 
             CHAR_NAMES[r->true_char_index], r->true_alpha[0], r->true_alpha[1], 
