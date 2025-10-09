@@ -1099,7 +1099,7 @@ int main(void) {
     // Using the image from the context
     // NOTE: The name 'test1.jpg' is used for the previous placeholder. 
     // The name '1000000825.png' from the upload is used here directly.
-    const char *input_filename = "1000000825.png"; 
+    const char *input_filename = "test1.png"; 
     double *full_image_data = NULL;
     int full_width = 0;
     int full_height = 0;
