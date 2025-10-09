@@ -9,7 +9,9 @@
 // --- Global Configuration ---
 #define GRID_SIZE 16
 #define NUM_DEFORMATIONS 2  // alpha_1 (Slant), alpha_2 (Curvature)
-#define NUM_FEATURES 8      // CHANGED TO 8 directional projection features
+#define NUM_VECTORS 8       // Number of directional unit vectors
+#define NUM_BINS 32         // Number of histogram bins per vector
+#define NUM_FEATURES (NUM_VECTORS * NUM_BINS) // 8 * 32 = 256 total features
 #define NUM_POINTS 200
 #define ITERATIONS 1000     // ITERATIONS SET TO 1000
 #define GRADIENT_EPSILON 0.01 
@@ -399,23 +401,27 @@ void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img, const
 // --- Feature Extraction and Loss ---
 
 /**
- * @brief Extracts 8 geometric projection features (Second-Order Directional Moments) 
- * to be more robust and sensitive to major structural points.
+ * @brief Extracts 256 directional features using a 32-bin histogram of 
+ * projected pixel mass for each of the 8 unit vectors.
  */
 void extract_geometric_features(const Generated_Image img, Feature_Vector features_out) {
     // Generate 8 normalized unit vectors (length 1)
-    double vectors[NUM_FEATURES][2];
-    for (int k = 0; k < NUM_FEATURES; k++) { // k runs from 0 to 7
+    double vectors[NUM_VECTORS][2];
+    for (int k = 0; k < NUM_VECTORS; k++) { 
         // Angle step is 2*PI / 8 (45 degrees)
-        const double angle = 2.0 * M_PI * k / NUM_FEATURES; 
+        const double angle = 2.0 * M_PI * k / NUM_VECTORS; 
         vectors[k][0] = cos(angle); // x component
         vectors[k][1] = sin(angle); // y component
     }
     
     // Center point for coordinate calculation
-    const double center = (GRID_SIZE - 1.0) / 2.0;
+    const double center = (GRID_SIZE - 1.0) / 2.0; // 7.5 for 16x16 grid
+    
+    // Maximum projection distance from center (Half-diagonal distance)
+    // Max distance is sqrt(7.5^2 + 7.5^2) = 10.6066...
+    const double MAX_PROJECTION_MAGNITUDE = sqrt(center * center + center * center); 
 
-    // Initialize feature vector
+    // Initialize feature vector (all 256 bins)
     for (int k = 0; k < NUM_FEATURES; k++) {
         features_out[k] = 0.0;
     }
@@ -431,22 +437,32 @@ void extract_geometric_features(const Generated_Image img, Feature_Vector featur
             const double vy = (double)i - center;
             
             // Project the mass vector onto all 8 basis vectors
-            for (int k = 0; k < NUM_FEATURES; k++) {
+            for (int k = 0; k < NUM_VECTORS; k++) {
                 // 1. Calculate the projection of the pixel's position vector onto the basis vector (dot product)
                 const double projection = (vx * vectors[k][0] + vy * vectors[k][1]);
                 
-                // 2. Second-Order Directional Moment: Square the projection and multiply by intensity.
-                // This weights points further from the center more heavily, emphasizing structure.
-                const double contribution = projection * projection * intensity;
+                // 2. Normalize the projection to the range [-1.0, 1.0]
+                const double normalized_projection = projection / MAX_PROJECTION_MAGNITUDE;
                 
-                features_out[k] += contribution; 
+                // 3. Map the normalized projection [-1.0, 1.0] to a bin index [0, NUM_BINS-1]
+                // (normalized + 1.0) is in [0, 2.0].
+                // (normalized + 1.0) * (NUM_BINS / 2.0) is in [0, NUM_BINS].
+                int bin_index = (int)floor((normalized_projection + 1.0) * (NUM_BINS / 2.0));
+                
+                // Clamp index to ensure it is within [0, NUM_BINS-1]
+                if (bin_index < 0) bin_index = 0;
+                if (bin_index >= NUM_BINS) bin_index = NUM_BINS - 1;
+                
+                // 4. Add the intensity contribution to the correct feature bin
+                const int feature_index = k * NUM_BINS + bin_index;
+                features_out[feature_index] += intensity;
             }
         }
     }
 }
 
 /**
- * @brief Calculates the L2 Loss (Squared Error) between 8-dimensional feature vectors.
+ * @brief Calculates the L2 Loss (Squared Error) between 256-dimensional feature vectors.
  */
 double calculate_feature_loss(const Feature_Vector generated, const Feature_Vector observed) {
     double loss = 0.0;
@@ -527,8 +543,9 @@ void run_optimization(const Feature_Vector observed_features, int ideal_char_ind
     };
     
     // Dynamic learning rate initialization and floor
-    double learning_rate = 0.0000001; 
-    const double min_learning_rate = 0.0000000001;
+    // Adjusted learning rate for 256 features
+    double learning_rate = 0.00000005; 
+    const double min_learning_rate = 0.00000000005;
     double gradient[NUM_DEFORMATIONS];
     Generated_Image generated_image;
     Feature_Vector generated_features;
@@ -673,7 +690,7 @@ void summarize_results_console() {
     // Print data for the first DETAILED_SUMMARY_LIMIT tests
     for (int k = 0; k < DETAILED_SUMMARY_LIMIT; k++) {
         TestResult *r = &all_results[k];
-        // Note: The Feature Loss scale will be different now (higher) due to 128 features.
+        // Note: The Feature Loss scale will be different now (higher) due to 256 features.
         printf("%4d | %4s | %4s | %14.4f |", 
                r->id, CHAR_NAMES[r->true_char_index], CHAR_NAMES[r->best_match_index],
                r->classification_results[r->best_match_index].final_loss);
