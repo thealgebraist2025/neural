@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <time.h> // Include time library
+#include <time.h> 
 
 // --- STB Image Write Configuration ---
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -12,12 +12,12 @@
 #define M_PI 3.14159265358979323846
 
 // --- Global Configuration ---
-#define GRID_SIZE 16
+#define GRID_SIZE 32        // **UPDATED: Increased to 32x32 resolution**
 #define NUM_DEFORMATIONS 2  
 #define NUM_VECTORS 16      
 #define NUM_BINS 32         
 #define NUM_FEATURES (NUM_VECTORS * NUM_BINS) 
-#define PIXEL_LOSS_WEIGHT 5.0 
+#define PIXEL_LOSS_WEIGHT 2.5   // **UPDATED: Reduced from 5.0 to 2.5 to compensate for 4x pixel count**
 #define NUM_POINTS 200
 #define ITERATIONS 500      // Set for speed
 #define GRADIENT_EPSILON 0.01 
@@ -25,7 +25,7 @@
 #define TESTS_PER_CHAR 8    
 #define NUM_TESTS (NUM_IDEAL_CHARS * TESTS_PER_CHAR) // 36 * 8 = 288 total tests
 #define NUM_CONTROL_POINTS 9 
-#define MAX_PIXEL_ERROR (GRID_SIZE * GRID_SIZE) 
+#define MAX_PIXEL_ERROR (GRID_SIZE * GRID_SIZE) // **UPDATED: 32*32 = 1024**
 #define TIME_LIMIT_SECONDS 240.0 // 4 minutes limit
 
 // Loss history configuration
@@ -54,7 +54,7 @@ typedef struct {
 } TestResult;
 
 TestResult all_results[NUM_TESTS]; 
-int tests_completed_before_limit = 0; // Global to track how many tests were actually run
+int tests_completed_before_limit = 0; 
 
 // --- Fixed Ideal Curves (A-Z, 0-9) ---
 const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {
@@ -64,6 +64,7 @@ const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {
 };
 
 // Templates are included here for completeness but are very long.
+// (The full template array from the previous version remains here)
 const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
     [0] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.3, .y = 0.3}, {.x = 0.2, .y = 0.5}, {.x = 0.3, .y = 0.6}, 
         {.x = 0.7, .y = 0.6}, {.x = 0.8, .y = 0.5}, {.x = 0.7, .y = 0.3}, {.x = 0.5, .y = 0.1}, 
@@ -335,6 +336,7 @@ double calculate_combined_loss(const Generated_Image generated_img, const Featur
     const double feature_loss = calculate_feature_loss_L2(generated_features, observed_features);
     const double pixel_loss = calculate_pixel_loss_L2(generated_img, observed_img);
     
+    // Pixel loss weight adjusted for 32x32 resolution
     return feature_loss + PIXEL_LOSS_WEIGHT * pixel_loss;
 }
 
@@ -519,7 +521,7 @@ void summarize_results_console(double total_elapsed_time) {
 
 
 // --- PNG Rendering Constants (Vertical Layout) ---
-#define PIXEL_SIZE 5    
+#define PIXEL_SIZE 2    // **UPDATED: Reduced for manageable 32x32 image size**
 #define IMG_SIZE (GRID_SIZE * PIXEL_SIZE) 
 #define IMG_SPACING 5   
 #define TEXT_HEIGHT 15  
@@ -529,7 +531,6 @@ void summarize_results_console(double total_elapsed_time) {
 
 // PNG Dimensions (HEIGHT dynamically calculated based on completed tests)
 #define PNG_WIDTH (IMG_SIZE * 4 + IMG_SPACING * 3 + GRAPH_WIDTH + SET_SPACING * 2) 
-// The actual PNG height will be determined dynamically by tests_completed_before_limit
 #define NUM_CHANNELS 3 
 
 // --- PNG Rendering Functions ---
@@ -751,7 +752,7 @@ int main(void) {
     clock_t start_time = clock();
 
     printf("Starting %d classification tests (%d chars * %d trials) with %d iterations each...\n", NUM_TESTS, NUM_IDEAL_CHARS, TESTS_PER_CHAR, ITERATIONS);
-    printf("Time limit set to %.0f seconds.\n", TIME_LIMIT_SECONDS);
+    printf("Image Resolution: %dx%d. Time limit set to %.0f seconds.\n", GRID_SIZE, GRID_SIZE, TIME_LIMIT_SECONDS);
 
 
     int test_counter = 0;
