@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <time.h> // Include time library
 
 // --- STB Image Write Configuration ---
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -18,17 +19,18 @@
 #define NUM_FEATURES (NUM_VECTORS * NUM_BINS) 
 #define PIXEL_LOSS_WEIGHT 5.0 
 #define NUM_POINTS 200
-#define ITERATIONS 500      // REDUCED from 2000 to 500 for speed
+#define ITERATIONS 500      // Set for speed
 #define GRADIENT_EPSILON 0.01 
 #define NUM_IDEAL_CHARS 36  
 #define TESTS_PER_CHAR 8    
 #define NUM_TESTS (NUM_IDEAL_CHARS * TESTS_PER_CHAR) // 36 * 8 = 288 total tests
 #define NUM_CONTROL_POINTS 9 
 #define MAX_PIXEL_ERROR (GRID_SIZE * GRID_SIZE) 
+#define TIME_LIMIT_SECONDS 240.0 // 4 minutes limit
 
 // Loss history configuration
-#define LOSS_HISTORY_STEP 5 // Adjusted for fewer iterations
-#define LOSS_HISTORY_SIZE (ITERATIONS / LOSS_HISTORY_STEP + 1) // 500/5 + 1 = 101
+#define LOSS_HISTORY_STEP 5 
+#define LOSS_HISTORY_SIZE (ITERATIONS / LOSS_HISTORY_STEP + 1) 
 
 // --- Data Structures ---
 
@@ -52,6 +54,7 @@ typedef struct {
 } TestResult;
 
 TestResult all_results[NUM_TESTS]; 
+int tests_completed_before_limit = 0; // Global to track how many tests were actually run
 
 // --- Fixed Ideal Curves (A-Z, 0-9) ---
 const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {
@@ -61,7 +64,6 @@ const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {
 };
 
 // Templates are included here for completeness but are very long.
-// (The full template array from the previous version remains here)
 const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
     [0] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.3, .y = 0.3}, {.x = 0.2, .y = 0.5}, {.x = 0.3, .y = 0.6}, 
         {.x = 0.7, .y = 0.6}, {.x = 0.8, .y = 0.5}, {.x = 0.7, .y = 0.3}, {.x = 0.5, .y = 0.1}, 
@@ -390,7 +392,7 @@ void run_optimization(const Generated_Image observed_image, const Feature_Vector
     const Ideal_Curve_Params *ideal_params = &IDEAL_TEMPLATES[ideal_char_index];
     
     Deformation_Coefficients alpha_hat = { .alpha = {0.0, 0.0} };
-    double learning_rate = 0.0000001; // Increased learning rate for faster convergence
+    double learning_rate = 0.0000001; 
     const double min_learning_rate = 0.00000000005;
     double gradient[NUM_DEFORMATIONS];
     Generated_Image generated_image;
@@ -479,18 +481,20 @@ void run_classification_test(int test_id, int true_char_index, const double true
 }
 
 
-#define CONSOLE_SUMMARY_LIMIT NUM_TESTS 
-
-void summarize_results_console() {
+void summarize_results_console(double total_elapsed_time) {
     printf("\n\n=================================================================================================\n");
     printf("                  CLASSIFICATION SUMMARY (%d CHARS * %d TESTS = %d TOTAL TESTS)                    \n", NUM_IDEAL_CHARS, TESTS_PER_CHAR, NUM_TESTS);
+    printf("                                  Tests Completed: %d/%d in %.2f seconds\n", tests_completed_before_limit, NUM_TESTS, total_elapsed_time);
+    if (tests_completed_before_limit < NUM_TESTS) {
+        printf("                                    !!! TIME LIMIT OF %.0f SECONDS REACHED !!!\n", TIME_LIMIT_SECONDS);
+    }
     printf("=================================================================================================\n");
     
     printf("  ID | TRUE | PRED | Feat Loss (Best Fit) | TRUE $a_1$ | TRUE $a_2$ | EST $a_1$ | EST $a_2$ | PIXEL ERROR %% | Result \n");
     printf("-----|------|------|----------------------|-----------|-----------|-----------|-----------|---------------|--------\n");
 
     int correct_classifications = 0;
-    for (int k = 0; k < CONSOLE_SUMMARY_LIMIT; k++) {
+    for (int k = 0; k < tests_completed_before_limit; k++) {
         TestResult *r = &all_results[k];
         const EstimationResult *best_fit = &r->classification_results[r->best_match_index];
         
@@ -508,8 +512,8 @@ void summarize_results_console() {
                pixel_error_percent, is_correct ? "CORRECT" : "WRONG");
     }
     printf("-----|------|------|----------------------|-----------|-----------|-----------|-----------|---------------|--------\n");
-    printf("Overall Accuracy: %d/%d (%.2f%%)\n", correct_classifications, NUM_TESTS, 
-           (double)correct_classifications / NUM_TESTS * 100.0);
+    printf("Overall Accuracy (Completed Tests): %d/%d (%.2f%%)\n", correct_classifications, tests_completed_before_limit, 
+           (double)correct_classifications / tests_completed_before_limit * 100.0);
     printf("=================================================================================================\n");
 }
 
@@ -523,15 +527,15 @@ void summarize_results_console() {
 #define GRAPH_WIDTH 100 
 #define GRAPH_HEIGHT IMG_SIZE 
 
-// PNG Dimensions (WIDTH is the same, HEIGHT is scaled up for 288 tests)
+// PNG Dimensions (HEIGHT dynamically calculated based on completed tests)
 #define PNG_WIDTH (IMG_SIZE * 4 + IMG_SPACING * 3 + GRAPH_WIDTH + SET_SPACING * 2) 
-#define PNG_HEIGHT (TEXT_HEIGHT + (IMG_SIZE + TEXT_HEIGHT + SET_SPACING) * NUM_TESTS) 
+// The actual PNG height will be determined dynamically by tests_completed_before_limit
 #define NUM_CHANNELS 3 
 
 // --- PNG Rendering Functions ---
 
-void set_pixel(unsigned char *buffer, int x, int y, int width, unsigned char r, unsigned char g, unsigned char b) {
-    if (x >= 0 && x < width && y >= 0 && y < PNG_HEIGHT) {
+void set_pixel(unsigned char *buffer, int x, int y, int width, int height, unsigned char r, unsigned char g, unsigned char b) {
+    if (x >= 0 && x < width && y >= 0 && y < height) {
         long index = (long)y * width * NUM_CHANNELS + x * NUM_CHANNELS;
         buffer[index] = r;
         buffer[index + 1] = g;
@@ -561,7 +565,7 @@ void get_pixel_color(double intensity, int is_error_map, unsigned char *r, unsig
     }
 }
 
-void render_single_image_to_png(unsigned char *buffer, int buf_width, const Generated_Image img, int x_offset, int y_offset, int is_error_map) {
+void render_single_image_to_png(unsigned char *buffer, int buf_width, int buf_height, const Generated_Image img, int x_offset, int y_offset, int is_error_map) {
     unsigned char r, g, b;
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
@@ -572,23 +576,23 @@ void render_single_image_to_png(unsigned char *buffer, int buf_width, const Gene
                     set_pixel(buffer, 
                               x_offset + j * PIXEL_SIZE + px, 
                               y_offset + i * PIXEL_SIZE + py, 
-                              buf_width, r, g, b);
+                              buf_width, buf_height, r, g, b);
                 }
             }
         }
     }
 }
 
-void draw_text_placeholder(unsigned char *buffer, int buf_width, int x, int y, const char* text, unsigned char r, unsigned char g, unsigned char b) {
+void draw_text_placeholder(unsigned char *buffer, int buf_width, int buf_height, int x, int y, const char* text, unsigned char r, unsigned char g, unsigned char b) {
     // This function provides a minimal visual representation for the text label
     // by drawing a colored line segment.
     int line_len = 20; 
     for(int i = 0; i < line_len; i++) {
-        set_pixel(buffer, x + i, y, buf_width, r, g, b);
+        set_pixel(buffer, x + i, y, buf_width, buf_height, r, g, b);
     }
 }
 
-void draw_loss_graph(unsigned char *buffer, int buf_width, int x_offset, int y_offset, const EstimationResult *result) {
+void draw_loss_graph(unsigned char *buffer, int buf_width, int buf_height, int x_offset, int y_offset, const EstimationResult *result) {
     
     double max_loss = 0.0;
     for (int i = 0; i < LOSS_HISTORY_SIZE; i++) {
@@ -601,12 +605,12 @@ void draw_loss_graph(unsigned char *buffer, int buf_width, int x_offset, int y_o
     // Draw background
     for(int py = 0; py < GRAPH_HEIGHT; py++) {
         for(int px = 0; px < GRAPH_WIDTH; px++) {
-            set_pixel(buffer, x_offset + px, y_offset + py, buf_width, 20, 20, 20); 
+            set_pixel(buffer, x_offset + px, y_offset + py, buf_width, buf_height, 20, 20, 20); 
         }
     }
     // Draw axes
-    for(int i = 0; i < GRAPH_WIDTH; i++) set_pixel(buffer, x_offset + i, y_offset + GRAPH_HEIGHT - 1, buf_width, 255, 255, 255);
-    for(int i = 0; i < GRAPH_HEIGHT; i++) set_pixel(buffer, x_offset, y_offset + i, buf_width, 255, 255, 255);
+    for(int i = 0; i < GRAPH_WIDTH; i++) set_pixel(buffer, x_offset + i, y_offset + GRAPH_HEIGHT - 1, buf_width, buf_height, 255, 255, 255);
+    for(int i = 0; i < GRAPH_HEIGHT; i++) set_pixel(buffer, x_offset, y_offset + i, buf_width, buf_height, 255, 255, 255);
 
     int prev_y = -1;
     for (int i = 0; i < LOSS_HISTORY_SIZE; i++) {
@@ -618,7 +622,7 @@ void draw_loss_graph(unsigned char *buffer, int buf_width, int x_offset, int y_o
         int current_y = y_offset + (int)round(normalized_loss * (GRAPH_HEIGHT - 1));
         current_y = fmax(y_offset, fmin(y_offset + GRAPH_HEIGHT - 1, current_y)); 
 
-        set_pixel(buffer, current_x, current_y, buf_width, 50, 255, 50); 
+        set_pixel(buffer, current_x, current_y, buf_width, buf_height, 50, 255, 50); 
 
         if (prev_y != -1) {
             int prev_x = x_offset + (int)round((double)(i-1) / (LOSS_HISTORY_SIZE - 1) * (GRAPH_WIDTH - 1));
@@ -634,7 +638,7 @@ void draw_loss_graph(unsigned char *buffer, int buf_width, int x_offset, int y_o
 
             // Simple line drawing (Bresenham's)
             while(1) {
-                set_pixel(buffer, px, py, buf_width, 50, 255, 50); 
+                set_pixel(buffer, px, py, buf_width, buf_height, 50, 255, 50); 
 
                 if (px == current_x && py == current_y) break;
                 int e2 = 2 * err;
@@ -646,7 +650,7 @@ void draw_loss_graph(unsigned char *buffer, int buf_width, int x_offset, int y_o
     }
 }
 
-void render_test_to_png(unsigned char *buffer, int buf_width, const TestResult *r, int x_set, int y_set) {
+void render_test_to_png(unsigned char *buffer, int buf_width, int buf_height, const TestResult *r, int x_set, int y_set) {
     const EstimationResult *true_char_fit = &r->classification_results[r->true_char_index]; 
     const EstimationResult *best_fit = &r->classification_results[r->best_match_index]; 
     char label[180];
@@ -664,30 +668,37 @@ void render_test_to_png(unsigned char *buffer, int buf_width, const TestResult *
     int current_x = x_set;
     
     // 1. TRUE CLEAN
-    render_single_image_to_png(buffer, buf_width, r->true_image, current_x, y_set + TEXT_HEIGHT, 0); 
+    render_single_image_to_png(buffer, buf_width, buf_height, r->true_image, current_x, y_set + TEXT_HEIGHT, 0); 
     current_x += img_step;
     
     // 2. OBSERVED NOISY
-    render_single_image_to_png(buffer, buf_width, r->observed_image, current_x, y_set + TEXT_HEIGHT, 0);
+    render_single_image_to_png(buffer, buf_width, buf_height, r->observed_image, current_x, y_set + TEXT_HEIGHT, 0);
     current_x += img_step;
     
     // 3. BEST ESTIMATED
-    render_single_image_to_png(buffer, buf_width, r->best_estimated_image, current_x, y_set + TEXT_HEIGHT, 0);
+    render_single_image_to_png(buffer, buf_width, buf_height, r->best_estimated_image, current_x, y_set + TEXT_HEIGHT, 0);
     current_x += img_step;
     
     // 4. ERROR DIFF
-    render_single_image_to_png(buffer, buf_width, r->best_diff_image, current_x, y_set + TEXT_HEIGHT, 1);
+    render_single_image_to_png(buffer, buf_width, buf_height, r->best_diff_image, current_x, y_set + TEXT_HEIGHT, 1);
     current_x += img_step;
 
     // 5. Loss Graph (for the TRUE character optimization)
-    draw_loss_graph(buffer, buf_width, current_x + IMG_SPACING, y_set + TEXT_HEIGHT, true_char_fit);
+    draw_loss_graph(buffer, buf_width, buf_height, current_x + IMG_SPACING, y_set + TEXT_HEIGHT, true_char_fit);
 
     // 6. Draw Text Label placeholder
-    draw_text_placeholder(buffer, buf_width, x_set, y_set + 5, label, 255, 255, 255);
+    draw_text_placeholder(buffer, buf_width, buf_height, x_set, y_set + 5, label, 255, 255, 255);
 }
 
 void generate_png_file() {
-    long buffer_size = (long)PNG_WIDTH * PNG_HEIGHT * NUM_CHANNELS;
+    // Only generate the PNG for the tests that were completed.
+    const int PNG_DYNAMIC_HEIGHT = TEXT_HEIGHT + (IMG_SIZE + TEXT_HEIGHT + SET_SPACING) * tests_completed_before_limit;
+    if (tests_completed_before_limit == 0) {
+        printf("\nWARNING: No tests completed before time limit. Skipping PNG generation.\n");
+        return;
+    }
+
+    long buffer_size = (long)PNG_WIDTH * PNG_DYNAMIC_HEIGHT * NUM_CHANNELS;
     unsigned char *buffer = (unsigned char *)calloc(buffer_size, 1);
     if (buffer == NULL) {
         printf("\nERROR: Failed to allocate buffer for PNG.\n");
@@ -699,28 +710,28 @@ void generate_png_file() {
     int current_x = SET_SPACING + IMG_SIZE / 2;
     int img_step = IMG_SIZE + IMG_SPACING;
     
-    draw_text_placeholder(buffer, PNG_WIDTH, current_x, title_y, "TRUE CLEAN", 255, 255, 255);
-    draw_text_placeholder(buffer, PNG_WIDTH, current_x + img_step, title_y, "OBSERVED NOISY", 255, 255, 255);
-    draw_text_placeholder(buffer, PNG_WIDTH, current_x + 2 * img_step, title_y, "BEST ESTIMATED", 255, 255, 255);
-    draw_text_placeholder(buffer, PNG_WIDTH, current_x + 3 * img_step, title_y, "ERROR DIFF", 255, 255, 255);
-    draw_text_placeholder(buffer, PNG_WIDTH, current_x + 4 * img_step + 30, title_y, "FEATURE LOSS (vs ITER)", 255, 255, 255);
+    draw_text_placeholder(buffer, PNG_WIDTH, PNG_DYNAMIC_HEIGHT, current_x, title_y, "TRUE CLEAN", 255, 255, 255);
+    draw_text_placeholder(buffer, PNG_WIDTH, PNG_DYNAMIC_HEIGHT, current_x + img_step, title_y, "OBSERVED NOISY", 255, 255, 255);
+    draw_text_placeholder(buffer, PNG_WIDTH, PNG_DYNAMIC_HEIGHT, current_x + 2 * img_step, title_y, "BEST ESTIMATED", 255, 255, 255);
+    draw_text_placeholder(buffer, PNG_WIDTH, PNG_DYNAMIC_HEIGHT, current_x + 3 * img_step, title_y, "ERROR DIFF", 255, 255, 255);
+    draw_text_placeholder(buffer, PNG_WIDTH, PNG_DYNAMIC_HEIGHT, current_x + 4 * img_step + 30, title_y, "FEATURE LOSS (vs ITER)", 255, 255, 255);
     
     int x_set = SET_SPACING; 
     
-    // Render all 288 test sets vertically
-    for (int k = 0; k < NUM_TESTS; k++) {
+    // Render only the completed test sets vertically
+    for (int k = 0; k < tests_completed_before_limit; k++) {
         int y_set = TEXT_HEIGHT + k * (IMG_SIZE + TEXT_HEIGHT + SET_SPACING);
-        render_test_to_png(buffer, PNG_WIDTH, &all_results[k], x_set, y_set);
+        render_test_to_png(buffer, PNG_WIDTH, PNG_DYNAMIC_HEIGHT, &all_results[k], x_set, y_set);
     }
 
-    int success = stbi_write_png("network_full_vertical.png", PNG_WIDTH, PNG_HEIGHT, NUM_CHANNELS, buffer, PNG_WIDTH * NUM_CHANNELS);
+    int success = stbi_write_png("network_full_vertical.png", PNG_WIDTH, PNG_DYNAMIC_HEIGHT, NUM_CHANNELS, buffer, PNG_WIDTH * NUM_CHANNELS);
 
     free(buffer);
 
     if (success) {
         printf("\n\n======================================================\n");
         printf("PNG Output Complete: network_full_vertical.png created.\n");
-        printf("Size: %d x %d pixels (Total Rows: %d).\n", PNG_WIDTH, PNG_HEIGHT, NUM_TESTS);
+        printf("Size: %d x %d pixels (Total Rows: %d).\n", PNG_WIDTH, PNG_DYNAMIC_HEIGHT, tests_completed_before_limit);
         printf("======================================================\n");
     } else {
         printf("\nERROR: Failed to write network_full_vertical.png using stb_image_write.\n");
@@ -731,21 +742,30 @@ void generate_png_file() {
 // --- Main Execution ---
 
 int main(void) {
-    // Note: To enforce a *strict* 4-minute limit, you would typically use OS-specific functions
-    // (e.g., setitimer or alarm on POSIX, or threading/timers on Windows). 
-    // This revision focuses on drastic runtime reduction via iteration count.
-
     srand(42); 
 
     const double MIN_ALPHA = -0.15;
     const double MAX_ALPHA = 0.15;
+    
+    // START TIMER
+    clock_t start_time = clock();
 
     printf("Starting %d classification tests (%d chars * %d trials) with %d iterations each...\n", NUM_TESTS, NUM_IDEAL_CHARS, TESTS_PER_CHAR, ITERATIONS);
+    printf("Time limit set to %.0f seconds.\n", TIME_LIMIT_SECONDS);
+
 
     int test_counter = 0;
     
     for (int char_index = 0; char_index < NUM_IDEAL_CHARS; char_index++) {
         for (int test_run = 0; test_run < TESTS_PER_CHAR; test_run++) {
+            
+            // TIMER CHECK: Check time outside of the inner (iteration) loops
+            double elapsed_time = (double)(clock() - start_time) / CLOCKS_PER_SEC;
+            if (elapsed_time > TIME_LIMIT_SECONDS) {
+                printf("\nTIME LIMIT REACHED: Stopping execution after %.2f seconds.\n", elapsed_time);
+                goto end_testing; // Jump out of all loops
+            }
+            
             double true_alpha[NUM_DEFORMATIONS];
             
             true_alpha[0] = MIN_ALPHA + ((double)rand() / RAND_MAX) * (MAX_ALPHA - MIN_ALPHA);
@@ -754,13 +774,19 @@ int main(void) {
             run_classification_test(test_counter + 1, char_index, true_alpha, &all_results[test_counter]);
             
             test_counter++;
+            tests_completed_before_limit = test_counter; // Update global counter
+            
             if (test_counter % (NUM_IDEAL_CHARS * 2) == 0) {
-                 printf("Processed %d/%d tests...\n", test_counter, NUM_TESTS);
+                 printf("Processed %d/%d tests (Current Char: %s)...\n", test_counter, NUM_TESTS, CHAR_NAMES[char_index]);
             }
         }
     }
     
-    summarize_results_console();
+end_testing:
+    // END TIMER
+    double final_elapsed_time = (double)(clock() - start_time) / CLOCKS_PER_SEC;
+
+    summarize_results_console(final_elapsed_time);
 
     generate_png_file();
 
