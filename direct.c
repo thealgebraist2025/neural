@@ -1079,7 +1079,7 @@ void generate_segment_png(const SegmentResult *segments, int num_segments, const
 int main(void) {
     srand(42); 
 
-    const char *input_filename = "test1.png"; 
+    const char *input_filename = "test1.jpg"; 
     double *full_image_data = NULL;
     int full_width = 0;
     int full_height = 0;
