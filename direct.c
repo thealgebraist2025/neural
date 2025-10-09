@@ -189,11 +189,9 @@ void print_image(const char *const title, const double image[GRID_SIZE][GRID_SIZ
     printf("\n%s (16x16):\n", title);
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
-            // Use simple char map to show grayscale
-            if (image[i][j] < 0.1) printf(" ");
-            else if (image[i][j] < 0.3) printf(".");
-            else if (image[i][j] < 0.6) printf("-");
-            else printf("#");
+            // Simplified visualization: only use space or hash ('#')
+            if (image[i][j] < 0.3) printf(" "); // Background
+            else printf("#"); // Foreground
         }
         printf("\n");
     }
