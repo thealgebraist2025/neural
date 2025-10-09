@@ -6,13 +6,7 @@
 
 // --- STB Image Write Configuration ---
 #define STB_IMAGE_WRITE_IMPLEMENTATION
-//#include "stb_image_write.h"
-
-// --- STB Image Read Configuration (Placeholder) ---
-// We can't actually include this and load an image, but define the implementation guard
-// to show where it would be used if possible.
-#define STB_IMAGE_IMPLEMENTATION 
-#include "stb_image.h" // Assuming stbi_load function is here
+#include "stb_image_write.h"
 
 // Define M_PI explicitly
 #define M_PI 3.14159265358979323846
@@ -28,18 +22,22 @@
 #define ITERATIONS 500      
 #define GRADIENT_EPSILON 0.01 
 #define NUM_IDEAL_CHARS 36  
-#define TESTS_PER_CHAR 8    
-#define NUM_TESTS (NUM_IDEAL_CHARS * TESTS_PER_CHAR) // 36 * 8 = 288 total tests
 #define NUM_CONTROL_POINTS 9 
 #define MAX_PIXEL_ERROR (GRID_SIZE * GRID_SIZE) 
-#define TIME_LIMIT_SECONDS 240.0 // 4 minutes limit
-
-// Loss history configuration
-#define LOSS_HISTORY_STEP 5 
-#define LOSS_HISTORY_SIZE (ITERATIONS / LOSS_HISTORY_STEP + 1) 
+#define TIME_LIMIT_SECONDS 240.0 
 
 // Segmentation limits
 #define MAX_SEGMENTS 100 // Maximum number of letters we expect to find
+
+// PNG Rendering Constants (Vertical Layout)
+#define PIXEL_SIZE 2    
+#define IMG_SIZE (GRID_SIZE * PIXEL_SIZE) 
+#define IMG_SPACING 5   
+#define TEXT_HEIGHT 15  
+#define SET_SPACING 25  
+#define GRAPH_WIDTH 100 
+#define GRAPH_HEIGHT IMG_SIZE 
+#define NUM_CHANNELS 3 
 
 // --- Data Structures ---
 
@@ -48,6 +46,7 @@ typedef struct { const Point control_points[NUM_CONTROL_POINTS]; } Ideal_Curve_P
 typedef struct { double alpha[NUM_DEFORMATIONS]; } Deformation_Coefficients;
 typedef double Generated_Image[GRID_SIZE][GRID_SIZE]; 
 typedef double Feature_Vector[NUM_FEATURES]; 
+typedef struct { double estimated_alpha[NUM_DEFORMATIONS]; double final_loss; double loss_history[1]; } EstimationResult; // Simplified for this context
 
 typedef struct {
     int start; 
@@ -63,51 +62,43 @@ typedef struct {
     double estimated_alpha[NUM_DEFORMATIONS];
 } SegmentResult;
 
-typedef struct { 
-    double estimated_alpha[NUM_DEFORMATIONS]; 
-    double final_loss; 
-    double loss_history[LOSS_HISTORY_SIZE]; 
-} EstimationResult;
 
-typedef struct {
-    int id; int true_char_index; int best_match_index;
-    double true_alpha[NUM_DEFORMATIONS];
-    Generated_Image true_image; Generated_Image observed_image;
-    EstimationResult classification_results[NUM_IDEAL_CHARS]; 
-    Generated_Image best_estimated_image; Generated_Image best_diff_image;
-} TestResult;
-
-// --- Memory Tracking Globals (Unchanged from previous context) ---
+// --- Memory Tracking Globals ---
 size_t total_allocated_bytes = 0;
 size_t total_freed_bytes = 0;
-size_t memory_history[NUM_TESTS + 1]; 
-int memory_history_index = 0;
 
-TestResult *all_results = NULL; 
-int tests_completed_before_limit = 0; 
+// --- Function Prototypes (Fixes Implicit Declarations) ---
+void* safe_malloc(size_t size);
+void safe_free(void *ptr, size_t size);
+void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img, const Ideal_Curve_Params *const ideal_params);
+void extract_geometric_features(const Generated_Image img, Feature_Vector features_out);
+double calculate_pixel_loss_L2(const Generated_Image generated, const Generated_Image observed);
+double calculate_feature_loss_L2(const Feature_Vector generated, const Feature_Vector observed);
+double calculate_combined_loss(const Generated_Image generated_img, const Feature_Vector generated_features,
+                               const Generated_Image observed_img, const Feature_Vector observed_features);
+void run_optimization(const Generated_Image observed_image, const Feature_Vector observed_features, 
+                      int ideal_char_index, EstimationResult *result);
+void set_pixel(unsigned char *buffer, int x, int y, int width, int height, unsigned char r, unsigned char g, unsigned char b);
+void get_pixel_color(double intensity, int is_error_map, unsigned char *r, unsigned char *g, unsigned char *b);
+void draw_text_placeholder_box(unsigned char *buffer, int buf_width, int buf_height, int x, int y, int width, int height, unsigned char r, unsigned char g, unsigned char b);
+void render_single_image_to_png(unsigned char *buffer, int buf_width, int buf_height, const Generated_Image img, int x_offset, int y_offset, int is_error_map);
 
 
-// --- Fixed Ideal Curves (A-Z, 0-9) ---
-// (The full IDEAL_TEMPLATES array with the fixed 'O' from the last context is omitted for brevity)
+// --- Fixed Ideal Curves (Omitted most for brevity but ensure 'O' is fixed) ---
 const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {
     "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", 
     "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", 
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"
 };
 const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
-    // A
+    // A...
     [0] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.3, .y = 0.3}, {.x = 0.2, .y = 0.5}, {.x = 0.3, .y = 0.6}, 
-        {.x = 0.7, .y = 0.6}, {.x = 0.8, .y = 0.5}, {.x = 0.7, .y = 0.3}, {.x = 0.5, .y = 0.1}, 
-        {.x = 0.7, .y = 0.9} 
+        {.x = 0.7, .y = 0.6}, {.x = 0.8, .y = 0.5}, {.x = 0.7, .y = 0.3}, {.x = 0.5, .y = 0.1}, {.x = 0.7, .y = 0.9} 
     }},
-    // B... Z, 0...9 (All other definitions are assumed to be present and correct)
-    // ...
     // O (FIXED: Duplicated closing point to prevent superfluous internal lines)
     [14] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.85, .y = 0.3}, {.x = 0.85, .y = 0.7}, 
         {.x = 0.5, .y = 0.9}, {.x = 0.15, .y = 0.7}, {.x = 0.15, .y = 0.3}, 
-        {.x = 0.5, .y = 0.1}, // P6: Closes the loop
-        {.x = 0.5, .y = 0.1}, // P7: Zero-length segment
-        {.x = 0.5, .y = 0.1}  // P8: Zero-length segment
+        {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.1}, {.x = 0.5, .y = 0.1}  
     }},
     // ... all 36 characters are here ...
     [35] = {.control_points = {{.x = 0.5, .y = 0.1}, {.x = 0.8, .y = 0.2}, {.x = 0.5, .y = 0.4}, {.x = 0.2, .y = 0.2}, 
@@ -117,30 +108,276 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
 };
 
 
-// --- Utility Functions (Memory, Curve Drawing, Loss, Optimization - Omitted for brevity, assumed correct) ---
+// --- Memory Wrapper Functions (Restored) ---
 
-// (safe_malloc, safe_free, record_memory_usage, apply_deformation, get_deformed_point, 
-// draw_curve, extract_geometric_features, calculate_feature_loss_L2, calculate_pixel_loss_L2, 
-// calculate_combined_loss, calculate_gradient, generate_target_image, calculate_pixel_error_sum, 
-// run_optimization, calculate_difference_image - All functions from previous context are assumed present)
+void* safe_malloc(size_t size) {
+    void *ptr = malloc(size);
+    if (ptr) {
+        total_allocated_bytes += size;
+    }
+    return ptr;
+}
+
+void safe_free(void *ptr, size_t size) {
+    if (ptr) {
+        free(ptr);
+        total_freed_bytes += size;
+    }
+}
+
+
+// --- Core Recognition Functions (Restored Prototypes and Logic) ---
+
+void apply_deformation(Point *point, const double alpha[NUM_DEFORMATIONS]) {
+    point->x = point->x + alpha[0] * (point->y - 0.5);
+    point->x = point->x + alpha[1] * sin(M_PI * point->y);
+}
+
+Point get_deformed_point(const double t, const Ideal_Curve_Params *const params, const double alpha[NUM_DEFORMATIONS]) {
+    Point p = {.x = 0.0, .y = 0.0};
+    const int N = NUM_CONTROL_POINTS; 
+    const double segment_length_t = 1.0 / (N - 1); 
+
+    int segment_index = (int)floor(t / segment_length_t);
+    if (segment_index >= N - 1) segment_index = N - 2; 
+
+    const Point P_start = params->control_points[segment_index];
+    const Point P_end = params->control_points[segment_index + 1];
+
+    const double segment_t = (t - segment_index * segment_length_t) / segment_length_t;
+
+    p.x = P_start.x + (P_end.x - P_start.x) * segment_t;
+    p.y = P_start.y + (P_end.y - P_start.y) * segment_t;
+
+    apply_deformation(&p, alpha);
+
+    p.x = fmax(0.0, fmin(GRID_SIZE - 1.0, p.x * GRID_SIZE));
+    p.y = fmax(0.0, fmin(GRID_SIZE - 1.0, p.y * GRID_SIZE));
+
+    return p;
+}
+
+void draw_curve(const double alpha[NUM_DEFORMATIONS], Generated_Image img, const Ideal_Curve_Params *const ideal_params) {
+    for (int i = 0; i < GRID_SIZE; i++) {
+        for (int j = 0; j < GRID_SIZE; j++) {
+            img[i][j] = 0.0;
+        }
+    }
+
+    for (int i = 0; i <= NUM_POINTS; i++) {
+        const double t = (double)i / NUM_POINTS;
+        const Point current_p = get_deformed_point(t, ideal_params, alpha);
+
+        const int px = (int)round(current_p.x);
+        const int py = (int)round(current_p.y);
+
+        if (px >= 0 && px < GRID_SIZE && py >= 0 && py < GRID_SIZE) {
+            img[py][px] = fmin(1.0, img[py][px] + 0.5); 
+        }
+    }
+}
+
+void extract_geometric_features(const Generated_Image img, Feature_Vector features_out) {
+    double vectors[NUM_VECTORS][2];
+    for (int k = 0; k < NUM_VECTORS; k++) { 
+        const double angle = 2.0 * M_PI * k / NUM_VECTORS; 
+        vectors[k][0] = cos(angle);
+        vectors[k][1] = sin(angle);
+    }
+    
+    const double center = (GRID_SIZE - 1.0) / 2.0; 
+    const double MAX_PROJECTION_MAGNITUDE = sqrt(center * center + center * center); 
+
+    for (int k = 0; k < NUM_FEATURES; k++) {
+        features_out[k] = 0.0;
+    }
+
+    for (int i = 0; i < GRID_SIZE; i++) {
+        for (int j = 0; j < GRID_SIZE; j++) {
+            const double intensity = img[i][j];
+            if (intensity < 0.1) continue; 
+
+            const double vx = (double)j - center;
+            const double vy = (double)i - center;
+            
+            for (int k = 0; k < NUM_VECTORS; k++) {
+                const double projection = (vx * vectors[k][0] + vy * vectors[k][1]);
+                const double normalized_projection = projection / MAX_PROJECTION_MAGNITUDE;
+                
+                int bin_index = (int)floor((normalized_projection + 1.0) * (NUM_BINS / 2.0));
+                
+                if (bin_index < 0) bin_index = 0;
+                if (bin_index >= NUM_BINS) bin_index = NUM_BINS - 1;
+                
+                const int feature_index = k * NUM_BINS + bin_index;
+                features_out[feature_index] += intensity;
+            }
+        }
+    }
+}
+
+double calculate_feature_loss_L2(const Feature_Vector generated, const Feature_Vector observed) {
+    double loss = 0.0;
+    for (int k = 0; k < NUM_FEATURES; k++) {
+        const double error = observed[k] - generated[k];
+        loss += error * error;
+    }
+    return loss;
+}
+
+double calculate_pixel_loss_L2(const Generated_Image generated, const Generated_Image observed) {
+    double loss = 0.0;
+    for (int i = 0; i < GRID_SIZE; i++) {
+        for (int j = 0; j < GRID_SIZE; j++) {
+            const double error = observed[i][j] - generated[i][j];
+            loss += error * error;
+        }
+    }
+    return loss;
+}
+
+double calculate_combined_loss(const Generated_Image generated_img, const Feature_Vector generated_features,
+                               const Generated_Image observed_img, const Feature_Vector observed_features) {
+    
+    const double feature_loss = calculate_feature_loss_L2(generated_features, observed_features);
+    const double pixel_loss = calculate_pixel_loss_L2(generated_img, observed_img);
+    
+    return feature_loss + PIXEL_LOSS_WEIGHT * pixel_loss;
+}
+
+void calculate_gradient(const Generated_Image observed_img, const Feature_Vector observed_features, 
+                        const Deformation_Coefficients *const alpha, const double loss_base, 
+                        double grad_out[NUM_DEFORMATIONS], const Ideal_Curve_Params *const ideal_params) {
+    
+    const double epsilon = GRADIENT_EPSILON; 
+    Generated_Image generated_img_perturbed; 
+    Feature_Vector generated_features_perturbed; 
+
+    for (int k = 0; k < NUM_DEFORMATIONS; k++) {
+        Deformation_Coefficients alpha_perturbed = *alpha;
+        alpha_perturbed.alpha[k] += epsilon; 
+
+        draw_curve(alpha_perturbed.alpha, generated_img_perturbed, ideal_params);
+        extract_geometric_features(generated_img_perturbed, generated_features_perturbed);
+        
+        const double loss_perturbed = calculate_combined_loss(generated_img_perturbed, generated_features_perturbed, observed_img, observed_features);
+
+        grad_out[k] = (loss_perturbed - loss_base) / epsilon;
+    }
+}
+
+
+void run_optimization(const Generated_Image observed_image, const Feature_Vector observed_features, 
+                      int ideal_char_index, EstimationResult *result) {
+    
+    const Ideal_Curve_Params *ideal_params = &IDEAL_TEMPLATES[ideal_char_index];
+    
+    Deformation_Coefficients alpha_hat = { .alpha = {0.0, 0.0} };
+    double learning_rate = 0.0000001; 
+    const double min_learning_rate = 0.00000000005;
+    double gradient[NUM_DEFORMATIONS];
+    Generated_Image generated_image;
+    Feature_Vector generated_features;
+    double combined_loss;
+    double prev_combined_loss = HUGE_VAL; 
+    double current_feature_loss_only = HUGE_VAL;
+
+    for (int t = 0; t <= ITERATIONS; t++) {
+        draw_curve(alpha_hat.alpha, generated_image, ideal_params);
+        extract_geometric_features(generated_image, generated_features);
+        
+        current_feature_loss_only = calculate_feature_loss_L2(generated_features, observed_features);
+        combined_loss = current_feature_loss_only + PIXEL_LOSS_WEIGHT * calculate_pixel_loss_L2(generated_image, observed_image);
+
+        if (combined_loss > prev_combined_loss * 1.001 && learning_rate > min_learning_rate) { 
+            learning_rate *= 0.5;
+        }
+
+        prev_combined_loss = combined_loss;
+
+        if (t < ITERATIONS) {
+            calculate_gradient(observed_image, observed_features, &alpha_hat, combined_loss, gradient, ideal_params);
+            
+            double step_rate = (learning_rate > min_learning_rate) ? learning_rate : min_learning_rate;
+            
+            alpha_hat.alpha[0] -= step_rate * gradient[0];
+            alpha_hat.alpha[1] -= step_rate * gradient[1];
+        }
+    }
+
+    result->final_loss = current_feature_loss_only;
+    memcpy(result->estimated_alpha, alpha_hat.alpha, sizeof(double) * NUM_DEFORMATIONS);
+}
+
+// --- PNG Rendering Functions (Restored) ---
+
+void set_pixel(unsigned char *buffer, int x, int y, int width, int height, unsigned char r, unsigned char g, unsigned char b) {
+    if (x >= 0 && x < width && y >= 0 && y < height) {
+        long index = (long)y * width * NUM_CHANNELS + x * NUM_CHANNELS;
+        buffer[index] = r;
+        buffer[index + 1] = g;
+        buffer[index + 2] = b;
+    }
+}
+
+void get_pixel_color(double intensity, int is_error_map, unsigned char *r, unsigned char *g, unsigned char *b) {
+    double clamped_intensity = fmax(0.0, fmin(1.0, intensity));
+
+    if (is_error_map) {
+        if (clamped_intensity > 0.3) {
+            *r = 255; *g = 50; *b = 50; 
+        } else if (clamped_intensity > 0.1) {
+            *r = 255; *g = 150; *b = 0; 
+        } else {
+            *r = 0; *g = 0; *b = 0; 
+        }
+    } else {
+        if (clamped_intensity > 0.6) {
+            *r = 255; *g = 255; *b = 100; 
+        } else if (clamped_intensity > 0.3) {
+            *r = 100; *g = 100; *b = 100; 
+        } else {
+            *r = 0; *g = 0; *b = 0; 
+        }
+    }
+}
+
+void draw_text_placeholder_box(unsigned char *buffer, int buf_width, int buf_height, int x, int y, int width, int height, unsigned char r, unsigned char g, unsigned char b) {
+    for(int py = 0; py < height; py++) {
+        for(int px = 0; px < width; px++) {
+            set_pixel(buffer, x + px, y + py, buf_width, buf_height, r / 3, g / 3, b / 3);
+            if (py == 0 || py == height - 1 || px == 0 || px == width - 1) {
+                 set_pixel(buffer, x + px, y + py, buf_width, buf_height, r, g, b);
+            }
+        }
+    }
+}
+
+void render_single_image_to_png(unsigned char *buffer, int buf_width, int buf_height, const Generated_Image img, int x_offset, int y_offset, int is_error_map) {
+    unsigned char r, g, b;
+    for (int i = 0; i < GRID_SIZE; i++) {
+        for (int j = 0; j < GRID_SIZE; j++) {
+            get_pixel_color(img[i][j], is_error_map, &r, &g, &b);
+            
+            for (int py = 0; py < PIXEL_SIZE; py++) {
+                for (int px = 0; px < PIXEL_SIZE; px++) {
+                    set_pixel(buffer, 
+                              x_offset + j * PIXEL_SIZE + px, 
+                              y_offset + i * PIXEL_SIZE + py, 
+                              buf_width, buf_height, r, g, b);
+                }
+            }
+        }
+    }
+}
 
 
 // --- Image Loading and Preprocessing ---
 
-/**
- * @brief Placeholder for loading an image from file.
- * NOTE: This function cannot be truly implemented/tested in this environment.
- * @param filename The name of the file to load (e.g., "test1.jpg").
- * @param data_out Pointer to an array to store pixel data (dynamically allocated).
- * @param width_out Pointer to store image width.
- * @param height_out Pointer to store image height.
- * @return 1 on success, 0 on failure.
- */
 int load_image_stb(const char *filename, double **data_out, int *width_out, int *height_out) {
     printf("--- WARNING: Skipping actual image load (stbi_load not available) ---\n");
-    printf("Simulating image load with a small, all-white image.\n");
+    printf("Simulating image load with a 100x100 image containing 'TEST' like shapes.\n");
 
-    // Simulation: A 100x100 grayscale image
     *width_out = 100;
     *height_out = 100;
     size_t size = (size_t)(*width_out) * (*height_out);
@@ -148,31 +385,33 @@ int load_image_stb(const char *filename, double **data_out, int *width_out, int 
     
     if (*data_out == NULL) return 0;
 
-    // Simulate some content for a simple test (e.g., a "T" shape)
     for (int i = 0; i < *height_out; i++) {
         for (int j = 0; j < *width_out; j++) {
-            // Background is black (0.0)
-            (*data_out)[i * (*width_out) + j] = 0.0; 
+            (*data_out)[i * (*width_out) + j] = 0.0; // Black background
         }
     }
     
-    // Simulate a letter 'T' around the center (10-80 range)
-    for (int j = 10; j <= 80; j++) { // Horizontal bar
-        (*data_out)[15 * (*width_out) + j] = 1.0;
-        (*data_out)[16 * (*width_out) + j] = 1.0;
-    }
-    for (int i = 15; i <= 80; i++) { // Vertical bar
-        (*data_out)[i * (*width_out) + 45] = 1.0;
-        (*data_out)[i * (*width_out) + 46] = 1.0;
-    }
+    // Simulate line 1: T
+    for (int j = 10; j <= 30; j++) (*data_out)[15 * (*width_out) + j] = 1.0; // Horizontal bar
+    for (int i = 15; i <= 40; i++) (*data_out)[i * (*width_out) + 20] = 1.0; // Vertical bar
+
+    // Simulate line 1: E
+    for (int j = 40; j <= 60; j++) (*data_out)[15 * (*width_out) + j] = 1.0; // Top
+    for (int j = 40; j <= 60; j++) (*data_out)[25 * (*width_out) + j] = 1.0; // Middle
+    for (int j = 40; j <= 60; j++) (*data_out)[35 * (*width_out) + j] = 1.0; // Bottom
+    for (int i = 15; i <= 35; i++) (*data_out)[i * (*width_out) + 40] = 1.0; // Vertical
+
+    // Simulate line 2: S
+    for (int j = 10; j <= 30; j++) (*data_out)[60 * (*width_out) + j] = 1.0;
+    for (int i = 60; i <= 70; i++) (*data_out)[i * (*width_out) + 10] = 1.0;
+    for (int j = 10; j <= 30; j++) (*data_out)[70 * (*width_out) + j] = 1.0;
+    for (int i = 70; i <= 80; i++) (*data_out)[i * (*width_out) + 30] = 1.0;
+    for (int j = 10; j <= 30; j++) (*data_out)[80 * (*width_out) + j] = 1.0;
 
 
     return 1;
 }
 
-/**
- * @brief Converts a segment of a larger image into a 32x32 Generated_Image by resampling.
- */
 void resize_segment(const double *full_data, int full_width, int full_height, 
                     int x_start, int x_end, int y_start, int y_end, 
                     Generated_Image segment_out) {
@@ -183,12 +422,9 @@ void resize_segment(const double *full_data, int full_width, int full_height,
     for (int i = 0; i < GRID_SIZE; i++) {
         for (int j = 0; j < GRID_SIZE; j++) {
             
-            // Map the 32x32 cell (i, j) to a block in the original image segment
-            // This is a simple nearest-neighbor or box-sampling approach
-            int src_y = y_start + (int)round((double)i / GRID_SIZE * segment_h);
-            int src_x = x_start + (int)round((double)j / GRID_SIZE * segment_w);
+            int src_y = y_start + (int)round((double)i / (GRID_SIZE - 1) * segment_h);
+            int src_x = x_start + (int)round((double)j / (GRID_SIZE - 1) * segment_w);
 
-            // Ensure coordinates are within the full image bounds
             src_y = fmax(0, fmin(full_height - 1, src_y));
             src_x = fmax(0, fmin(full_width - 1, src_x));
 
@@ -200,29 +436,20 @@ void resize_segment(const double *full_data, int full_width, int full_height,
 
 // --- Histogram Segmentation Logic ---
 
-/**
- * @brief Projects the image intensity onto an axis.
- * @param full_data The full image data.
- * @param width The image width.
- * @param height The image height.
- * @param orientation 0 for horizontal (project to Y-axis), 1 for vertical (project to X-axis).
- * @param hist_out Array to store the histogram.
- */
 void project_histogram(const double *full_data, int width, int height, int orientation, double *hist_out) {
     int hist_size = (orientation == 0) ? height : width; 
-    int other_dim = (orientation == 0) ? width : height; 
-
+    
     for (int i = 0; i < hist_size; i++) {
         hist_out[i] = 0.0;
     }
 
-    if (orientation == 0) { // Horizontal projection (sum rows -> Y-axis)
+    if (orientation == 0) { // Horizontal projection (sum rows -> Y-axis for lines)
         for (int i = 0; i < height; i++) {
             for (int j = 0; j < width; j++) {
                 hist_out[i] += full_data[i * width + j];
             }
         }
-    } else { // Vertical projection (sum columns -> X-axis)
+    } else { // Vertical projection (sum columns -> X-axis for letters)
         for (int j = 0; j < width; j++) {
             for (int i = 0; i < height; i++) {
                 hist_out[j] += full_data[i * width + j];
@@ -231,115 +458,54 @@ void project_histogram(const double *full_data, int width, int height, int orien
     }
 }
 
-/**
- * @brief Finds intervals in the histogram with near-zero values.
- * @param hist The histogram array.
- * @param size The size of the histogram.
- * @param min_zero_length The minimum number of consecutive zeros required for a boundary.
- * @param threshold The maximum value to be considered "zero."
- * @param boundaries_out Array to store the found Boundary structures.
- * @return The number of boundaries found.
- */
 int find_zero_intervals(const double *hist, int size, int min_zero_length, double threshold, Boundary *boundaries_out) {
-    int count = 0;
-    int zero_start = -1;
-    
-    // Find gaps between non-zero areas
+    int final_count = 0;
+    int content_start = 0; // The start of the current content block
+
     for (int i = 0; i < size; i++) {
         if (hist[i] < threshold) {
-            if (zero_start == -1) {
-                zero_start = i;
+            // Found a zero region, look ahead
+            int zero_end = i;
+            while (zero_end < size && hist[zero_end] < threshold) {
+                zero_end++;
             }
-        } else {
-            if (zero_start != -1) {
-                int zero_length = i - zero_start;
-                if (zero_length >= min_zero_length) {
-                    // Boundary is found at the *center* of the zero interval
-                    // For line/letter segmentation, we want the boundary to be the edge of the content.
-                    // The content starts *after* the zero-end and ends *before* the zero-start.
-                    
-                    // The boundary of content starts at the end of the zero-gap
-                    boundaries_out[count].start = zero_start + zero_length / 2;
-                    boundaries_out[count].end = zero_start + zero_length / 2; // Single point in a zero-gap
-                    
-                    if (count < MAX_SEGMENTS) count++;
+            
+            int zero_length = zero_end - i;
+
+            if (zero_length >= min_zero_length) {
+                // Found a significant gap, the content ends at i-1
+                if (i - content_start > min_zero_length) { // Minimum content size
+                    boundaries_out[final_count].start = content_start;
+                    boundaries_out[final_count].end = i - 1;
+                    if (final_count < MAX_SEGMENTS) final_count++;
                 }
-                zero_start = -1;
+                
+                // New content starts after the gap
+                content_start = zero_end;
             }
+            // Skip past the gap we just processed
+            i = zero_end - 1; 
         }
     }
-
-    // Process the last interval if it ends with zeros
-    if (zero_start != -1 && (size - zero_start) >= min_zero_length) {
-        if (count < MAX_SEGMENTS) {
-            boundaries_out[count].start = zero_start + (size - zero_start) / 2;
-            boundaries_out[count].end = zero_start + (size - zero_start) / 2;
-            count++;
-        }
-    }
-
-    // Now, convert the gap-centers into content-edges
-    Boundary content_boundaries[MAX_SEGMENTS + 1];
-    int content_count = 0;
     
-    // Initial content boundary (start of image)
-    content_boundaries[content_count++].start = 0;
-
-    // Boundaries are between the zero gaps
-    for (int i = 0; i < count; i++) {
-        content_boundaries[content_count++].start = boundaries_out[i].start;
-    }
-
-    // Final content boundary (end of image)
-    content_boundaries[content_count++].start = size - 1;
-
-    // Now, pair them up
-    int final_count = 0;
-    for (int i = 0; i < content_count - 1; i++) {
-        // Only keep segments that have a minimum size (to filter noise)
-        int current_start = content_boundaries[i].start;
-        int current_end = content_boundaries[i+1].start;
-
-        // Skip intervals that are too small (likely just noise)
-        if (current_end - current_start < 5) continue;
-        
-        // Refine boundary to the *first* non-zero/last non-zero pixel in the region
-        int refined_start = current_start;
-        while(refined_start < current_end && hist[refined_start] < threshold) {
-            refined_start++;
-        }
-        int refined_end = current_end;
-        while(refined_end > refined_start && hist[refined_end] < threshold) {
-            refined_end--;
-        }
-        
-        if (refined_end - refined_start > 5) {
-            boundaries_out[final_count].start = refined_start;
-            boundaries_out[final_count].end = refined_end;
-            if (final_count < MAX_SEGMENTS) final_count++;
-        }
+    // Process the final content block
+    if (size - content_start > min_zero_length) {
+        boundaries_out[final_count].start = content_start;
+        boundaries_out[final_count].end = size - 1;
+        if (final_count < MAX_SEGMENTS) final_count++;
     }
 
     return final_count;
 }
 
-/**
- * @brief Performs naive histogram-based segmentation (Line -> Letter).
- * @param full_data The full image data.
- * @param full_width The image width.
- * @param full_height The image height.
- * @param segments_out Array to store the SegmentResult structures.
- * @return The total number of letter segments found.
- */
 int segment_image_naive(const double *full_data, int full_width, int full_height, SegmentResult *segments_out) {
     int total_segments = 0;
     
     // 1. Vertical Histogram Projection (Find Lines - Y-axis)
     double *h_hist = (double *)safe_malloc(sizeof(double) * full_height);
     Boundary line_boundaries[MAX_SEGMENTS];
-    project_histogram(full_data, full_width, full_height, 0, h_hist); // 0 for horizontal projection (Y-axis)
+    project_histogram(full_data, full_width, full_height, 0, h_hist);
     
-    // Line segmentation parameters: Min zero length (gap size), Max zero value (threshold)
     int num_lines = find_zero_intervals(h_hist, full_height, full_height / 15, 0.01, line_boundaries);
     safe_free(h_hist, sizeof(double) * full_height);
     
@@ -349,12 +515,10 @@ int segment_image_naive(const double *full_data, int full_width, int full_height
     for (int l = 0; l < num_lines; l++) {
         int line_y_start = line_boundaries[l].start;
         int line_y_end = line_boundaries[l].end;
-        int line_height = line_y_end - line_y_start;
         
-        // Calculate vertical histogram for the current line segment
+        // Manual vertical projection for the current line segment
         double *v_hist = (double *)safe_malloc(sizeof(double) * full_width);
         
-        // Manual vertical projection for a sub-region
         for (int j = 0; j < full_width; j++) {
             v_hist[j] = 0.0;
             for (int i = line_y_start; i <= line_y_end; i++) {
@@ -363,11 +527,11 @@ int segment_image_naive(const double *full_data, int full_width, int full_height
         }
         
         Boundary letter_boundaries[MAX_SEGMENTS];
-        // Letter segmentation parameters: Min zero length (gap size), Max zero value (threshold)
-        int num_letters = find_zero_intervals(v_hist, full_width, full_width / 20, 0.01, letter_boundaries);
+        // Letter segmentation: smaller minimum gap required
+        int num_letters = find_zero_intervals(v_hist, full_width, full_width / 40, 0.01, letter_boundaries);
         safe_free(v_hist, sizeof(double) * full_width);
         
-        printf("  Line %d: Found %d letter(s).\n", l + 1, num_letters);
+        printf("  Line %d (Y:[%d,%d]): Found %d letter(s).\n", l + 1, line_y_start, line_y_end, num_letters);
 
         // 3. Process each letter segment
         for (int c = 0; c < num_letters; c++) {
@@ -377,10 +541,11 @@ int segment_image_naive(const double *full_data, int full_width, int full_height
             }
             
             SegmentResult *seg = &segments_out[total_segments];
+            // Add a small buffer to the y-bounds to capture any ascenders/descenders lost in line segmentation
+            seg->y_start = fmax(0, line_y_start - 2); 
+            seg->y_end = fmin(full_height - 1, line_y_end + 2);
             seg->x_start = letter_boundaries[c].start;
             seg->x_end = letter_boundaries[c].end;
-            seg->y_start = line_y_start;
-            seg->y_end = line_y_end;
             
             // Resize and store the segment as a 32x32 image
             resize_segment(full_data, full_width, full_height, 
@@ -404,13 +569,9 @@ void recognize_segment(SegmentResult *segment) {
     double min_feature_loss = HUGE_VAL;
     int best_match_index = -1;
 
-    // Optimization is only run against a single "observed" image (the segment)
-    // We only need the EstimatedResult struct for loss and alpha.
-    EstimationResult current_result; 
-    
+    EstimationResult current_result = {0}; // Zero-initialize
+
     for (int i = 0; i < NUM_IDEAL_CHARS; i++) {
-        // We reuse run_optimization but it needs a full set of EstimationResult. 
-        // We'll run a local version that only returns the best fit for this char.
         run_optimization(segment->resized_img, observed_features, i, &current_result); 
 
         if (current_result.final_loss < min_feature_loss) {
@@ -427,19 +588,18 @@ void recognize_segment(SegmentResult *segment) {
 
 // --- PNG Rendering for Segmentation Output ---
 
-#define SEG_ROW_HEIGHT (IMG_SIZE + SET_SPACING) 
-#define SEG_PNG_WIDTH (IMG_SIZE * 2 + IMG_SPACING * 3 + GRAPH_WIDTH + SET_SPACING * 2) 
+#define SEG_ROW_HEIGHT (IMG_SIZE + TEXT_HEIGHT + SET_SPACING) 
+#define SEG_PNG_WIDTH (IMG_SIZE * 2 + IMG_SPACING * 3 + SET_SPACING * 2) // Simplified width
 
 void draw_segment_info_box(unsigned char *buffer, int buf_width, int buf_height, int x, int y, int width, int height, const SegmentResult *seg) {
     char info[100];
     const char* char_name = (seg->best_match_index != -1) ? CHAR_NAMES[seg->best_match_index] : "N/A";
     
-    // Placeholder text in the box
-    sprintf(info, "Match: %s | Loss: %.2f | $a_1$:%.2f", char_name, seg->final_loss, seg->estimated_alpha[0]);
+    sprintf(info, "Match: %s | Loss: %.2f | a1:%.2f", char_name, seg->final_loss, seg->estimated_alpha[0]);
     draw_text_placeholder_box(buffer, buf_width, buf_height, x, y, width, height, 200, 200, 255);
 }
 
-void render_segment_to_png(unsigned char *buffer, int buf_width, int buf_height, const SegmentResult *seg, int seg_index, int x_set, int y_set) {
+void render_segment_to_png(unsigned char *buffer, int buf_width, int buf_height, const SegmentResult *seg, int x_set, int y_set) {
     int current_x = x_set;
     
     // 1. Resized Segment Image (Observed)
@@ -451,7 +611,8 @@ void render_segment_to_png(unsigned char *buffer, int buf_width, int buf_height,
     if (seg->best_match_index != -1) {
         draw_curve(seg->estimated_alpha, estimated_img, &IDEAL_TEMPLATES[seg->best_match_index]);
     } else {
-        memset(estimated_img, 0, sizeof(Generated_Image));
+        // Fallback to clear image
+        for(int i=0; i<GRID_SIZE; i++) for(int j=0; j<GRID_SIZE; j++) estimated_img[i][j] = 0.0;
     }
     render_single_image_to_png(buffer, buf_width, buf_height, estimated_img, current_x, y_set + TEXT_HEIGHT, 0);
     current_x += IMG_SIZE + IMG_SPACING;
@@ -466,19 +627,16 @@ void generate_segment_png(const SegmentResult *segments, int num_segments, const
         return;
     }
     
-    const int num_cols = 4; // Full Image + 2 Segment Images + Info/Loss
     const int MAX_SEGMENTS_PER_ROW = 5;
     const int SEGMENTS_PER_ROW = fmin(MAX_SEGMENTS_PER_ROW, num_segments);
     
-    // Calculate required height: Full Image + All Segments
-    int full_img_row_height = IMG_SIZE + TEXT_HEIGHT + SET_SPACING;
-    int seg_row_height = IMG_SIZE + TEXT_HEIGHT + SET_SPACING;
+    int full_img_row_height = (full_height * PIXEL_SIZE) + TEXT_HEIGHT + SET_SPACING;
+    int seg_row_height = SEG_ROW_HEIGHT;
     int num_seg_rows = (num_segments + SEGMENTS_PER_ROW - 1) / SEGMENTS_PER_ROW; 
     
     int png_height = full_img_row_height + num_seg_rows * seg_row_height + SET_SPACING;
-    int png_width = SEG_PNG_WIDTH * SEGMENTS_PER_ROW + SET_SPACING;
+    int png_width = (IMG_SIZE * 2 + IMG_SPACING) * SEGMENTS_PER_ROW + SET_SPACING * 2;
     
-    // Allocate buffer
     long buffer_size = (long)png_width * png_height * NUM_CHANNELS;
     unsigned char *buffer = (unsigned char *)safe_malloc(buffer_size);
     if (buffer == NULL) {
@@ -490,10 +648,9 @@ void generate_segment_png(const SegmentResult *segments, int num_segments, const
     int x_set = SET_SPACING;
     int y_set = SET_SPACING;
 
-    // 1. Draw Full Image (as a segment for visualization)
+    // 1. Draw Full Image Title and Image
     draw_text_placeholder_box(buffer, png_width, png_height, x_set, y_set + 2, full_width * PIXEL_SIZE, TEXT_HEIGHT - 4, 150, 150, 255);
     
-    // We need to render the full image into the 3-channel buffer, scaled by PIXEL_SIZE.
     unsigned char r, g, b;
     for (int i = 0; i < full_height; i++) {
         for (int j = 0; j < full_width; j++) {
@@ -508,32 +665,33 @@ void generate_segment_png(const SegmentResult *segments, int num_segments, const
             }
         }
     }
-    y_set += full_img_row_height;
-
+    
     // 2. Draw Segment Boundaries on the Full Image
     for (int k = 0; k < num_segments; k++) {
         const SegmentResult *seg = &segments[k];
-        // Draw segment box (blue outline)
-        for (int y = seg->y_start * PIXEL_SIZE; y < (seg->y_end) * PIXEL_SIZE; y++) {
-            set_pixel(buffer, x_set + seg->x_start * PIXEL_SIZE, y_set + y, png_width, png_height, 0, 0, 255);
-            set_pixel(buffer, x_set + seg->x_end * PIXEL_SIZE, y_set + y, png_width, png_height, 0, 0, 255);
+        int y_offset = y_set + TEXT_HEIGHT; // Offset for image start
+
+        for (int y = seg->y_start * PIXEL_SIZE; y <= seg->y_end * PIXEL_SIZE + PIXEL_SIZE; y++) {
+            set_pixel(buffer, x_set + seg->x_start * PIXEL_SIZE, y_offset + y, png_width, png_height, 0, 0, 255);
+            set_pixel(buffer, x_set + seg->x_end * PIXEL_SIZE, y_offset + y, png_width, png_height, 0, 0, 255);
         }
-        for (int x = seg->x_start * PIXEL_SIZE; x < (seg->x_end) * PIXEL_SIZE; x++) {
-            set_pixel(buffer, x_set + x, y_set + seg->y_start * PIXEL_SIZE, png_width, png_height, 0, 0, 255);
-            set_pixel(buffer, x_set + x, y_set + seg->y_end * PIXEL_SIZE, png_width, png_height, 0, 0, 255);
+        for (int x = seg->x_start * PIXEL_SIZE; x <= seg->x_end * PIXEL_SIZE + PIXEL_SIZE; x++) {
+            set_pixel(buffer, x_set + x, y_offset + seg->y_start * PIXEL_SIZE, png_width, png_height, 0, 0, 255);
+            set_pixel(buffer, x_set + x, y_offset + seg->y_end * PIXEL_SIZE, png_width, png_height, 0, 0, 255);
         }
     }
-    y_set += SET_SPACING; // Move below the full image drawing
+    
+    y_set += full_img_row_height;
 
     // 3. Draw Letter Segments
     for (int k = 0; k < num_segments; k++) {
         int row_index = k / SEGMENTS_PER_ROW;
         int col_index = k % SEGMENTS_PER_ROW;
         
-        int seg_x = SET_SPACING + col_index * SEG_PNG_WIDTH;
+        int seg_x = SET_SPACING + col_index * (IMG_SIZE * 2 + IMG_SPACING);
         int seg_y = y_set + row_index * seg_row_height;
         
-        render_segment_to_png(buffer, png_width, png_height, &segments[k], k, seg_x, seg_y);
+        render_segment_to_png(buffer, png_width, png_height, &segments[k], seg_x, seg_y);
     }
 
     int success = stbi_write_png("segmentation_output.png", png_width, png_height, NUM_CHANNELS, buffer, png_width * NUM_CHANNELS);
@@ -542,7 +700,6 @@ void generate_segment_png(const SegmentResult *segments, int num_segments, const
 
     if (success) {
         printf("\nSegmentation Output Complete: segmentation_output.png created.\n");
-        printf("Size: %d x %d pixels. Total Segments: %d.\n", png_width, png_height, num_segments);
     } else {
         printf("\nERROR: Failed to write segmentation_output.png.\n");
     }
@@ -554,20 +711,19 @@ void generate_segment_png(const SegmentResult *segments, int num_segments, const
 int main(void) {
     srand(42); 
 
-    // --- Image Segmentation/Recognition Test ---
     const char *input_filename = "test1.jpg";
     double *full_image_data = NULL;
     int full_width = 0;
     int full_height = 0;
-
+    
     // Load Image (Uses Placeholder)
     if (!load_image_stb(input_filename, &full_image_data, &full_width, &full_height) || full_image_data == NULL) {
         fprintf(stderr, "Fatal Error: Failed to load image or memory allocation failed.\n");
         return 1;
     }
     
-    // Allocate space for segments
-    SegmentResult *segments = (SegmentResult *)safe_malloc(sizeof(SegmentResult) * MAX_SEGMENTS);
+    size_t segments_size = sizeof(SegmentResult) * MAX_SEGMENTS;
+    SegmentResult *segments = (SegmentResult *)safe_malloc(segments_size);
     if (segments == NULL) {
         fprintf(stderr, "Fatal Error: Failed to allocate memory for segments.\n");
         safe_free(full_image_data, sizeof(double) * full_width * full_height);
@@ -578,7 +734,7 @@ int main(void) {
     int num_segments = segment_image_naive(full_image_data, full_width, full_height, segments);
 
     // 2. Recognize Each Segment
-    printf("Starting recognition for %d segments...\n", num_segments);
+    printf("\nStarting recognition for %d segments...\n", num_segments);
     for (int i = 0; i < num_segments; i++) {
         recognize_segment(&segments[i]);
         const char* char_name = (segments[i].best_match_index != -1) ? CHAR_NAMES[segments[i].best_match_index] : "N/A";
@@ -591,11 +747,11 @@ int main(void) {
     generate_segment_png(segments, num_segments, full_image_data, full_width, full_height);
 
     // Free resources
-    safe_free(segments, sizeof(SegmentResult) * MAX_SEGMENTS);
+    safe_free(segments, segments_size);
     safe_free(full_image_data, sizeof(double) * full_width * full_height);
 
-    // --- End of Segmentation Test ---
-    printf("\n--- Segmentation and Recognition Test Complete ---\n");
-    
+    printf("\nFinal Memory Check: Allocated: %zu bytes | Freed: %zu bytes | Net: %zu bytes\n", 
+           total_allocated_bytes, total_freed_bytes, total_allocated_bytes - total_freed_bytes);
+
     return 0;
 }
