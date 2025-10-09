@@ -71,11 +71,13 @@ const char *CHAR_NAMES[NUM_IDEAL_CHARS] = {"J", "1", "2", "3", "4"};
 
 // Updated Ideal Templates using 9 control points (8 segments)
 const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
-    // 0: 'J' (Curved stroke down, hook left at bottom)
+    // 0: 'J' (Curved stroke down, hook left at bottom) - CORRECTED
     [0] = {.control_points = {
-        {.x = 0.6, .y = 0.1}, {.x = 0.6, .y = 0.2}, {.x = 0.6, .y = 0.3}, {.x = 0.6, .y = 0.4}, 
-        {.x = 0.5, .y = 0.5}, {.x = 0.4, .y = 0.65}, {.x = 0.3, .y = 0.8}, {.x = 0.2, .y = 0.85}, 
-        {.x = 0.2, .y = 0.9} 
+        {.x = 0.6, .y = 0.1}, {.x = 0.6, .y = 0.2}, {.x = 0.6, .y = 0.3}, {.x = 0.55, .y = 0.4}, 
+        {.x = 0.5, .y = 0.5}, {.x = 0.45, .y = 0.65}, // Vertical stem ends here
+        {.x = 0.4, .y = 0.8}, // Start of tight curve
+        {.x = 0.3, .y = 0.9}, // Bottom center of hook
+        {.x = 0.2, .y = 0.85} // Curve up to finish the hook
     }},
     
     // 1: '1' (Mostly vertical line)
@@ -92,7 +94,7 @@ const Ideal_Curve_Params IDEAL_TEMPLATES[NUM_IDEAL_CHARS] = {
         {.x = 0.8, .y = 0.9} 
     }}, 
     
-    // 3: '3' (Two right-facing curves, fixing the missing middle stroke issue)
+    // 3: '3' (Two right-facing curves)
     [3] = {.control_points = {
         {.x = 0.2, .y = 0.1}, {.x = 0.8, .y = 0.1}, {.x = 0.8, .y = 0.3}, {.x = 0.4, .y = 0.5}, 
         {.x = 0.8, .y = 0.5}, {.x = 0.8, .y = 0.7}, {.x = 0.4, .y = 0.9}, {.x = 0.8, .y = 0.9}, 
@@ -499,19 +501,10 @@ void summarize_results_console() {
  */
 void get_grayscale_color(double intensity, char *color_out) {
     double clamped_intensity = fmax(0.0, fmin(1.0, intensity));
-    // Invert intensity for visualization (0.0=black, 1.0=white, so low intensity is dark)
-    int value = (int)round(clamped_intensity * 255.0);
-    // Use an inverted grayscale for better visibility on a black background
-    value = 255 - value; 
-    // Ensure the background of the image area is gray to distinguish it from the black SVG background
-    if (value > 200) value = 200; // Clamp the lightest part to a dark gray
-    
-    // Instead of inverted, let's use a bright color for the line to stand out
-    int line_color = (int)round(clamped_intensity * 255.0);
     // Line is white/yellow, background is black.
-    if (line_color > 150) {
+    if (clamped_intensity > 0.6) {
         sprintf(color_out, "rgb(255, 255, 100)"); // Yellowish white for high intensity
-    } else if (line_color > 50) {
+    } else if (clamped_intensity > 0.3) {
         sprintf(color_out, "rgb(100, 100, 100)"); // Gray for medium intensity
     } else {
         sprintf(color_out, "rgb(0, 0, 0)"); // Black/Invisible for low intensity
