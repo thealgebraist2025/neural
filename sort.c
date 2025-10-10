@@ -326,6 +326,7 @@ IMPLEMENT_ALL_SIMD_MERGES(double, double, VW_double)
 // ====================================================================
 
 // Macro to run the full benchmark suite (Scalar and SIMD) for a single type
+// FIXED: Trailing whitespace removed from the line continuation below.
 #define DATA_TYPE_TESTER(type, name, func_suffix, VW_identifier) do { \
         printf("\n--- Testing Data Type: %s (Size: %lu bytes) ---\n", name, sizeof(type)); \
         \
