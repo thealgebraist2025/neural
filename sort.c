@@ -22,7 +22,7 @@
 #define VW_double     (128 / (sizeof(double) * 8)) // 2
 
 // --- Function Declarations for Recursive Alternation ---
-// Forward declaration of the function that merges INTO the auxiliary array.
+// This generic macro is only used for single-token C types (short, int, long, float, double)
 #define DECLARE_REC_TO_AUX_HELPER(type) \
     void mergeSort_recursive_to_aux_##type(type *arr, type *aux, int low, int high, \
                                     void (*merge_func)(type*, const type*, int, int, int));
@@ -47,7 +47,7 @@
     void merge_simd_8x_##type(type *arr, const type *aux, int low, int mid, int high); \
     void merge_simd_16x_##type(type *arr, const type *aux, int low, int mid, int high);
 
-// Special macro for the two-token type 'long long' using 'long_long' as the identifier suffix
+// Explicit macro for 'long long' to avoid token/type confusion
 #define DECLARE_LONG_LONG_HELPERS \
     void initialize_array_long_long(long long *arr, int size); \
     int is_sorted_long_long(const long long *arr, int size); \
@@ -59,7 +59,8 @@
     void merge_scalar_32x_long_long(long long *arr, const long long *aux, int low, int mid, int high); \
     void mergeSort_recursive_long_long(long long *arr, long long *aux, int low, int high, \
                                     void (*merge_func)(long long*, const long long*, int, int, int)); \
-    DECLARE_REC_TO_AUX_HELPER(long_long) \
+    void mergeSort_recursive_to_aux_long_long(long long *arr, long long *aux, int low, int high, \
+                                    void (*merge_func)(long long*, const long long*, int, int, int)); \
     void merge_simd_1x_long_long(long long *arr, const long long *aux, int low, int mid, int high); \
     void merge_simd_2x_long_long(long long *arr, const long long *aux, int low, int mid, int high); \
     void merge_simd_4x_long_long(long long *arr, const long long *aux, int low, int mid, int high); \
@@ -70,7 +71,7 @@
 DECLARE_HELPERS_FOR_TYPE(short)
 DECLARE_HELPERS_FOR_TYPE(int)
 DECLARE_HELPERS_FOR_TYPE(long)
-DECLARE_LONG_LONG_HELPERS // Use the special helper
+DECLARE_LONG_LONG_HELPERS // Use the explicit helper
 DECLARE_HELPERS_FOR_TYPE(float)
 DECLARE_HELPERS_FOR_TYPE(double)
 
@@ -170,8 +171,7 @@ DECLARE_HELPERS_FOR_TYPE(double)
         mergeSort_recursive_##type(arr, aux, low, mid, merge_func); \
         mergeSort_recursive_##type(arr, aux, mid + 1, high, merge_func); \
         \
-        /* 2. Merge: The two sorted halves are now in ARR. Merge ARR -> AUX. \
-           Since the merge_func only merges DST<-SRC, we swap arguments. */ \
+        /* 2. Merge: The two sorted halves are now in ARR. Merge ARR -> AUX. */ \
         merge_func(aux, arr, low, mid, high); \
     } \
     \
@@ -195,10 +195,9 @@ DECLARE_HELPERS_FOR_TYPE(double)
     }
 
 
-// Special macro implementation for 'long long' (long_long suffix)
-#define IMPLEMENT_LONG_LONG_FUNCTIONS(C_type) \
-    /* Use the generic macro but pass the specific C type (long long) for the type argument. */ \
-    /* The suffix will be 'long_long' */ \
+// Explicit implementation for 'long long' (long_long suffix)
+#define IMPLEMENT_LONG_LONG_FUNCTIONS \
+    /* --- 1x to 32x Scalar Merge Implementations (merge AUX -> ARR) --- */ \
     void merge_scalar_1x_long_long(long long *arr, const long long *aux, int low, int mid, int high) { \
         int i = low; int j = mid + 1; \
         for (int k = low; k <= high; k++) { SINGLE_MERGE_STEP(arr, aux, i, j, k) } \
@@ -246,7 +245,7 @@ DECLARE_HELPERS_FOR_TYPE(double)
         mergeSort_recursive_long_long(arr, aux, mid + 1, high, merge_func); \
         merge_func(aux, arr, low, mid, high); \
     } \
-    /* Fix for initialize_array and is_sorted specific to C_type */ \
+    /* Initialize Array */ \
     void initialize_array_long_long(long long *arr, int size) { \
         srand(time(NULL)); \
         for (int i = 0; i < size; i++) { \
@@ -265,7 +264,7 @@ DECLARE_HELPERS_FOR_TYPE(double)
 IMPLEMENT_MERGE_FUNCTIONS(short)
 IMPLEMENT_MERGE_FUNCTIONS(int)
 IMPLEMENT_MERGE_FUNCTIONS(long)
-IMPLEMENT_LONG_LONG_FUNCTIONS(long long) // Use the special implementation
+IMPLEMENT_LONG_LONG_FUNCTIONS // Use the explicit implementation
 IMPLEMENT_MERGE_FUNCTIONS(float)
 IMPLEMENT_MERGE_FUNCTIONS(double)
 
@@ -327,8 +326,7 @@ IMPLEMENT_ALL_SIMD_MERGES(double, double, VW_double)
 // ====================================================================
 
 // Macro to run the full benchmark suite (Scalar and SIMD) for a single type
-#define DATA_TYPE_TESTER(type, name, func_suffix, VW_identifier) \
-    do { \
+#define DATA_TYPE_TESTER(type, name, func_suffix, VW_identifier) do { \
         printf("\n--- Testing Data Type: %s (Size: %lu bytes) ---\n", name, sizeof(type)); \
         \
         type *data = (type*)malloc(N * sizeof(type)); \
@@ -408,7 +406,6 @@ int main() {
     DATA_TYPE_TESTER(short, "short", short, VW_short);
     DATA_TYPE_TESTER(int, "int", int, VW_int);
     DATA_TYPE_TESTER(long, "long", long, VW_long);
-    // Note: The C type is 'long long', but the macro suffix is 'long_long'
     DATA_TYPE_TESTER(long long, "long long", long_long, VW_long_long); 
     DATA_TYPE_TESTER(float, "float", float, VW_float);
     DATA_TYPE_TESTER(double, "double", double, VW_double);
