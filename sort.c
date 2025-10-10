@@ -66,12 +66,12 @@ void merge_asm_simd_1x_long(long *arr, const long *aux, int low, int mid, int hi
 void merge_scalar_1x_long(long *arr, const long *aux, int low, int mid, int high);
 void merge_scalar_2x_long(long *arr, const long *aux, int low, int mid, int high);
 void merge_scalar_4x_long(long *arr, const long *aux, int low, int mid, int high);
-void merge_scalar_8x_long(long *arr, const long *aux, int low, int mid, int high); // FIXED: Added 'int' to mid and high
+void merge_scalar_8x_long(long *arr, const long *aux, int low, int mid, int high);
 
 #ifdef USE_SIMD
 void merge_simd_1x_long(long *arr, const long *aux, int low, int mid, int high);
 void merge_simd_2x_long(long *arr, const long *aux, int low, int mid, int high);
-void merge_simd_4x_long(long *arr, const long *aux, int low, int mid, int high); // FIXED: Added 'int' to mid and high
+void merge_simd_4x_long(long *arr, const long *aux, int low, int mid, int high);
 void merge_simd_8x_long(long *arr, const long *aux, int low, int mid, int high);
 void merge_simd_16x_long(long *arr, const long *aux, int low, int mid, int high);
 #endif
@@ -190,7 +190,7 @@ void merge_asm_simd_1x_long(long *arr, const long *aux, int low, int mid, int hi
         // Check if a full vector can be read from i
         "addq $8, %%rdx\n"          // Check i_ptr + 1
         "cmpq %%r11, %%rdx\n"       
-        "ja 8f\n"                   // Jump to C cleanup for single element (8f)
+        "ja 8f\n"                   // Jump to scalar path (8f)
         "subq $8, %%rdx\n"          // Restore i_ptr
 
         "movdqu (%%rdx), %%xmm0\n"  // XMM0 = [aux[i], aux[i+1]]
@@ -204,7 +204,7 @@ void merge_asm_simd_1x_long(long *arr, const long *aux, int low, int mid, int hi
         // Check if a full vector can be read from j
         "addq $8, %%rcx\n"          // Check j_ptr + 1
         "cmpq %%r9, %%rcx\n"        
-        "ja 8f\n"                   // Jump to C cleanup for single element (8f)
+        "ja 8f\n"                   // Jump to scalar path (8f)
         "subq $8, %%rcx\n"          // Restore j_ptr
         
         "movdqu (%%rcx), %%xmm1\n"  // XMM1 = [aux[j], aux[j+1]]
@@ -213,11 +213,11 @@ void merge_asm_simd_1x_long(long *arr, const long *aux, int low, int mid, int hi
         "addq $16, %%r8\n"          // k_ptr += 2
         "jmp 1b\n"                  // Continue loop
 
-        // Combine all fallbacks to a single assembly label '8' and jump to C cleanup '9'
+        // 8f is the point where we fall back to C cleanup (only one element left)
+        // FIX: The assembly code must now simply fall through (i.e., NO JUMP to the C-label)
         "8:\n"
-        "jmp 9f\n" 
-
-        "7:\n"                     // Assembly exit point
+        
+        "7:\n"                     // Assembly exit point/fallthrough
         
         : // No explicit outputs
         : "g" (i_ptr), "g" (j_ptr), "g" (k_ptr), "g" (j_limit), "g" (i_limit)
@@ -227,11 +227,14 @@ void merge_asm_simd_1x_long(long *arr, const long *aux, int low, int mid, int hi
     // Terminate the inline assembly block
     __asm__ __volatile__(""); 
     
-    // Jump to C code start after assembly (for fallback paths 8f and 9f)
-    goto asm_cleanup; 
+    // Fallthrough from 7f (output complete) or 8f (scalar cleanup needed)
 
-    asm_cleanup:; 
+    // The C code for cleanup starts here.
+    // The Assembly block's logic needs to ensure it falls through to this point.
+    // Paths 7f and 8f now fall through to the C code that follows.
 
+    // No need for 'goto asm_cleanup;' anymore, as the asm falls through.
+    
     // C-based scalar cleanup loop
     int k = (k_ptr - arr);
     int i = (i_ptr - aux);
@@ -262,13 +265,11 @@ void merge_scalar_1x_long(long *arr, const long *aux, int low, int mid, int high
 
 void merge_scalar_2x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
 void merge_scalar_4x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
-// FIX: Added 'int' for mid and high
 void merge_scalar_8x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
 
 #ifdef USE_SIMD
 void merge_simd_1x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
 void merge_simd_2x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
-// FIX: Added 'int' for mid and high
 void merge_simd_4x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
 void merge_simd_8x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
 void merge_simd_16x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
