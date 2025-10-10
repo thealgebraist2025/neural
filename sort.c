@@ -103,44 +103,47 @@ void merge_asm_scalar_1x_long(long *arr, const long *aux, int low, int mid, int 
         
         "2:\n"                  // Loop start
         
+        // --- ADDED PREFETCHING ---
+        // Pre-fetch 64 bytes (8 longs) ahead of i_ptr (RDX) and j_ptr (RCX)
+        "prefetcht0 64(%%rdx)\n" // Prefetch RDX + 64 bytes
+        "prefetcht0 64(%%rcx)\n" // Prefetch RCX + 64 bytes
+        // -------------------------
+
         // 1. Check if left side (i) is exhausted: RDX > R8
         "cmpq %%r8, %%rdx\n"    
-        "jg 4b_i_exhausted\n"   // If i exhausted, jump to load/take from j 
+        "jg I_EXHAUSTED\n"      // Jump to I_EXHAUSTED
 
         // 2. Check if right side (j) is exhausted: RCX > R9
         "cmpq %%r9, %%rcx\n"    
-        "jg 3b_j_exhausted\n"   // If j exhausted, jump to load/take from i
+        "jg J_EXHAUSTED\n"      // Jump to J_EXHAUSTED
 
         // 3. Both sides have elements: load and compare
         "movq (%%rdx), %%r10\n" // R10 = aux[i]
         "movq (%%rcx), %%r11\n" // R11 = aux[j]
         "cmpq %%r10, %%r11\n"   // Compare aux[j] (R11) to aux[i] (R10)
-        "jl 4f_compare\n"       // If aux[j] < aux[i], jump to take from j
+        "jl TAKE_J\n"           // If aux[j] < aux[i], jump to TAKE_J
         
         // TAKE FROM I (Fallthrough from compare: aux[i] <= aux[j])
-        "3:\n"
+        "TAKE_I:\n"             
         "movq %%r10, (%%rdi)\n" // arr[k] = aux[i] (R10 is pre-loaded)
         "addq $8, %%rdx\n"      // i_ptr++
         "jmp 5f\n"              // Jump to next iteration/exit check
 
         // J-EXHAUSTED (Jump from exhaustion check 2)
-        "3b_j_exhausted:\n"
+        "J_EXHAUSTED:\n"
         "movq (%%rdx), %%r10\n" // FIX: R10 = aux[i] (Must load here!)
-        "jmp 3b\n"              // Jump to the write-I path
+        "jmp TAKE_I\n"          // Jump to the write-I path
 
-        // TAKE FROM J (Jump from compare: aux[j] < aux[i])
-        "4f_compare:\n"
-        
-        // TAKE FROM J (Fallthrough from compare or jump from exhaustion)
-        "4:\n"
+        // TAKE FROM J (Jump from compare: aux[j] < aux[i] or I-Exhausted)
+        "TAKE_J:\n"             
         "movq %%r11, (%%rdi)\n" // arr[k] = aux[j] (R11 is pre-loaded)
         "addq $8, %%rcx\n"      // j_ptr++
         "jmp 5f\n"
 
         // I-EXHAUSTED (Jump from exhaustion check 1)
-        "4b_i_exhausted:\n"
+        "I_EXHAUSTED:\n"
         "movq (%%rcx), %%r11\n" // FIX: R11 = aux[j] (Must load here!)
-        "jmp 4b\n"              // Jump to the write-J path
+        "jmp TAKE_J\n"          // Jump to the write-J path
 
         // Loop end / Iteration complete
         "5:\n"
@@ -183,24 +186,31 @@ void merge_asm_simd_1x_long(long *arr, const long *aux, int low, int mid, int hi
         
         "1:\n"                  // Loop start
         
+        // --- ADDED PREFETCHING ---
+        // Pre-fetch 64 bytes (8 longs) ahead of i_ptr (RDX) and j_ptr (RCX)
+        "prefetcht0 64(%%rdx)\n" // Prefetch RDX + 64 bytes
+        "prefetcht0 64(%%rcx)\n" // Prefetch RCX + 64 bytes
+        // -------------------------
+
         "cmpq %%r9, %%r8\n" 
         "jg 7f\n"               // Exit if output complete
 
         "cmpq %%r11, %%rdx\n"       
-        "jg 4f\n"                   // If i exhausted, jump to take j block (4f)
+        "jg I_EXHAUSTED_SIMD\n" // If i exhausted, jump to take j block 
 
         "cmpq %%r9, %%rcx\n"        
-        "jg 3f\n"                   // If j exhausted, jump to take i block (3f)
+        "jg J_EXHAUSTED_SIMD\n" // If j exhausted, jump to take i block 
 
         // Compare first elements for block-transfer decision (uses RAX, RBX)
         "movq (%%rdx), %%rax\n"     // RAX = aux[i]
         "movq (%%rcx), %%rbx\n"     // RBX = aux[j]
         
         "cmpq %%rbx, %%rax\n"       
-        "jg 4f_simd\n"                   // If aux[j] < aux[i], jump to attempt block from j (4f_simd)
+        "jg TAKE_J_SIMD\n"          // If aux[j] < aux[i], jump to attempt block from j 
         
         // Take 2 elements from i (aux[i] <= aux[j] or j exhausted)
-        "3f_simd:\n"
+        "J_EXHAUSTED_SIMD:\n"       // Jump target for J Exhausted
+        "TAKE_I_SIMD:\n"            // Start of I-Write Path
         // Check if a full vector can be read from i
         "addq $8, %%rdx\n"          // Check i_ptr + 1
         "cmpq %%r11, %%rdx\n"       
@@ -214,7 +224,8 @@ void merge_asm_simd_1x_long(long *arr, const long *aux, int low, int mid, int hi
         "jmp 1b\n"                  // Continue loop
 
         // Take 2 elements from j (aux[j] < aux[i] or i exhausted)
-        "4f_simd:\n"
+        "I_EXHAUSTED_SIMD:\n"       // Jump target for I Exhausted
+        "TAKE_J_SIMD:\n"            // Start of J-Write Path
         // Check if a full vector can be read from j
         "addq $8, %%rcx\n"          // Check j_ptr + 1
         "cmpq %%r9, %%rcx\n"        
