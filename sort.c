@@ -4,265 +4,282 @@
 #include <time.h>
 
 // --- Configuration ---
-#define N (1 << 20) // 1,048,576 elements for a typical benchmark size
-typedef int DataType;
+#define N (1 << 20) // 1,048,576 elements for benchmarking
+#define RUNS 3      // Number of runs to average time
 // ---------------------
 
-// Type definition for the merge function pointer
-typedef void (*MergeFunction)(DataType*, const DataType*, int, int, int);
+// --- Type-Agnostic Function Declarations ---
+// We use void* and size_t to handle different data types (short, int, double, etc.) generically.
 
-// ====================================================================
-// STANDARD MERGE FUNCTION (Baseline)
-// ====================================================================
+typedef void (*MergeFunction)(void*, const void*, int, int, int, size_t);
 
-/**
- * @brief Standard (non-optimized) merge function.
- * * @param arr The destination array (final merge result is written here).
- * @param aux The auxiliary array (contains the two sorted subarrays to be merged).
- * @param low The starting index of the merge section.
- * @param mid The midpoint index.
- * @param high The ending index of the merge section.
- */
-void merge_base(DataType *arr, const DataType *aux, int low, int mid, int high) {
-    int i = low;
-    int j = mid + 1;
-
-    // 1. Copy data from arr to aux (This is done in the recursive driver 
-    //    but often done here in standard in-place merge sort variations.)
-    //    We'll skip the copy here, assuming the recursive driver handles swapping/copying
-    //    or that 'aux' already holds the data to be merged.
-    
-    // For simplicity and correctness with a single aux array:
-    // We assume the data to be merged is currently in 'arr', 
-    // and we copy it to 'aux' before merging back into 'arr'.
-
-    // Step 1: Copy data to aux array (critical for in-place Merge Sort variants)
-    // NOTE: This copy should logically happen in the recursive call BEFORE the merge.
-    // However, to satisfy the function signature where 'aux' holds the data to merge, 
-    // we assume the data from 'low' to 'high' is copied to 'aux' before this call.
-    // For this example, we'll assume the driver function ensures aux holds the data.
-
-    for (int k = low; k <= high; k++) {
-        // Section 1: left half is exhausted (i > mid)
-        if (i > mid) {
-            arr[k] = aux[j++];
-        } 
-        // Section 2: right half is exhausted (j > high)
-        else if (j > high) {
-            arr[k] = aux[i++];
-        } 
-        // Section 3: aux[j] is smaller
-        else if (aux[j] < aux[i]) {
-            arr[k] = aux[j++];
-        } 
-        // Section 4: aux[i] is smaller or equal
-        else {
-            arr[k] = aux[i++];
-        }
-    }
-}
+// Forward declaration of the recursive driver
+void mergeSort_recursive(void *arr, void *aux, int low, int high, size_t element_size, MergeFunction merge_func);
 
 
 // ====================================================================
-// FIXED UNROLLED MERGE FUNCTION (4x)
+// GENERIC HELPER FUNCTIONS
 // ====================================================================
 
 /**
- * @brief Cache-optimized 4x unrolled merge function (FIXED).
- * * The crash occurs because 'k' exceeds 'high', causing an illegal write to 'arr[k]'.
- * This fixed version ensures the unrolled loop (k <= high - 3) strictly avoids 
- * the final 0, 1, 2, or 3 elements, which are then handled by the robust 
- * standard merge logic in the cleanup loop.
- * * @param arr The destination array.
- * @param aux The auxiliary array containing the data to be merged.
- * @param low The starting index.
- * @param mid The midpoint index.
- * @param high The ending index.
+ * @brief Performs a type-agnostic comparison (assumes numeric types).
  */
-void merge_unroll_4x(DataType *arr, const DataType *aux, int low, int mid, int high) {
-    // Indices for the two halves in the auxiliary array
-    int i = low;
-    int j = mid + 1;
-    int k; // index for writing back to 'arr'
-    
-    // --- 1. Main Unrolled Loop (Processes blocks of 4) ---
-    // The loop condition is strictly 'k <= high - 3'. 
-    // This is safe because it guarantees that there are at least 4 more slots 
-    // available to be written to in the 'arr' array before 'high'.
-    // The previous bug likely occurred because the inner block of 4 comparisons 
-    // failed to check for the exhaustion of 'i' or 'j' for all 4 steps,
-    // or the 'k' index ran too far in the cleanup.
-    
-    // We must ensure the boundary checks (i > mid) and (j > high) 
-    // are robustly checked for *each* of the 4 elements being processed.
-    
-    for (k = low; k <= high - 3; k += 4) {
-        
-        // --- Element k (Original line 83 crash location) ---
-        if (i > mid) { arr[k] = aux[j++]; } 
-        else if (j > high) { arr[k] = aux[i++]; } 
-        else if (aux[j] < aux[i]) { arr[k] = aux[j++]; } 
-        else { arr[k] = aux[i++]; }
-
-        // --- Element k+1 ---
-        if (i > mid) { arr[k+1] = aux[j++]; } 
-        else if (j > high) { arr[k+1] = aux[i++]; } 
-        else if (aux[j] < aux[i]) { arr[k+1] = aux[j++]; } 
-        else { arr[k+1] = aux[i++]; }
-        
-        // --- Element k+2 ---
-        if (i > mid) { arr[k+2] = aux[j++]; } 
-        else if (j > high) { arr[k+2] = aux[i++]; } 
-        else if (aux[j] < aux[i]) { arr[k+2] = aux[j++]; } 
-        else { arr[k+2] = aux[i++]; }
-
-        // --- Element k+3 ---
-        if (i > mid) { arr[k+3] = aux[j++]; } 
-        else if (j > high) { arr[k+3] = aux[i++]; } 
-        else if (aux[j] < aux[i]) { arr[k+3] = aux[j++]; } 
-        else { arr[k+3] = aux[i++]; }
-    }
-    
-    // --- 2. Cleanup Loop (Handles the remaining 0, 1, 2, or 3 elements) ---
-    // This loop uses the standard, robust merge logic until 'k' reaches 'high'.
-    // Because the main loop guaranteed k < high - 3 before the last increment, 
-    // k will be at most high - 3 + 4 = high + 1 when it starts the final cleanup.
-    // The condition 'k <= high' is now safe.
-    for (; k <= high; k++) {
-        if (i > mid) {
-            arr[k] = aux[j++];
-        } else if (j > high) {
-            arr[k] = aux[i++];
-        } else if (aux[j] < aux[i]) {
-            arr[k] = aux[j++];
-        } else {
-            arr[k] = aux[i++];
-        }
-    }
-}
-
-
-// ====================================================================
-// MERGE SORT RECURSIVE DRIVER
-// ====================================================================
-
-/**
- * @brief Recursive driver for Merge Sort.
- * * @param arr The array currently holding the data to be copied and merged into.
- * @param aux The auxiliary array used for temporary storage.
- * @param low Starting index.
- * @param high Ending index.
- * @param merge_func The specific merge function to use (base or unrolled).
- */
-void mergeSort_recursive(DataType *arr, DataType *aux, int low, int high, MergeFunction merge_func) {
-    if (low >= high) {
-        return;
-    }
-
-    int mid = low + (high - low) / 2;
-
-    // 1. Copy data from 'arr' (current state) to 'aux' for the two recursive calls
-    // Note: The roles of 'arr' and 'aux' swap in some optimized versions to avoid copies.
-    // For this simple version, we copy 'arr' to 'aux' only once at the start of the recursion
-    // and rely on the merge function to copy back from 'aux' to 'arr'.
-    
-    // Standard implementation: Copy data from 'arr' to 'aux' for the merge step.
-    for(int k = low; k <= high; k++) {
-        aux[k] = arr[k];
-    }
-    
-    // Recurse on the left half. (Note: Here we swap roles for efficiency)
-    // To implement the copy-free swap (Knuth's method), the recursive calls should swap arr/aux:
-    // mergeSort_recursive(aux, arr, low, mid, merge_func); // left half written to arr
-    // mergeSort_recursive(aux, arr, mid + 1, high, merge_func); // right half written to arr
-    // Then the final merge should be from aux to arr.
-
-    // To keep it simple and safe (and match the structure of the LLDB trace):
-    // Recurse on current array, which relies on the merge step to write to 'arr'
-    mergeSort_recursive(arr, aux, low, mid, merge_func);
-    mergeSort_recursive(arr, aux, mid + 1, high, merge_func);
-
-    // Merge the two sorted halves (now in 'arr') back into 'arr' using 'aux' as source
-    // Since the recursive calls returned, the current data to be merged is in 'arr'.
-    // We must copy it to 'aux' before merging, as the merge function expects 'aux' as source.
-    for (int k = low; k <= high; k++) {
-        aux[k] = arr[k];
-    }
-
-    merge_func(arr, aux, low, mid, high);
-}
-
-// ====================================================================
-// MAIN DRIVER AND BENCHMARK
-// ====================================================================
-
-/**
- * @brief Initializes an array with random values.
- * @param arr The array to initialize.
- * @param size The size of the array.
- */
-void initialize_array(DataType *arr, int size) {
-    srand(time(NULL));
-    for (int i = 0; i < size; i++) {
-        arr[i] = rand() % 1000000;
+int compare(const void *a, const void *b, size_t element_size) {
+    // This is a simplification; a production-level benchmark would need a type-specific comparison.
+    // We assume the data types are simple numerics for direct byte-level comparison.
+    if (element_size == sizeof(int) || element_size == sizeof(short)) {
+        if (*(int*)a < *(int*)b) return -1;
+        if (*(int*)a > *(int*)b) return 1;
+        return 0;
+    } else { // Handle larger types like long/double
+        if (*(double*)a < *(double*)b) return -1;
+        if (*(double*)a > *(double*)b) return 1;
+        return 0;
     }
 }
 
 /**
  * @brief Checks if the array is sorted.
  */
-int is_sorted(const DataType *arr, int size) {
+int is_sorted(const void *arr, int size, size_t element_size) {
+    const char *byte_arr = (const char *)arr;
     for (int i = 0; i < size - 1; i++) {
-        if (arr[i] > arr[i + 1]) {
-            return 0;
+        const void *a = byte_arr + (i * element_size);
+        const void *b = byte_arr + ((i + 1) * element_size);
+        if (compare(a, b, element_size) > 0) {
+            return 0; // Not sorted
         }
     }
     return 1;
 }
 
+/**
+ * @brief Initializes an array with random values (simplified, assumes small types or casts).
+ */
+void initialize_array(void *arr, int size, size_t element_size) {
+    srand(time(NULL));
+    char *byte_arr = (char *)arr;
+
+    for (int i = 0; i < size; i++) {
+        // Use a generic int value and cast to the target type
+        int rand_val = rand() % 1000000;
+        void *target = byte_arr + (i * element_size);
+        
+        if (element_size == sizeof(short)) { *(short*)target = (short)rand_val; }
+        else if (element_size == sizeof(int)) { *(int*)target = rand_val; }
+        else if (element_size == sizeof(long)) { *(long*)target = (long)rand_val; }
+        else if (element_size == sizeof(long long)) { *(long long*)target = (long long)rand_val; }
+        else if (element_size == sizeof(float)) { *(float*)target = (float)rand_val + ((float)rand() / RAND_MAX); }
+        else if (element_size == sizeof(double)) { *(double*)target = (double)rand_val + ((double)rand() / RAND_MAX); }
+    }
+}
+
+
+// ====================================================================
+// MERGE FUNCTIONS (Type-Agnostic, using memcpy)
+// ====================================================================
+
+// Utility macro for copying an element from aux[source_index] to arr[dest_index]
+#define COPY_ELEMENT(dest_arr, src_arr, dest_idx, src_idx, elem_size) \
+    memcpy((char*)dest_arr + (dest_idx * elem_size), (const char*)src_arr + (src_idx++ * elem_size), elem_size)
+
+// Utility macro for comparison
+#define COMPARE_ELEMENTS(arr, idx_i, idx_j, elem_size) \
+    (compare((const char*)arr + (idx_j * elem_size), (const char*)arr + (idx_i * elem_size), elem_size) < 0)
+
+
+/**
+ * @brief Standard (1x unrolled) merge function.
+ */
+void merge_base(void *arr, const void *aux, int low, int mid, int high, size_t element_size) {
+    int i = low;
+    int j = mid + 1;
+
+    for (int k = low; k <= high; k++) {
+        if (i > mid) {
+            COPY_ELEMENT(arr, aux, k, j, element_size);
+        } else if (j > high) {
+            COPY_ELEMENT(arr, aux, k, i, element_size);
+        } else if (COMPARE_ELEMENTS(aux, i, j, element_size)) {
+            COPY_ELEMENT(arr, aux, k, j, element_size);
+        } else {
+            COPY_ELEMENT(arr, aux, k, i, element_size);
+        }
+    }
+}
+
+
+/**
+ * @brief 4x Unrolled merge function.
+ */
+void merge_unroll_4x(void *arr, const void *aux, int low, int mid, int high, size_t element_size) {
+    int i = low;
+    int j = mid + 1;
+    int k;
+
+    // --- 1. Main Unrolled Loop (Processes blocks of 4) ---
+    for (k = low; k <= high - 3; k += 4) {
+        // Element k
+        if (i > mid) { COPY_ELEMENT(arr, aux, k, j, element_size); } 
+        else if (j > high) { COPY_ELEMENT(arr, aux, k, i, element_size); } 
+        else if (COMPARE_ELEMENTS(aux, i, j, element_size)) { COPY_ELEMENT(arr, aux, k, j, element_size); } 
+        else { COPY_ELEMENT(arr, aux, k, i, element_size); }
+
+        // Element k+1
+        if (i > mid) { COPY_ELEMENT(arr, aux, k+1, j, element_size); } 
+        else if (j > high) { COPY_ELEMENT(arr, aux, k+1, i, element_size); } 
+        else if (COMPARE_ELEMENTS(aux, i, j, element_size)) { COPY_ELEMENT(arr, aux, k+1, j, element_size); } 
+        else { COPY_ELEMENT(arr, aux, k+1, i, element_size); }
+        
+        // Element k+2
+        if (i > mid) { COPY_ELEMENT(arr, aux, k+2, j, element_size); } 
+        else if (j > high) { COPY_ELEMENT(arr, aux, k+2, i, element_size); } 
+        else if (COMPARE_ELEMENTS(aux, i, j, element_size)) { COPY_ELEMENT(arr, aux, k+2, j, element_size); } 
+        else { COPY_ELEMENT(arr, aux, k+2, i, element_size); }
+
+        // Element k+3
+        if (i > mid) { COPY_ELEMENT(arr, aux, k+3, j, element_size); } 
+        else if (j > high) { COPY_ELEMENT(arr, aux, k+3, i, element_size); } 
+        else if (COMPARE_ELEMENTS(aux, i, j, element_size)) { COPY_ELEMENT(arr, aux, k+3, j, element_size); } 
+        else { COPY_ELEMENT(arr, aux, k+3, i, element_size); }
+    }
+    
+    // --- 2. Cleanup Loop (Handles the remaining 0, 1, 2, or 3 elements) ---
+    for (; k <= high; k++) {
+        if (i > mid) {
+            COPY_ELEMENT(arr, aux, k, j, element_size);
+        } else if (j > high) {
+            COPY_ELEMENT(arr, aux, k, i, element_size);
+        } else if (COMPARE_ELEMENTS(aux, i, j, element_size)) {
+            COPY_ELEMENT(arr, aux, k, j, element_size);
+        } else {
+            COPY_ELEMENT(arr, aux, k, i, element_size);
+        }
+    }
+}
+
+
+/**
+ * @brief 8x Unrolled merge function.
+ */
+void merge_unroll_8x(void *arr, const void *aux, int low, int mid, int high, size_t element_size) {
+    int i = low;
+    int j = mid + 1;
+    int k;
+
+    // --- 1. Main Unrolled Loop (Processes blocks of 8) ---
+    for (k = low; k <= high - 7; k += 8) {
+        // Run the 8 comparisons/copies in sequence. This is boilerplate 
+        // extension of the 4x logic, ensuring all 8 steps check bounds.
+        
+        // Elements k to k+3 (First half of the 8x block)
+        #define MERGE_STEP(offset) \
+            if (i > mid) { COPY_ELEMENT(arr, aux, k + offset, j, element_size); } \
+            else if (j > high) { COPY_ELEMENT(arr, aux, k + offset, i, element_size); } \
+            else if (COMPARE_ELEMENTS(aux, i, j, element_size)) { COPY_ELEMENT(arr, aux, k + offset, j, element_size); } \
+            else { COPY_ELEMENT(arr, aux, k + offset, i, element_size); }
+
+        MERGE_STEP(0); MERGE_STEP(1); MERGE_STEP(2); MERGE_STEP(3);
+        
+        // Elements k+4 to k+7 (Second half of the 8x block)
+        MERGE_STEP(4); MERGE_STEP(5); MERGE_STEP(6); MERGE_STEP(7);
+        
+        #undef MERGE_STEP
+    }
+    
+    // --- 2. Cleanup Loop (Handles the remaining 0 to 7 elements) ---
+    // The standard 1x merge is used for the remainder.
+    for (; k <= high; k++) {
+        if (i > mid) {
+            COPY_ELEMENT(arr, aux, k, j, element_size);
+        } else if (j > high) {
+            COPY_ELEMENT(arr, aux, k, i, element_size);
+        } else if (COMPARE_ELEMENTS(aux, i, j, element_size)) {
+            COPY_ELEMENT(arr, aux, k, j, element_size);
+        } else {
+            COPY_ELEMENT(arr, aux, k, i, element_size);
+        }
+    }
+}
+
+// --------------------------------------------------------------------
+// MERGE SORT RECURSIVE DRIVER (Type-Agnostic)
+// --------------------------------------------------------------------
+
+void mergeSort_recursive(void *arr, void *aux, int low, int high, size_t element_size, MergeFunction merge_func) {
+    if (low >= high) {
+        return;
+    }
+
+    int mid = low + (high - low) / 2;
+
+    // Use a simple copy-based approach for safety:
+    // 1. Copy current data from 'arr' to 'aux' for the merge source
+    char *arr_byte = (char *)arr;
+    char *aux_byte = (char *)aux;
+    
+    for (int k = low; k <= high; k++) {
+        memcpy(aux_byte + (k * element_size), arr_byte + (k * element_size), element_size);
+    }
+    
+    // Recurse on the two halves (which will ultimately write back to 'arr')
+    mergeSort_recursive(arr, aux, low, mid, element_size, merge_func);
+    mergeSort_recursive(arr, aux, mid + 1, high, element_size, merge_func);
+
+    // Merge from 'aux' back into 'arr' (the destination)
+    merge_func(arr, aux, low, mid, high, element_size);
+}
+
+// ====================================================================
+// BENCHMARK DRIVER
+// ====================================================================
+
+// Macro to encapsulate the full benchmark run for a single type
+#define DATA_TYPE_TESTER(type, name) \
+    do { \
+        printf("\n--- Testing Data Type: %s (Size: %lu bytes) ---\n", name, sizeof(type)); \
+        size_t element_size = sizeof(type); \
+        size_t total_bytes = N * element_size; \
+        void *data = malloc(total_bytes); \
+        void *aux = malloc(total_bytes); \
+        if (!data || !aux) { perror("Memory allocation failed"); continue; } \
+        \
+        MergeFunction funcs[] = { merge_base, merge_unroll_4x, merge_unroll_8x }; \
+        const char *func_names[] = { "1x Base Merge", "4x Unrolled", "8x Unrolled" }; \
+        int num_funcs = sizeof(funcs) / sizeof(MergeFunction); \
+        \
+        for (int f = 0; f < num_funcs; f++) { \
+            double total_time = 0; \
+            for (int r = 0; r < RUNS; r++) { \
+                initialize_array(data, N, element_size); \
+                clock_t start = clock(); \
+                mergeSort_recursive(data, aux, 0, N - 1, element_size, funcs[f]); \
+                clock_t end = clock(); \
+                total_time += (double)(end - start) * 1000.0 / CLOCKS_PER_SEC; \
+            } \
+            if (!is_sorted(data, N, element_size)) { \
+                printf("  [ERROR] %s failed to sort the array.\n", func_names[f]); \
+            } else { \
+                printf("  - Variant '%s' Time: %.2f ms (Avg over %d runs)\n", func_names[f], total_time / RUNS, RUNS); \
+            } \
+        } \
+        \
+        free(data); \
+        free(aux); \
+    } while(0)
+
+
 int main() {
-    DataType *data = (DataType*)malloc(N * sizeof(DataType));
-    DataType *aux = (DataType*)malloc(N * sizeof(DataType));
+    printf("--- Starting Comprehensive Merge Sort Benchmark (N=%d, RUNS=%d) ---\n", N, RUNS);
 
-    if (!data || !aux) {
-        perror("Memory allocation failed");
-        return 1;
-    }
-    
-    printf("--- Starting Cache Unrolling Optimization Benchmark ---\n");
+    // Run tests for all requested data types
+    DATA_TYPE_TESTER(short, "short");
+    DATA_TYPE_TESTER(int, "int");
+    DATA_TYPE_TESTER(long, "long");
+    DATA_TYPE_TESTER(long long, "long long");
+    DATA_TYPE_TESTER(float, "float");
+    DATA_TYPE_TESTER(double, "double");
 
-    // --- Benchmark 1: Base Merge ---
-    initialize_array(data, N);
-    
-    clock_t start = clock();
-    mergeSort_recursive(data, aux, 0, N - 1, merge_base);
-    clock_t end = clock();
-    
-    double time_base = (double)(end - start) * 1000.0 / CLOCKS_PER_SEC;
-
-    if (!is_sorted(data, N)) {
-        printf("Error: Base Merge failed to sort the array!\n");
-    }
-    printf("- Variant '1x Base Merge' Time: %.2f ms\n", time_base);
-
-    // --- Benchmark 2: Unrolled Merge (FIXED) ---
-    initialize_array(data, N);
-    
-    start = clock();
-    // This call should now be safe and pass without segfault
-    mergeSort_recursive(data, aux, 0, N - 1, merge_unroll_4x);
-    end = clock();
-    
-    double time_unrolled = (double)(end - start) * 1000.0 / CLOCKS_PER_SEC;
-
-    if (!is_sorted(data, N)) {
-        printf("Error: Unrolled Merge failed to sort the array!\n");
-    }
-    printf("- Variant '4x Unrolled Merge' Time: %.2f ms (Fixed)\n", time_unrolled);
-
-
-    free(data);
-    free(aux);
-    
+    printf("\n--- Benchmark Complete ---\n");
     return 0;
 }
