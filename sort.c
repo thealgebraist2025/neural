@@ -3,10 +3,13 @@
 #include <time.h>
 #include <stdbool.h>
 #include <string.h> // For memcpy
+// Define POSIX feature test macro to ensure availability of clock_gettime and CLOCK_MONOTONIC
+#define _POSIX_C_SOURCE 199309L
 
 // Define the clock to use for high-resolution timing
 #define TIME_CLOCK CLOCK_MONOTONIC
-#define ARRAY_SIZE 500000 // Large size for meaningful cache performance measurements
+// Use UL suffix to ensure the literal is treated as size_t compatible type (unsigned long)
+#define ARRAY_SIZE 500000UL 
 
 // --- Function Pointer for Optimal Merge Selection ---
 typedef void (*MergeFunc)(int[], int[], size_t, size_t, size_t);
@@ -135,7 +138,6 @@ static void mergeSort_recursive(int arr[], int aux[], size_t low, size_t high, M
 
 /**
  * @brief Utility to run a function and measure its time.
- * * Now calls the standard mergeSort_recursive defined above.
  * @param m_func The MergeFunc to test.
  * @param data Array to sort.
  * @param aux Auxiliary array.
