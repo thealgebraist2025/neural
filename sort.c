@@ -214,7 +214,6 @@ void merge_asm_simd_1x_long(long *arr, const long *aux, int low, int mid, int hi
         "jmp 1b\n"                  // Continue loop
 
         // 8f is the point where we fall back to C cleanup (only one element left)
-        // FIX: The assembly code must now simply fall through (i.e., NO JUMP to the C-label)
         "8:\n"
         
         "7:\n"                     // Assembly exit point/fallthrough
@@ -226,14 +225,6 @@ void merge_asm_simd_1x_long(long *arr, const long *aux, int low, int mid, int hi
     
     // Terminate the inline assembly block
     __asm__ __volatile__(""); 
-    
-    // Fallthrough from 7f (output complete) or 8f (scalar cleanup needed)
-
-    // The C code for cleanup starts here.
-    // The Assembly block's logic needs to ensure it falls through to this point.
-    // Paths 7f and 8f now fall through to the C code that follows.
-
-    // No need for 'goto asm_cleanup;' anymore, as the asm falls through.
     
     // C-based scalar cleanup loop
     int k = (k_ptr - arr);
@@ -375,7 +366,8 @@ int main() {
 
     // --- Test long (Includes Assembly Tests) ---
     long *data_long = (long*)malloc(N * sizeof(long));
-    long *aux_long = (long*)malloc(N * sizeof(long));
+    // FIX: Allocate N+2 elements for the auxiliary buffer to guard against minor overflows
+    long *aux_long = (long*)malloc((N + 2) * sizeof(long)); 
     if (!data_long || !aux_long) { perror("Memory allocation failed for long"); return 1; }
 
     void (*scalar_funcs_long[])(long*, const long*, int, int, int) = {
@@ -415,8 +407,9 @@ int main() {
                        (void**)scalar_funcs_long, scalar_names_long, scalar_count_long,
                        simd_funcs_long_ptr, simd_names_long_ptr, simd_count_long
                        );
-    free(data_long); free(aux_long);
-
+    free(data_long); 
+    free(aux_long); // Should now succeed due to the padding
+    
     printf("\n--- Benchmark Complete ---\n");
     return 0;
 }
