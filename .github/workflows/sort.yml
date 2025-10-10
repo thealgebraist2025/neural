@@ -1,4 +1,4 @@
-name: Direct build and Run
+name: Build sort
 
 on:
   push:
