@@ -1,10 +1,11 @@
+// Define POSIX feature test macro to ensure availability of clock_gettime and CLOCK_MONOTONIC
+#define _POSIX_C_SOURCE 199309L 
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 #include <stdbool.h>
 #include <string.h> // For memcpy
-// Define POSIX feature test macro to ensure availability of clock_gettime and CLOCK_MONOTONIC
-#define _POSIX_C_SOURCE 199309L
 
 // Define the clock to use for high-resolution timing
 #define TIME_CLOCK CLOCK_MONOTONIC
