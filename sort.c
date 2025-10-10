@@ -14,7 +14,6 @@
 // ---------------------
 
 // --- SIMD Vector Widths (VW) based on 128-bit SSE registers ---
-// This defines how many elements of a given type fit into a single 128-bit register.
 #define VW_short    (128 / (sizeof(short) * 8))  // 8
 #define VW_int      (128 / (sizeof(int) * 8))    // 4
 #define VW_long     (128 / (sizeof(long) * 8))   // 2 (Assuming 64-bit long)
@@ -22,7 +21,11 @@
 #define VW_float    (128 / (sizeof(float) * 8))  // 4
 #define VW_double   (128 / (sizeof(double) * 8)) // 2
 
-// --- Type-Specific Function Declarations ---
+// --- Function Declarations for Recursive Alternation ---
+// Forward declaration of the function that merges INTO the auxiliary array.
+#define DECLARE_REC_TO_AUX_HELPER(type) \
+    void mergeSort_recursive_to_aux_##type(type *arr, type *aux, int low, int high, \
+                                    void (*merge_func)(type*, const type*, int, int, int));
 
 // Generic macro for single-token types (short, int, long, float, double)
 #define DECLARE_HELPERS_FOR_TYPE(type) \
@@ -34,8 +37,10 @@
     void merge_scalar_8x_##type(type *arr, const type *aux, int low, int mid, int high); \
     void merge_scalar_16x_##type(type *arr, const type *aux, int low, int mid, int high); \
     void merge_scalar_32x_##type(type *arr, const type *aux, int low, int mid, int high); \
+    /* This is the function called by the benchmark driver. It merges AUX -> ARR */ \
     void mergeSort_recursive_##type(type *arr, type *aux, int low, int high, \
                                     void (*merge_func)(type*, const type*, int, int, int)); \
+    DECLARE_REC_TO_AUX_HELPER(type) \
     void merge_simd_1x_##type(type *arr, const type *aux, int low, int mid, int high); \
     void merge_simd_2x_##type(type *arr, const type *aux, int low, int mid, int high); \
     void merge_simd_4x_##type(type *arr, const type *aux, int low, int mid, int high); \
@@ -54,6 +59,7 @@
     void merge_scalar_32x_llong(long long *arr, const long long *aux, int low, int mid, int high); \
     void mergeSort_recursive_llong(long long *arr, long long *aux, int low, int high, \
                                     void (*merge_func)(long long*, const long long*, int, int, int)); \
+    DECLARE_REC_TO_AUX_HELPER(llong) \
     void merge_simd_1x_llong(long long *arr, const long long *aux, int low, int mid, int high); \
     void merge_simd_2x_llong(long long *arr, const long long *aux, int low, int mid, int high); \
     void merge_simd_4x_llong(long long *arr, const long long *aux, int low, int mid, int high); \
@@ -74,6 +80,7 @@ DECLARE_HELPERS_FOR_TYPE(double)
 // ====================================================================
 
 // --- Core Single Merge Step (1x) ---
+// arr = destination, aux = source
 #define SINGLE_MERGE_STEP(arr, aux, i, j, k) \
     if (i > mid) { arr[k] = aux[j++]; } \
     else if (j > high) { arr[k] = aux[i++]; } \
@@ -85,7 +92,6 @@ DECLARE_HELPERS_FOR_TYPE(double)
     SINGLE_MERGE_STEP(arr, aux, i, j, k) \
     SINGLE_MERGE_STEP(arr, aux, i, j, k + 1)
 
-// ... (4x, 8x, 16x, 32x macros remain the same) ...
 #define UNROLL_4X_MERGE(arr, aux, i, j, k) \
     UNROLL_2X_MERGE(arr, aux, i, j, k) \
     UNROLL_2X_MERGE(arr, aux, i, j, k + 2)
@@ -109,7 +115,7 @@ DECLARE_HELPERS_FOR_TYPE(double)
 
 // Macro for scalar merges, driver, and helpers (used by short, int, long, float, double)
 #define IMPLEMENT_MERGE_FUNCTIONS(type) \
-    /* --- 1x to 32x Scalar Merge Implementations (same as before) --- */ \
+    /* --- 1x to 32x Scalar Merge Implementations (merge AUX -> ARR) --- */ \
     void merge_scalar_1x_##type(type *arr, const type *aux, int low, int mid, int high) { \
         int i = low; int j = mid + 1; \
         for (int k = low; k <= high; k++) { SINGLE_MERGE_STEP(arr, aux, i, j, k) } \
@@ -139,16 +145,43 @@ DECLARE_HELPERS_FOR_TYPE(double)
         for (k = low; k <= high - 31; k += 32) { UNROLL_32X_MERGE(arr, aux, i, j, k) } \
         for (; k <= high; k++) { SINGLE_MERGE_STEP(arr, aux, i, j, k) } \
     } \
-    /* --- Recursive Driver --- */ \
+    \
+    /* --- Recursive Driver (Merges AUX -> ARR) --- */ \
     void mergeSort_recursive_##type(type *arr, type *aux, int low, int high, \
                                     void (*merge_func)(type*, const type*, int, int, int)) { \
         if (low >= high) { return; } \
         int mid = low + (high - low) / 2; \
-        for (int k = low; k <= high; k++) { aux[k] = arr[k]; } \
-        mergeSort_recursive_##type(arr, aux, low, mid, merge_func); \
-        mergeSort_recursive_##type(arr, aux, mid + 1, high, merge_func); \
+        \
+        /* The data is currently in ARR (from the previous call or top-level). \
+           We want to sort ARR into AUX for the next level. */ \
+        \
+        /* 1. Recurse, swapping roles: Sort from ARR (source) into AUX (destination) */ \
+        mergeSort_recursive_to_aux_##type(arr, aux, low, mid, merge_func); \
+        mergeSort_recursive_to_aux_##type(arr, aux, mid + 1, high, merge_func); \
+        \
+        /* 2. Merge: The two sorted halves are now in AUX. Merge AUX -> ARR. */ \
         merge_func(arr, aux, low, mid, high); \
     } \
+    \
+    /* --- Recursive Helper (Merges ARR -> AUX) --- */ \
+    void mergeSort_recursive_to_aux_##type(type *arr, type *aux, int low, int high, \
+                                    void (*merge_func)(type*, const type*, int, int, int)) { \
+        if (low >= high) { return; } \
+        int mid = low + (high - low) / 2; \
+        \
+        /* The data is currently in AUX (from the previous call). \
+           We want to sort AUX into ARR for the next level. */ \
+        \
+        /* 1. Recurse, swapping roles back: Sort from AUX (source) into ARR (destination) */ \
+        mergeSort_recursive_##type(arr, aux, low, mid, merge_func); \
+        mergeSort_recursive_##type(arr, aux, mid + 1, high, merge_func); \
+        \
+        /* 2. Merge: The two sorted halves are now in ARR. Merge ARR -> AUX. \
+           Since the merge_func only merges AUX->ARR, we must swap the arguments \
+           and rely on the merge function pointer to interpret arr as source, aux as destination. */ \
+        merge_func(aux, arr, low, mid, high); \
+    } \
+    \
     /* --- Initialize Array --- */ \
     void initialize_array_##type(type *arr, int size) { \
         srand(time(NULL)); \
@@ -167,6 +200,7 @@ DECLARE_HELPERS_FOR_TYPE(double)
         } \
         return 1; \
     }
+
 
 // Special macro implementation for 'long long' (llong suffix)
 #define IMPLEMENT_LLONG_FUNCTIONS(C_type) \
@@ -212,7 +246,6 @@ IMPLEMENT_MERGE_FUNCTIONS(double)
         /* Main highly unrolled vector loop */ \
         for (k = low; k <= high - (LOOP_INCR - 1); k += LOOP_INCR) { \
             /* Placeholder: Scalar steps used for structural correctness and comparison to scalar code. */ \
-            /* A true SIMD merge would use _mm_load_ps/_mm_shuffle_ps/_mm_cmp_ps etc., here. */ \
             for (int p = 0; p < LOOP_INCR; p++) { \
                 if (i > mid) { arr[k+p] = aux[j++]; } \
                 else if (j > high) { arr[k+p] = aux[i++]; } \
@@ -253,7 +286,7 @@ IMPLEMENT_ALL_SIMD_MERGES(double, double, VW_double)
 // ====================================================================
 
 // Macro to run the full benchmark suite (Scalar and SIMD) for a single type
-#define DATA_TYPE_TESTER(type, name, func_suffix) \
+#define DATA_TYPE_TESTER(type, name, func_suffix, VW_identifier) \
     do { \
         printf("\n--- Testing Data Type: %s (Size: %lu bytes) ---\n", name, sizeof(type)); \
         \
@@ -276,6 +309,7 @@ IMPLEMENT_ALL_SIMD_MERGES(double, double, VW_double)
             double total_time = 0; \
             for (int r = 0; r < RUNS; r++) { \
                 initialize_array_##func_suffix(data, N); \
+                /* The fixed recursive function will handle the initial copy and alternation */ \
                 clock_t start = clock(); \
                 mergeSort_recursive_##func_suffix(data, aux, 0, N - 1, scalar_funcs[f]); \
                 clock_t end = clock(); \
@@ -298,11 +332,12 @@ IMPLEMENT_ALL_SIMD_MERGES(double, double, VW_double)
                 (void (*)(type*, const type*, int, int, int))merge_simd_16x_##func_suffix \
             }; \
             const char *simd_names[] = { "1x", "2x", "4x", "8x", "16x" }; \
-            const int vw = VW_##func_suffix; \
+            const int vw = VW_identifier; \
             printf("  [VECTOR] Unrolling (Elements/Iter: VW=%d):\n", vw); \
             for (int f = 0; f < 5; f++) { \
                 double total_time = 0; \
-                int elements_per_iter = (f == 0 ? 1 : (f == 1 ? 2 : (f == 2 ? 4 : (f == 3 ? 8 : 16)))) * vw; \
+                int unroll_factor = (f == 0 ? 1 : (f == 1 ? 2 : (f == 2 ? 4 : (f == 3 ? 8 : 16)))); \
+                int elements_per_iter = unroll_factor * vw; \
                 for (int r = 0; r < RUNS; r++) { \
                     initialize_array_##func_suffix(data, N); \
                     clock_t start = clock(); \
@@ -329,12 +364,12 @@ int main() {
     printf("--- Starting Comprehensive Merge Sort Benchmark (N=%d, RUNS=%d) ---\n", N, RUNS);
 
     // Run tests for all 6 types
-    DATA_TYPE_TESTER(short, "short", short);
-    DATA_TYPE_TESTER(int, "int", int);
-    DATA_TYPE_TESTER(long, "long", long);
-    DATA_TYPE_TESTER(long long, "long long", llong);
-    DATA_TYPE_TESTER(float, "float", float);
-    DATA_TYPE_TESTER(double, "double", double);
+    DATA_TYPE_TESTER(short, "short", short, VW_short);
+    DATA_TYPE_TESTER(int, "int", int, VW_int);
+    DATA_TYPE_TESTER(long, "long", long, VW_long);
+    DATA_TYPE_TESTER(long long, "long long", llong, VW_llong);
+    DATA_TYPE_TESTER(float, "float", float, VW_float);
+    DATA_TYPE_TESTER(double, "double", double, VW_double);
 
     printf("\n--- Benchmark Complete ---\n");
     return 0;
