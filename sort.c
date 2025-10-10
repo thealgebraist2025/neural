@@ -105,28 +105,42 @@ void merge_asm_scalar_1x_long(long *arr, const long *aux, int low, int mid, int 
         
         // 1. Check if left side (i) is exhausted: RDX > R8
         "cmpq %%r8, %%rdx\n"    
-        "jg 4f\n"               // If i exhausted, jump to take from j (4f)
+        "jg 4b_i_exhausted\n"   // If i exhausted, jump to load/take from j 
 
         // 2. Check if right side (j) is exhausted: RCX > R9
         "cmpq %%r9, %%rcx\n"    
-        "jg 3f\n"               // If j exhausted, jump to take from i (3f)
+        "jg 3b_j_exhausted\n"   // If j exhausted, jump to load/take from i
 
-        // 3. Both sides have elements: compare *i and *j
+        // 3. Both sides have elements: load and compare
         "movq (%%rdx), %%r10\n" // R10 = aux[i]
         "movq (%%rcx), %%r11\n" // R11 = aux[j]
         "cmpq %%r10, %%r11\n"   // Compare aux[j] (R11) to aux[i] (R10)
-        "jl 4f\n"               // If aux[j] < aux[i] (R11 < R10), jump to take from j (4f)
-
-        // Take from i (aux[i] <= aux[j] or j exhausted)
+        "jl 4f_compare\n"       // If aux[j] < aux[i], jump to take from j
+        
+        // TAKE FROM I (Fallthrough from compare: aux[i] <= aux[j])
         "3:\n"
-        "movq %%r10, (%%rdi)\n" // arr[k] = aux[i] (R10)
+        "movq %%r10, (%%rdi)\n" // arr[k] = aux[i] (R10 is pre-loaded)
         "addq $8, %%rdx\n"      // i_ptr++
         "jmp 5f\n"              // Jump to next iteration/exit check
 
-        // Take from j (aux[j] < aux[i] or i exhausted)
+        // J-EXHAUSTED (Jump from exhaustion check 2)
+        "3b_j_exhausted:\n"
+        "movq (%%rdx), %%r10\n" // FIX: R10 = aux[i] (Must load here!)
+        "jmp 3b\n"              // Jump to the write-I path
+
+        // TAKE FROM J (Jump from compare: aux[j] < aux[i])
+        "4f_compare:\n"
+        
+        // TAKE FROM J (Fallthrough from compare or jump from exhaustion)
         "4:\n"
-        "movq %%r11, (%%rdi)\n" // arr[k] = aux[j] (R11)
+        "movq %%r11, (%%rdi)\n" // arr[k] = aux[j] (R11 is pre-loaded)
         "addq $8, %%rcx\n"      // j_ptr++
+        "jmp 5f\n"
+
+        // I-EXHAUSTED (Jump from exhaustion check 1)
+        "4b_i_exhausted:\n"
+        "movq (%%rcx), %%r11\n" // FIX: R11 = aux[j] (Must load here!)
+        "jmp 4b\n"              // Jump to the write-J path
 
         // Loop end / Iteration complete
         "5:\n"
@@ -183,14 +197,14 @@ void merge_asm_simd_1x_long(long *arr, const long *aux, int low, int mid, int hi
         "movq (%%rcx), %%rbx\n"     // RBX = aux[j]
         
         "cmpq %%rbx, %%rax\n"       
-        "jg 4f\n"                   // If aux[j] < aux[i], jump to attempt block from j (4f)
+        "jg 4f_simd\n"                   // If aux[j] < aux[i], jump to attempt block from j (4f_simd)
         
         // Take 2 elements from i (aux[i] <= aux[j] or j exhausted)
-        "3:\n"
+        "3f_simd:\n"
         // Check if a full vector can be read from i
         "addq $8, %%rdx\n"          // Check i_ptr + 1
         "cmpq %%r11, %%rdx\n"       
-        "ja 8f\n"                   // Jump to scalar path (8f)
+        "ja 8f\n"                   // Jump to C cleanup for single element (8f)
         "subq $8, %%rdx\n"          // Restore i_ptr
 
         "movdqu (%%rdx), %%xmm0\n"  // XMM0 = [aux[i], aux[i+1]]
@@ -200,11 +214,11 @@ void merge_asm_simd_1x_long(long *arr, const long *aux, int low, int mid, int hi
         "jmp 1b\n"                  // Continue loop
 
         // Take 2 elements from j (aux[j] < aux[i] or i exhausted)
-        "4:\n"
+        "4f_simd:\n"
         // Check if a full vector can be read from j
         "addq $8, %%rcx\n"          // Check j_ptr + 1
         "cmpq %%r9, %%rcx\n"        
-        "ja 8f\n"                   // Jump to scalar path (8f)
+        "ja 8f\n"                   // Jump to C cleanup for single element (8f)
         "subq $8, %%rcx\n"          // Restore j_ptr
         
         "movdqu (%%rcx), %%xmm1\n"  // XMM1 = [aux[j], aux[j+1]]
@@ -366,7 +380,7 @@ int main() {
 
     // --- Test long (Includes Assembly Tests) ---
     long *data_long = (long*)malloc(N * sizeof(long));
-    // FIX: Allocate N+2 elements for the auxiliary buffer to guard against minor overflows
+    // Allocate N+2 elements for the auxiliary buffer to guard against minor overflows
     long *aux_long = (long*)malloc((N + 2) * sizeof(long)); 
     if (!data_long || !aux_long) { perror("Memory allocation failed for long"); return 1; }
 
@@ -408,7 +422,7 @@ int main() {
                        simd_funcs_long_ptr, simd_names_long_ptr, simd_count_long
                        );
     free(data_long); 
-    free(aux_long); // Should now succeed due to the padding
+    free(aux_long); 
     
     printf("\n--- Benchmark Complete ---\n");
     return 0;
