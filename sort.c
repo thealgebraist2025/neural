@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
+#include <time.h>      // FIX 1: Defines struct timespec, clock_gettime, and CLOCK_MONOTONIC
 #include <stdbool.h>
 
 // Compiler check for SSE/SIMD intrinsics
@@ -48,6 +48,7 @@ bool is_sorted_long(const long *arr, int size) {
 // Timer
 double get_time_sec() {
     struct timespec ts;
+    // Note: On some systems, linking with -lrt might be required for clock_gettime
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
 }
@@ -90,7 +91,7 @@ void merge_asm_scalar_1x_long(long *arr, const long *aux, int low, int mid, int 
     long *i_limit = (long*)&aux[mid];
     long *j_limit = (long*)&aux[high]; // Output limit
 
-    // Uses 8 GPRs: RDI (k_ptr), RDX (i_ptr), RCX (j_ptr), R8 (i_limit), R9 (j_limit), R10 (aux[i]), R11 (aux[j])
+    // Uses 7 GPRs: RDI (k_ptr), RDX (i_ptr), RCX (j_ptr), R8 (i_limit), R9 (j_limit), R10 (aux[i]), R11 (aux[j])
     __asm__ __volatile__ (
         // Initialize pointers/limits into dedicated GPRs
         "movq %0, %%rdx\n"      // RDX = i_ptr
@@ -213,17 +214,21 @@ void merge_asm_simd_1x_long(long *arr, const long *aux, int low, int mid, int hi
 
         "3b:\n"                     // Fallback from i (only 1 element left)
         "4b:\n"                     // Fallback from j (only 1 element left)
-        "jmp 6f\n"                  // Jump to C cleanup
-
+        
+        "6:\n"                      // C cleanup jump label
+        
         "7:\n"                     // Assembly exit point
         
         : // No explicit outputs
         : "g" (i_ptr), "g" (j_ptr), "g" (k_ptr), "g" (j_limit), "g" (i_limit)
         : "rdx", "rcx", "r8", "r9", "r11", "rax", "rbx", "cc", "memory", "xmm0", "xmm1"
     );
+    
+    // FIX 2: Use an empty assembly statement to terminate the inline assembly block
+    __asm__ __volatile__(""); 
+    
 
     // C-based scalar cleanup loop
-    "6:\n"
     int k = (k_ptr - arr);
     int i = (i_ptr - aux);
     int j = (j_ptr - aux);
@@ -264,29 +269,17 @@ void merge_simd_16x_long(long *arr, const long *aux, int low, int mid, int high)
 #endif
 
 // --------------------------------------------------------------------
-// Recursive Sort Driver (FIXED SIGNATURES)
+// Recursive Sort Driver 
 // --------------------------------------------------------------------
 
 /**
  * @brief Recursive function that performs the top-down merge sort.
- * This function handles the recursive calls, swapping the roles of 'arr' and 'aux'
- * on each call, and then calls the merge_func to merge the sorted halves.
- * * @param data Array currently holding sorted halves (source)
- * @param aux Array to receive the merged data (destination)
- * @param low Starting index
- * @param high Ending index
- * @param merge_func The chosen merge implementation function
  */
 void mergeSort_recursive_long(long *data, long *aux, int low, int high, 
                               void (*merge_func)(long*, const long*, int, int, int)) {
     
     // Base case: 1 element or less
     if (low >= high) {
-        // Since 'aux' is the source and 'data' is the destination in the 
-        // recursive calls leading here, we ensure 'data' is correct.
-        // Copy the single element from data (the original source) to aux (the current source)
-        // This is necessary because in the top-down approach, the base case needs to ensure 
-        // the source array for the merge is correct.
         if (low == high) {
              aux[low] = data[low]; // Ensure aux has the base element
         }
@@ -295,15 +288,13 @@ void mergeSort_recursive_long(long *data, long *aux, int low, int high,
 
     int mid = low + (high - low) / 2;
 
-    // 1. Recursively sort the left half: 
-    // Data moves from 'aux' (current source) to 'data' (current destination for the next level up)
+    // 1. Recursively sort the left half: (Swap data and aux roles)
     mergeSort_recursive_long(aux, data, low, mid, merge_func); 
     
-    // 2. Recursively sort the right half: 
-    // Data moves from 'aux' (current source) to 'data' (current destination for the next level up)
+    // 2. Recursively sort the right half: (Swap data and aux roles)
     mergeSort_recursive_long(aux, data, mid + 1, high, merge_func); 
 
-    // 3. Merge sorted halves (which are now in 'aux') back into 'data'.
+    // 3. Merge sorted halves from 'aux' back into 'data'.
     // merge_func(destination_arr, source_aux, low, mid, high)
     merge_func(data, aux, low, mid, high);
 }
@@ -345,17 +336,17 @@ void run_benchmark_test(long *data, long *aux, size_t type_size, const char *typ
 
         for (int r = 0; r < RUNS; r++) {
             init_func(data, N);
-            memcpy(aux, data, N * type_size); // aux starts as unsorted copy
+            memcpy(aux, data, N * sizeof(long)); // aux starts as unsorted copy
             
             double start_time = get_time_sec();
             
-            // The initial call swaps the roles: sort from aux into data
+            // The initial call starts the sort
             sort_func(data, aux, 0, N - 1, current_merge_func);
             
             total_time += get_time_sec() - start_time;
 
             if (r == 0) {
-                // The mergeSort_recursive_long function ensures the result is in 'data'
+                // The mergeSort_recursive_long function ensures the final result is in 'data'
                 verified = verify_func(data, N);
             }
         }
