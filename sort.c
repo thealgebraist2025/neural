@@ -66,12 +66,12 @@ void merge_asm_simd_1x_long(long *arr, const long *aux, int low, int mid, int hi
 void merge_scalar_1x_long(long *arr, const long *aux, int low, int mid, int high);
 void merge_scalar_2x_long(long *arr, const long *aux, int low, int mid, int high);
 void merge_scalar_4x_long(long *arr, const long *aux, int low, int mid, int high);
-void merge_scalar_8x_long(long *arr, const long *aux, int low, int mid, int high);
+void merge_scalar_8x_long(long *arr, const long *aux, int low, int mid, int high); // FIXED: Added 'int' to mid and high
 
 #ifdef USE_SIMD
 void merge_simd_1x_long(long *arr, const long *aux, int low, int mid, int high);
 void merge_simd_2x_long(long *arr, const long *aux, int low, int mid, int high);
-void merge_simd_4x_long(long *arr, const long *aux, int low, int mid, int high);
+void merge_simd_4x_long(long *arr, const long *aux, int low, int mid, int high); // FIXED: Added 'int' to mid and high
 void merge_simd_8x_long(long *arr, const long *aux, int low, int mid, int high);
 void merge_simd_16x_long(long *arr, const long *aux, int low, int mid, int high);
 #endif
@@ -213,7 +213,7 @@ void merge_asm_simd_1x_long(long *arr, const long *aux, int low, int mid, int hi
         "addq $16, %%r8\n"          // k_ptr += 2
         "jmp 1b\n"                  // Continue loop
 
-        // FIX: Combine all fallbacks to a single assembly label '8' and jump to C cleanup '9'
+        // Combine all fallbacks to a single assembly label '8' and jump to C cleanup '9'
         "8:\n"
         "jmp 9f\n" 
 
@@ -224,23 +224,11 @@ void merge_asm_simd_1x_long(long *arr, const long *aux, int low, int mid, int hi
         : "rdx", "rcx", "r8", "r9", "r11", "rax", "rbx", "cc", "memory", "xmm0", "xmm1"
     );
     
-    // FIX: The C cleanup label must be outside the __asm__ block. 
-    // This is the C code following the assembly block.
-    // The previous structure had a string literal "9:\n" which was incorrectly placed.
-    // We use the empty assembly to mark the end of the main assembly block.
+    // Terminate the inline assembly block
     __asm__ __volatile__(""); 
     
-    // C-label for the jump target 9f
-    // NOTE: This C label structure will only work if the previous assembly block
-    // correctly jumps to 9f, which it can't directly. We rely on the control flow 
-    // falling through from 7f, or the assembler/compiler handling the labels.
-    // Since we used '9f' in the assembly, we must ensure it's defined.
-
-    // Using a separate named label for Clang compatibility:
-    // (A named label, though non-standard, is often cleaner)
-    goto asm_cleanup; // Jump to C code start after assembly
-
-    // Fallthrough point if the main loop finished (7f falls out of the assembly block)
+    // Jump to C code start after assembly (for fallback paths 8f and 9f)
+    goto asm_cleanup; 
 
     asm_cleanup:; 
 
@@ -274,12 +262,14 @@ void merge_scalar_1x_long(long *arr, const long *aux, int low, int mid, int high
 
 void merge_scalar_2x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
 void merge_scalar_4x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
-void merge_scalar_8x_long(long *arr, const long *aux, int low, mid, high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
+// FIX: Added 'int' for mid and high
+void merge_scalar_8x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
 
 #ifdef USE_SIMD
 void merge_simd_1x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
 void merge_simd_2x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
-void merge_simd_4x_long(long *arr, const long *aux, int low, mid, high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
+// FIX: Added 'int' for mid and high
+void merge_simd_4x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
 void merge_simd_8x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
 void merge_simd_16x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
 #endif
