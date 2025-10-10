@@ -1,7 +1,9 @@
+#define _POSIX_C_SOURCE 200809L // FIX: Explicitly enable POSIX features for clock_gettime/CLOCK_MONOTONIC
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>      // FIX 1: Defines struct timespec, clock_gettime, and CLOCK_MONOTONIC
+#include <time.h>      
 #include <stdbool.h>
 
 // Compiler check for SSE/SIMD intrinsics
@@ -48,7 +50,7 @@ bool is_sorted_long(const long *arr, int size) {
 // Timer
 double get_time_sec() {
     struct timespec ts;
-    // Note: On some systems, linking with -lrt might be required for clock_gettime
+    // CLOCK_MONOTONIC is now visible due to _POSIX_C_SOURCE
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
 }
@@ -224,7 +226,7 @@ void merge_asm_simd_1x_long(long *arr, const long *aux, int low, int mid, int hi
         : "rdx", "rcx", "r8", "r9", "r11", "rax", "rbx", "cc", "memory", "xmm0", "xmm1"
     );
     
-    // FIX 2: Use an empty assembly statement to terminate the inline assembly block
+    // Use an empty assembly statement to terminate the inline assembly block
     __asm__ __volatile__(""); 
     
 
