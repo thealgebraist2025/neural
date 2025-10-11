@@ -7,9 +7,9 @@
 #include <time.h> 
 
 // --- SCALED CONFIGURATION (For a full book corpus) ---
-#define N_CONTEXTS 2000 // Max number of sliding context windows (M)
-#define N_NODES 50     // Vocabulary size (N)
-#define MAX_TOKENS 65536 // Maximum number of tokens to process from the book
+#define N_CONTEXTS 20000 // Max number of sliding context windows (M)
+#define N_NODES 500     // Vocabulary size (N)
+#define MAX_TOKENS 655306 // Maximum number of tokens to process from the book
 
 // --- SPARSE MATRIX CONSTANTS ---
 #define MAX_SPARSE_ENTRIES (N_NODES * N_NODES) 
