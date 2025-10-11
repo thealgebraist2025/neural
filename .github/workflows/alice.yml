@@ -1,0 +1,41 @@
+name: Build alice
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Build with gcc
+      run: gcc -O0 -g -fsanitize=address -msse4.1 -std=c11 alice.c -lm -o alice
+
+    - name: Install LLDB
+      run: sudo apt-get install -y lldb valgrind
+
+    - name: Create LLDB Debug Command File
+      run: |
+         echo "run" > debug_commands.lldb
+         echo "bt" >> debug_commands.lldb
+         echo "quit" >> debug_commands.lldb
+         cat debug_commands.lldb
+  
+    - name: Run Executable Under LLDB
+      run: |
+         echo "--- Starting LLDB Analysis ---"
+         lldb --batch -s debug_commands.lldb ./alice
+         echo "--- LLDB Analysis Complete ---"
+      continue-on-error: true 
+
+    - name: Run the program
+      run: ./alice 
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4 # Use the latest version
+      with:
+        name: segmentation 
+        path: segmentation_output.png
