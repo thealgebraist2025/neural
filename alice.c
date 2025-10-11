@@ -7,12 +7,16 @@
 // --- CONFIGURATION ---
 #define N_CONTEXTS 10
 #define N_NODES 4
+
+// --- WORD INDICES (FIXED SCOPING ERROR) ---
+// These preprocessor directives must be defined here for global visibility.
 #define ALICE 0
 #define HATTER 1
+#define LIKES 2
+#define MAD 3
 
 #define MAX_ITERATIONS 1000
 #define CONVERGENCE_TOLERANCE 1e-6
-#define N_SAMPLE_RUNS 5000 // Number of simulated eigenvalues to sample
 
 // --- RAW CO-OCCURRENCE DATA (D) ---
 /* Data simulates word frequencies across 10 chapters of "Alice in Wonderland." */
@@ -30,7 +34,7 @@ const double RAW_CO_OCCURRENCE_DATA[N_CONTEXTS][N_NODES] = {
     { 8.0,   1.0,  0.0,  0.0 }
 };
 
-// --- UTILITY FUNCTIONS (Dot Product, Magnitude, Normalization, Matrix-Vector Mult) ---
+// --- UTILITY FUNCTIONS ---
 double dot_product(const double v1[], const double v2[], int n) {
     double product = 0.0;
     for (int i = 0; i < n; i++) {
@@ -65,7 +69,7 @@ void matrix_vector_multiply(const double matrix[N_NODES][N_NODES], const double 
     }
 }
 
-// --- COVARIANCE AND POWER ITERATION (from previous step) ---
+// --- COVARIANCE CALCULATION ---
 
 void calculate_covariance_matrix(const double D[N_CONTEXTS][N_NODES], double C[N_NODES][N_NODES]) {
     double means[N_NODES] = {0};
@@ -94,6 +98,8 @@ void calculate_covariance_matrix(const double D[N_CONTEXTS][N_NODES], double C[N
         }
     }
 }
+
+// --- SPECTRAL CALCULATION: POWER ITERATION ---
 
 double power_iteration(const double matrix[N_NODES][N_NODES], double dominant_eigenvector[]) {
     double b_prev[N_NODES] = {1.0, 1.0, 1.0, 1.0};
@@ -127,13 +133,6 @@ double power_iteration(const double matrix[N_NODES][N_NODES], double dominant_ei
 
 // --- SPECTRAL SAMPLING (Log-Determinant Approximation) ---
 
-/**
- * Simulates Spectral Sampling to estimate the Log-Determinant, which is the sum
- * of the logarithms of all eigenvalues. This is the realistic high-N approximation.
- *
- * It uses the Trace(C) to estimate the mean of the spectrum and simulates a
- * standard distribution for the remaining eigenvalues.
- */
 double approximate_determinant_sampling(double lambda_dominant, const double C[N_NODES][N_NODES]) {
     double total_trace = 0.0;
     double log_det_sum = 0.0;
@@ -147,20 +146,16 @@ double approximate_determinant_sampling(double lambda_dominant, const double C[N
     double remaining_trace = total_trace - lambda_dominant;
 
     // 3. Approximate the remaining eigenvalues based on the remaining trace.
-    // The average value of the remaining (N-1) eigenvalues is:
     double average_remaining_lambda = remaining_trace / (N_NODES - 1);
 
     // 4. Sum the logs: Log(Det) = Log(lambda_dominant) + Sum(Log(remaining lambdas))
     log_det_sum += log(lambda_dominant);
 
     // 5. Simulate the remaining log sum.
-    // We use a simplified model assuming the remaining eigenvalues are clustered around the average.
     for (int i = 1; i < N_NODES; i++) {
         // Simple heuristic: vary the remaining lambdas slightly around the average.
-        // rand() generates a small random perturbation.
         double sampled_lambda = average_remaining_lambda + ( (double)rand() / RAND_MAX - 0.5 ) * (average_remaining_lambda * 0.5);
 
-        // Ensure lambda > 0 for log
         if (sampled_lambda > DBL_EPSILON) {
             log_det_sum += log(sampled_lambda);
         }
@@ -203,6 +198,7 @@ int main() {
 
     printf("B) Dominant Eigenvalue and Eigenvector:\n");
     printf("   Lambda_max = %.4f (Variance explained by the main feature)\n", lambda_dominant);
+    // FIXED: LIKES and MAD are now correctly referenced via global #defines
     printf("   V_max = [ %.4f (Alice), %.4f (Hatter), %.4f (Likes), %.4f (Mad) ]\n",
            v_dominant[ALICE], v_dominant[HATTER], v_dominant[LIKES], v_dominant[MAD]);
     printf("   Interpretation: The main feature axis is dominated by the contrast between ALICE (positive) and the HATTER/MAD group (negative).\n\n");
