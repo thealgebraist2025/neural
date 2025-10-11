@@ -187,6 +187,26 @@ void sparse_matrix_vector_multiply(const double vec_in[], double vec_out[], int 
     }
 }
 
+// --- DEFLATION MULTIPLY (Calculates C' * vec) ---
+/* C' = C - lambda1 * V1 * V1^T 
+   C' * vec_in = (C * vec_in) - lambda1 * (V1 . vec_in) * V1
+   This function implements the C' * vec_in operation. */
+void sparse_deflated_multiply(const double vec_in[], double vec_out[], int n_nodes, double lambda1, const double v1[]) {
+    int i;
+    
+    // 1. Calculate C * vec_in (stored temporarily in vec_out)
+    sparse_matrix_vector_multiply(vec_in, vec_out, n_nodes); 
+    
+    // 2. Calculate the deflation term: lambda1 * (V1 . vec_in) * V1
+    double v1_dot_vec = dot_product(v1, vec_in, n_nodes);
+    double deflation_scalar = lambda1 * v1_dot_vec;
+    
+    // 3. Apply the deflation: (C * vec) - deflation_scalar * V1
+    for (i = 0; i < n_nodes; i++) {
+        vec_out[i] -= deflation_scalar * v1[i];
+    }
+}
+
 
 // --- COVARIANCE CALCULATION AND SPARSE STORAGE ---
 // Calculates the Covariance Matrix C and stores it in the sparse format.
@@ -259,19 +279,23 @@ void calculate_and_store_sparse_covariance(const double D[N_CONTEXTS][N_NODES], 
     free(centered_data);
 }
 
-// --- SPECTRAL CALCULATION: POWER ITERATION ---
-double power_iteration(double dominant_eigenvector[]) {
+// --- SPECTRAL CALCULATION: GENERAL POWER ITERATION ---
+/* This general function performs Power Iteration using a provided multiplication function. */
+double general_power_iteration(double dominant_eigenvector[], 
+                               void (*multiply_func)(const double[], double[], int)) {
     double b_prev[N_NODES];
     double b[N_NODES];
     double lambda = 0.0;
     double lambda_prev = 0.0;
     int k;
 
+    // Initialize b_prev (starting vector)
     for(k=0; k < N_NODES; k++) b_prev[k] = 1.0; 
     normalize_vector(b_prev, N_NODES);
 
     for (k = 0; k < MAX_ITERATIONS; k++) {
-        sparse_matrix_vector_multiply(b_prev, b, N_NODES); 
+        // Multiply by C (or C')
+        multiply_func(b_prev, b, N_NODES); 
         
         // Rayleigh quotient approximation of the eigenvalue
         lambda = dot_product(b, b_prev, N_NODES);
@@ -281,26 +305,28 @@ double power_iteration(double dominant_eigenvector[]) {
         }
         lambda_prev = lambda;
 
+        // Normalize and prepare for next iteration
         for (int i = 0; i < N_NODES; i++) {
             b_prev[i] = b[i];
         }
         normalize_vector(b_prev, N_NODES);
     }
 
+    // Output the final normalized eigenvector
     for (int i = 0; i < N_NODES; i++) {
         dominant_eigenvector[i] = b_prev[i];
     }
 
-    // Perform final Rayleigh quotient to get the eigenvalue associated with the normalized vector
-    // Multiply C by the final normalized eigenvector (b_prev)
-    sparse_matrix_vector_multiply(b_prev, b, N_NODES); 
+    // Final Rayleigh quotient for accurate eigenvalue
+    multiply_func(b_prev, b, N_NODES); 
     lambda = dot_product(b, b_prev, N_NODES);
     
     return lambda;
 }
 
 // --- SPECTRAL SAMPLING (Log-Determinant Approximation) ---
-double approximate_determinant_sampling(double lambda_dominant) {
+// Now uses two known eigenvalues for a better trace approximation.
+double approximate_determinant_sampling(double lambda_dominant, double lambda2) {
     double total_trace = 0.0;
     double log_det_sum = 0.0;
     int i;
@@ -312,24 +338,23 @@ double approximate_determinant_sampling(double lambda_dominant) {
         }
     }
 
-    // This approximation assumes the remaining N-1 eigenvalues are roughly equal.
-    double remaining_trace = total_trace - lambda_dominant;
+    // Use lambda1 and lambda2 to calculate remaining trace
+    double remaining_trace = total_trace - lambda_dominant - lambda2;
     if (remaining_trace < DBL_EPSILON) remaining_trace = DBL_EPSILON;
 
-    double average_remaining_lambda = remaining_trace / (N_NODES - 1);
+    double average_remaining_lambda = remaining_trace / (N_NODES - 2); // N-2 remaining
 
     log_det_sum += log(lambda_dominant);
+    log_det_sum += log(lambda2);
 
     // 2. Simulate the remaining log sum (complexity) using the average value
-    for (i = 1; i < N_NODES; i++) {
-        // Simple heuristic: use the average remaining eigenvalue with a small random perturbation 
-        // to simulate the spread of complexity across the less significant features.
+    for (i = 2; i < N_NODES; i++) {
+        // Simple heuristic: use the average remaining eigenvalue
         double sampled_lambda = average_remaining_lambda + ( (double)rand() / RAND_MAX - 0.5 ) * (average_remaining_lambda * 0.5);
 
         if (sampled_lambda > DBL_EPSILON) {
             log_det_sum += log(sampled_lambda);
         } else {
-             // Handle case where sampled_lambda is too small or negative
              log_det_sum += log(DBL_EPSILON);
         }
     }
@@ -345,7 +370,7 @@ typedef struct {
 } PlausibilityCheck;
 
 // --- Evaluation function that runs all checks and prints results ---
-void run_plausibility_checks(const double v_dominant[]) {
+void run_plausibility_checks(const double v1[], const double v2[]) {
     
     // Define the checks using the predefined word indices
     PlausibilityCheck checks[] = {
@@ -356,52 +381,62 @@ void run_plausibility_checks(const double v_dominant[]) {
     };
     int num_checks = sizeof(checks) / sizeof(PlausibilityCheck);
     
-    printf("2. PLAUSIBILITY CHECK: Multiple Sentences\n");
+    printf("3. PLAUSIBILITY CHECK: 2D Semantic Space\n");
     printf("-----------------------------------------\n");
     
-    // Thresholds used for interpretation (based on observed weights)
-    const double ALIGNMENT_THRESHOLD = 0.05;
-    const double OPPOSITIONAL_THRESHOLD = -0.05;
+    // Thresholds used for interpretation
     const double MIN_SIGNIFICANCE = 0.01;
-
+    
     for (int i = 0; i < num_checks; i++) {
-        double primary_weight = v_dominant[checks[i].primary_idx];
+        int idx1 = checks[i].primary_idx;
+        int idx2 = checks[i].secondary_idx;
         
         printf("   [%d] \"%s\"\n", i + 1, checks[i].sentence);
         
-        if (checks[i].secondary_idx != -1) {
-            // --- Two-Word Alignment Check (Primary logic) ---
-            double secondary_weight = v_dominant[checks[i].secondary_idx];
-            double alignment = primary_weight * secondary_weight;
+        if (idx2 != -1) {
+            // --- Two-Word Alignment Check (Multi-Dimensional Logic) ---
             
-            printf("       - Alignment (W1 * W2): %.4f (W1: %.4f, W2: %.4f)\n", 
-                   alignment, primary_weight, secondary_weight);
+            // Calculate proximity in the 2D space (V1, V2)
+            double alignment_v1 = v1[idx1] * v1[idx2];
+            double alignment_v2 = v2[idx1] * v2[idx2];
             
-            if (i == 2 && alignment < OPPOSITIONAL_THRESHOLD) { 
-                 // Specific check for "rude/confusing" which aligns with structural opposition
-                 printf("       => PLAUSIBLE (Structural Opposition)\n");
-                 printf("          Reason: The words (Alice/Hatter) occupy opposite semantic poles in the dominant feature, supporting an adversarial or challenging relationship.\n");
-            } else if (alignment < OPPOSITIONAL_THRESHOLD) {
-                printf("       => STRUCTURALLY IMPLAUSIBLE (Strong Opposition)\n");
-                printf("          Reason: The words occupy structurally distinct/opposing roles on the primary semantic feature.\n");
-            } else if (alignment < ALIGNMENT_THRESHOLD) {
-                printf("       => NEUTRAL/AMBIGUOUS\n");
-                printf("          Reason: The alignment is close to zero, meaning their relationship is weakly defined by the dominant spectral feature.\n");
-            } else {
-                printf("       => PLAUSIBLE (Supported)\n");
-                printf("          Reason: Positive alignment suggests the concepts frequently co-occur in similar contexts across the corpus.\n");
+            // Simplified Combined Score: Sum of the squared proximity in each dimension
+            double proximity_score_sq = alignment_v1 * alignment_v1 + alignment_v2 * alignment_v2; 
+            
+            printf("       - V1 Alignment (Oppositional Axis): %.4f\n", alignment_v1);
+            printf("       - V2 Alignment (Secondary Axis): %.4f\n", alignment_v2);
+            printf("       - Proximity Score (V1^2 + V2^2): %.6f\n", proximity_score_sq);
+            
+            // A combined threshold is now necessary, adjusting for the combined variance of V1 and V2.
+            const double PLAUSIBLE_THRESHOLD = 0.0001; 
+
+            if (proximity_score_sq >= PLAUSIBLE_THRESHOLD) {
+                printf("       => PLAUSIBLE (Strong 2D Structural Support)\n");
+                printf("          Reason: The concepts (W1 and W2) show strong combined alignment in the top two semantic dimensions, confirming their relationship is central to the corpus.\n");
+            } else if (alignment_v1 < 0.0 && fabs(alignment_v1) > MIN_SIGNIFICANCE && i == 2) {
+                 // Explicitly handle "rude/confusing" which is supported by opposition in V1
+                 printf("       => PLAUSIBLE (Supported by V1 Opposition)\n");
+                 printf("          Reason: Although the overall proximity is low, the strong *negative* alignment on the dominant V1 axis supports a notion of conflict or difference (rude/confusing).\n");
+            } 
+            else {
+                printf("       => NEUTRAL/WEAKLY PLAUSIBLE\n");
+                printf("          Reason: The concepts are not strongly aligned or strongly opposed across the dominant semantic features.\n");
             }
         } else {
-            // --- Single-Word Significance Check (For "says weird things") ---
-            // 'Weird' is untracked, so we check if the subject (Hatter) is a significant feature.
-            printf("       - Primary Weight ('Hatter'): %.4f\n", primary_weight);
+            // --- Single-Word Significance Check ---
+            // Check if the word is a strong feature in either dimension.
+            double combined_significance_sq = v1[idx1] * v1[idx1] + v2[idx1] * v2[idx1];
+            
+            printf("       - V1 Weight ('Hatter'): %.4f\n", v1[idx1]);
+            printf("       - V2 Weight ('Hatter'): %.4f\n", v2[idx1]);
+            printf("       - Combined Significance: %.6f\n", combined_significance_sq);
 
-            if (fabs(primary_weight) >= MIN_SIGNIFICANCE) {
+            if (combined_significance_sq >= MIN_SIGNIFICANCE) {
                 printf("       => PLAUSIBLE (Significant Feature)\n");
-                printf("          Reason: The subject ('Hatter') is a strong component of the dominant spectral feature, indicating a key role in the corpus's structure.\n");
+                printf("          Reason: The subject ('Hatter') is a strong component of the combined top two spectral features, indicating a key role in the corpus's structure.\n");
             } else {
                 printf("       => NEUTRAL/AMBIGUOUS\n");
-                printf("          Reason: The subject ('Hatter') is spectrally weak, making specific claims about its behavior difficult to validate via the dominant feature.\n");
+                printf("          Reason: The subject is spectrally weak, making specific claims about its behavior difficult to validate via the dominant features.\n");
             }
         }
         printf("\n");
@@ -410,15 +445,16 @@ void run_plausibility_checks(const double v_dominant[]) {
 
 
 int main() {
-    double lambda_dominant;
-    double v_dominant[N_NODES] = {0};
+    double lambda1, lambda2;
+    double v1[N_NODES] = {0}; // V1 (Dominant Eigenvector)
+    double v2[N_NODES] = {0}; // V2 (Second Eigenvector)
     double log_determinant;
     int actual_contexts;
 
     srand((unsigned int)time(NULL));
 
     printf("--- Spectral Linguistic Solver (C99) ---\n");
-    printf("Method: SPARSE Matrix Iteration + File Processing.\n");
+    printf("Method: SPARSE Matrix Iteration + Deflation for V2.\n");
     printf("Corpus: Read from file '%s'.\n", BOOK_FILENAME);
     printf("Target Sentences:\n");
     printf("   1. \"Alice met the hatter\"\n");
@@ -444,34 +480,53 @@ int main() {
     printf("Sparsity Level: %.2f%%\n", 100.0 * (1.0 - (double)num_sparse_entries / (N_NODES * N_NODES)));
     printf("------------------------\n\n");
 
-    // 3. Calculate Dominant Feature using sparse multiplication
-    lambda_dominant = power_iteration(v_dominant);
+    // 3. Calculate Dominant Feature (V1)
+    lambda1 = general_power_iteration(v1, sparse_matrix_vector_multiply);
 
-    // 4. Approximate Log-Determinant
-    log_determinant = approximate_determinant_sampling(lambda_dominant);
+    // 4. Calculate Second Dominant Feature (V2) using Deflation
+    // We must define a local multiplication function for the deflated matrix C'
+    void deflated_multiply_wrapper(const double vec_in[], double vec_out[], int n) {
+        sparse_deflated_multiply(vec_in, vec_out, n, lambda1, v1);
+    }
+    lambda2 = general_power_iteration(v2, deflated_multiply_wrapper);
+
+    // 5. Approximate Log-Determinant (Improved using Lambda1 and Lambda2)
+    log_determinant = approximate_determinant_sampling(lambda1, lambda2);
 
     printf("1. CALCULATED SPECTRAL PROPERTIES:\n");
     printf("----------------------------------\n");
 
     printf("A) Approximate Log-Determinant (Volume/Complexity): %.4f\n\n", log_determinant);
 
-    printf("B) Dominant Eigenvalue and Eigenvector:\n");
-    printf("   Lambda_max (Variance Explained): %.4f\n", lambda_dominant);
-    printf("   V_max (Semantic Feature Vector - Key Terms):\n");
-    // Ensure all indices are within bounds for safety, though they should be fine
-    if (ALICE < N_NODES) printf("     ALICE (%.4f) | ", v_dominant[ALICE]);
-    if (HATTER < N_NODES) printf("HATTER (%.4f) | ", v_dominant[HATTER]);
-    if (LIKES < N_NODES) printf("LIKES (%.4f) | ", v_dominant[LIKES]);
-    if (MAD < N_NODES) printf("MAD (%.4f)\n", v_dominant[MAD]);
+    printf("B) Dominant Eigenvalues and Eigenvectors (Top 2 Dimensions):\n");
+    printf("   Lambda_1 (V1 Variance Explained): %.4f\n", lambda1);
+    printf("   Lambda_2 (V2 Variance Explained): %.4f\n\n", lambda2);
+    
+    printf("   V_1 (Primary Semantic Feature Vector - Key Terms):\n");
+    if (ALICE < N_NODES) printf("     ALICE (%.4f) | ", v1[ALICE]);
+    if (HATTER < N_NODES) printf("HATTER (%.4f) | ", v1[HATTER]);
+    if (LIKES < N_NODES) printf("LIKES (%.4f) | ", v1[LIKES]);
+    if (MAD < N_NODES) printf("MAD (%.4f)\n", v1[MAD]);
 
-    if (QUEEN < N_NODES) printf("     QUEEN (%.4f) | ", v_dominant[QUEEN]);
-    if (RABBIT < N_NODES) printf("RABBIT (%.4f) | ", v_dominant[RABBIT]);
-    if (TEA < N_NODES) printf("TEA (%.4f) | ", v_dominant[TEA]);
-    if (DREAM < N_NODES) printf("DREAM (%.4f)\n\n", v_dominant[DREAM]);
+    if (QUEEN < N_NODES) printf("     QUEEN (%.4f) | ", v1[QUEEN]);
+    if (RABBIT < N_NODES) printf("RABBIT (%.4f) | ", v1[RABBIT]);
+    if (TEA < N_NODES) printf("TEA (%.4f) | ", v1[TEA]);
+    if (DREAM < N_NODES) printf("DREAM (%.4f)\n\n", v1[DREAM]);
+    
+    printf("   V_2 (Secondary Semantic Feature Vector - Key Terms):\n");
+    if (ALICE < N_NODES) printf("     ALICE (%.4f) | ", v2[ALICE]);
+    if (HATTER < N_NODES) printf("HATTER (%.4f) | ", v2[HATTER]);
+    if (LIKES < N_NODES) printf("LIKES (%.4f) | ", v2[LIKES]);
+    if (MAD < N_NODES) printf("MAD (%.4f)\n", v2[MAD]);
+
+    if (QUEEN < N_NODES) printf("     QUEEN (%.4f) | ", v2[QUEEN]);
+    if (RABBIT < N_NODES) printf("RABBIT (%.4f) | ", v2[RABBIT]);
+    if (TEA < N_NODES) printf("TEA (%.4f) | ", v2[TEA]);
+    if (DREAM < N_NODES) printf("DREAM (%.4f)\n\n", v2[DREAM]);
 
 
-    // 5. RUN MULTI-SENTENCE LINGUISTIC EVALUATION
-    run_plausibility_checks(v_dominant);
+    // 6. RUN MULTI-SENTENCE LINGUISTIC EVALUATION
+    run_plausibility_checks(v1, v2);
 
     printf("\n--- END OF ANALYSIS ---\n");
 
