@@ -33,6 +33,12 @@
 const char* BOOK_FILENAME = "alice.txt";
 
 
+// --- GLOBAL STATE FOR DEFLATION (Fix for SIGSEGV by removing nested function) ---
+// These globals store the results of the V1 calculation, needed for V2 deflation.
+double G_lambda1 = 0.0;
+double G_v1[N_NODES] = {0}; 
+
+
 // --- SPARSE DATA STRUCTURE ---
 typedef struct {
     int row;
@@ -207,6 +213,13 @@ void sparse_deflated_multiply(const double vec_in[], double vec_out[], int n_nod
     }
 }
 
+// --- GLOBAL DEFLATION WRAPPER (Fixes SIGSEGV) ---
+/* This function uses the global state (G_lambda1 and G_v1) to perform deflation
+   and matches the required function pointer signature for general_power_iteration. */
+void deflated_sparse_multiply_global_wrapper(const double vec_in[], double vec_out[], int n) {
+    sparse_deflated_multiply(vec_in, vec_out, n, G_lambda1, G_v1);
+}
+
 
 // --- COVARIANCE CALCULATION AND SPARSE STORAGE ---
 // Calculates the Covariance Matrix C and stores it in the sparse format.
@@ -318,6 +331,8 @@ double general_power_iteration(double dominant_eigenvector[],
     }
 
     // Final Rayleigh quotient for accurate eigenvalue
+    // NOTE: This re-uses the provided multiply_func, which is correct
+    // (either C*v for V1 or C'*v for V2).
     multiply_func(b_prev, b, N_NODES); 
     lambda = dot_product(b, b_prev, N_NODES);
     
@@ -340,6 +355,7 @@ double approximate_determinant_sampling(double lambda_dominant, double lambda2) 
 
     // Use lambda1 and lambda2 to calculate remaining trace
     double remaining_trace = total_trace - lambda_dominant - lambda2;
+    // Check for non-positivity due to floating point error or poor conditioning
     if (remaining_trace < DBL_EPSILON) remaining_trace = DBL_EPSILON;
 
     double average_remaining_lambda = remaining_trace / (N_NODES - 2); // N-2 remaining
@@ -408,6 +424,7 @@ void run_plausibility_checks(const double v1[], const double v2[]) {
             printf("       - Proximity Score (V1^2 + V2^2): %.6f\n", proximity_score_sq);
             
             // A combined threshold is now necessary, adjusting for the combined variance of V1 and V2.
+            // Using a stricter threshold since we have 2 dimensions contributing to the score
             const double PLAUSIBLE_THRESHOLD = 0.0001; 
 
             if (proximity_score_sq >= PLAUSIBLE_THRESHOLD) {
@@ -446,8 +463,7 @@ void run_plausibility_checks(const double v1[], const double v2[]) {
 
 int main() {
     double lambda1, lambda2;
-    double v1[N_NODES] = {0}; // V1 (Dominant Eigenvector)
-    double v2[N_NODES] = {0}; // V2 (Second Eigenvector)
+    double v2[N_NODES] = {0}; // V2 (Second Eigenvector) - G_v1 holds V1
     double log_determinant;
     int actual_contexts;
 
@@ -481,14 +497,13 @@ int main() {
     printf("------------------------\n\n");
 
     // 3. Calculate Dominant Feature (V1)
-    lambda1 = general_power_iteration(v1, sparse_matrix_vector_multiply);
+    // Results stored directly in G_lambda1 and G_v1 (the global state)
+    G_lambda1 = general_power_iteration(G_v1, sparse_matrix_vector_multiply);
+    lambda1 = G_lambda1; // Copy for local reporting consistency
 
     // 4. Calculate Second Dominant Feature (V2) using Deflation
-    // We must define a local multiplication function for the deflated matrix C'
-    void deflated_multiply_wrapper(const double vec_in[], double vec_out[], int n) {
-        sparse_deflated_multiply(vec_in, vec_out, n, lambda1, v1);
-    }
-    lambda2 = general_power_iteration(v2, deflated_multiply_wrapper);
+    // This relies on the global state (G_lambda1, G_v1) being set.
+    lambda2 = general_power_iteration(v2, deflated_sparse_multiply_global_wrapper);
 
     // 5. Approximate Log-Determinant (Improved using Lambda1 and Lambda2)
     log_determinant = approximate_determinant_sampling(lambda1, lambda2);
@@ -503,15 +518,15 @@ int main() {
     printf("   Lambda_2 (V2 Variance Explained): %.4f\n\n", lambda2);
     
     printf("   V_1 (Primary Semantic Feature Vector - Key Terms):\n");
-    if (ALICE < N_NODES) printf("     ALICE (%.4f) | ", v1[ALICE]);
-    if (HATTER < N_NODES) printf("HATTER (%.4f) | ", v1[HATTER]);
-    if (LIKES < N_NODES) printf("LIKES (%.4f) | ", v1[LIKES]);
-    if (MAD < N_NODES) printf("MAD (%.4f)\n", v1[MAD]);
+    if (ALICE < N_NODES) printf("     ALICE (%.4f) | ", G_v1[ALICE]);
+    if (HATTER < N_NODES) printf("HATTER (%.4f) | ", G_v1[HATTER]);
+    if (LIKES < N_NODES) printf("LIKES (%.4f) | ", G_v1[LIKES]);
+    if (MAD < N_NODES) printf("MAD (%.4f)\n", G_v1[MAD]);
 
-    if (QUEEN < N_NODES) printf("     QUEEN (%.4f) | ", v1[QUEEN]);
-    if (RABBIT < N_NODES) printf("RABBIT (%.4f) | ", v1[RABBIT]);
-    if (TEA < N_NODES) printf("TEA (%.4f) | ", v1[TEA]);
-    if (DREAM < N_NODES) printf("DREAM (%.4f)\n\n", v1[DREAM]);
+    if (QUEEN < N_NODES) printf("     QUEEN (%.4f) | ", G_v1[QUEEN]);
+    if (RABBIT < N_NODES) printf("RABBIT (%.4f) | ", G_v1[RABBIT]);
+    if (TEA < N_NODES) printf("TEA (%.4f) | ", G_v1[TEA]);
+    if (DREAM < N_NODES) printf("DREAM (%.4f)\n\n", G_v1[DREAM]);
     
     printf("   V_2 (Secondary Semantic Feature Vector - Key Terms):\n");
     if (ALICE < N_NODES) printf("     ALICE (%.4f) | ", v2[ALICE]);
@@ -526,7 +541,7 @@ int main() {
 
 
     // 6. RUN MULTI-SENTENCE LINGUISTIC EVALUATION
-    run_plausibility_checks(v1, v2);
+    run_plausibility_checks(G_v1, v2);
 
     printf("\n--- END OF ANALYSIS ---\n");
 
