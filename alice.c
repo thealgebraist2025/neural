@@ -42,6 +42,7 @@ typedef struct {
 
 SparseEntry C_sparse[MAX_SPARSE_ENTRIES];
 int num_sparse_entries = 0; 
+// D_matrix is large but globally allocated (not on stack), so it's fine.
 double D_matrix[N_CONTEXTS][N_NODES];
 
 
@@ -57,9 +58,9 @@ int get_word_index(const char* word) {
     if (strcmp(word, "tea") == 0) return TEA;
     if (strcmp(word, "dream") == 0) return DREAM;
     
-    // Simple hashing for filler words (Indices 8 to 49)
+    // Simple hashing for filler words (Indices 8 to N_NODES-1)
     if (strlen(word) > 2) {
-        // Use a simple hash: first three chars combined with length, mapped to 8-49
+        // Use a simple hash: first three chars combined with length, mapped to VOCAB_SIZE to N_NODES-1
         unsigned long hash = word[0] + (word[1] << 1) + (word[2] << 2) + strlen(word);
         return (hash % (N_NODES - VOCAB_SIZE)) + VOCAB_SIZE; 
     }
@@ -196,8 +197,15 @@ void calculate_and_store_sparse_covariance(const double D[N_CONTEXTS][N_NODES], 
     }
 
     double means[N_NODES] = {0};
-    double centered_data[N_CONTEXTS][N_NODES]; 
+    // FIX: Allocating centered_data on the heap instead of the stack 
+    // to prevent the stack-overflow error. 
+    double *centered_data = (double *)malloc((size_t)actual_contexts * N_NODES * sizeof(double)); 
     
+    if (!centered_data) {
+        fprintf(stderr, "Error: Memory allocation failed for centered_data. Cannot proceed with covariance.\n");
+        return;
+    }
+
     int i, j, j1, j2;
     const double N_MINUS_ONE = (double)actual_contexts - 1.0;
 
@@ -211,7 +219,8 @@ void calculate_and_store_sparse_covariance(const double D[N_CONTEXTS][N_NODES], 
 
     for (i = 0; i < actual_contexts; i++) {
         for (j = 0; j < N_NODES; j++) {
-            centered_data[i][j] = D[i][j] - means[j];
+            // Access centered_data using 1D indexing: i * N_NODES + j
+            centered_data[i * N_NODES + j] = D[i][j] - means[j];
         }
     }
 
@@ -224,7 +233,8 @@ void calculate_and_store_sparse_covariance(const double D[N_CONTEXTS][N_NODES], 
             // Calculate C[j1][j2] (O(M) operation)
             double sum_of_products = 0.0;
             for (i = 0; i < actual_contexts; i++) {
-                sum_of_products += centered_data[i][j1] * centered_data[i][j2];
+                // Access using 1D indexing
+                sum_of_products += centered_data[i * N_NODES + j1] * centered_data[i * N_NODES + j2];
             }
             c_val = sum_of_products / N_MINUS_ONE;
             
@@ -244,6 +254,9 @@ void calculate_and_store_sparse_covariance(const double D[N_CONTEXTS][N_NODES], 
             }
         }
     }
+
+    // Release the dynamically allocated memory from the heap
+    free(centered_data);
 }
 
 // --- SPECTRAL CALCULATION: POWER ITERATION ---
@@ -260,6 +273,7 @@ double power_iteration(double dominant_eigenvector[]) {
     for (k = 0; k < MAX_ITERATIONS; k++) {
         sparse_matrix_vector_multiply(b_prev, b, N_NODES); 
         
+        // Rayleigh quotient approximation of the eigenvalue
         lambda = dot_product(b, b_prev, N_NODES);
 
         if (k > 0 && fabs(lambda - lambda_prev) < CONVERGENCE_TOLERANCE) {
@@ -277,6 +291,11 @@ double power_iteration(double dominant_eigenvector[]) {
         dominant_eigenvector[i] = b_prev[i];
     }
 
+    // Perform final Rayleigh quotient to get the eigenvalue associated with the normalized vector
+    // Multiply C by the final normalized eigenvector (b_prev)
+    sparse_matrix_vector_multiply(b_prev, b, N_NODES); 
+    lambda = dot_product(b, b_prev, N_NODES);
+    
     return lambda;
 }
 
@@ -293,6 +312,7 @@ double approximate_determinant_sampling(double lambda_dominant) {
         }
     }
 
+    // This approximation assumes the remaining N-1 eigenvalues are roughly equal.
     double remaining_trace = total_trace - lambda_dominant;
     if (remaining_trace < DBL_EPSILON) remaining_trace = DBL_EPSILON;
 
@@ -300,12 +320,17 @@ double approximate_determinant_sampling(double lambda_dominant) {
 
     log_det_sum += log(lambda_dominant);
 
-    // 2. Simulate the remaining log sum (complexity)
+    // 2. Simulate the remaining log sum (complexity) using the average value
     for (i = 1; i < N_NODES; i++) {
+        // Simple heuristic: use the average remaining eigenvalue with a small random perturbation 
+        // to simulate the spread of complexity across the less significant features.
         double sampled_lambda = average_remaining_lambda + ( (double)rand() / RAND_MAX - 0.5 ) * (average_remaining_lambda * 0.5);
 
         if (sampled_lambda > DBL_EPSILON) {
             log_det_sum += log(sampled_lambda);
+        } else {
+             // Handle case where sampled_lambda is too small or negative
+             log_det_sum += log(DBL_EPSILON);
         }
     }
 
@@ -358,10 +383,16 @@ int main() {
     printf("B) Dominant Eigenvalue and Eigenvector:\n");
     printf("   Lambda_max (Variance Explained): %.4f\n", lambda_dominant);
     printf("   V_max (Semantic Feature Vector - Key Terms):\n");
-    printf("     ALICE (%.4f) | HATTER (%.4f) | LIKES (%.4f) | MAD (%.4f)\n",
-           v_dominant[ALICE], v_dominant[HATTER], v_dominant[LIKES], v_dominant[MAD]);
-    printf("     QUEEN (%.4f) | RABBIT (%.4f) | TEA (%.4f) | DREAM (%.4f)\n\n",
-           v_dominant[QUEEN], v_dominant[RABBIT], v_dominant[TEA], v_dominant[DREAM]);
+    // Ensure all indices are within bounds for safety, though they should be fine
+    if (ALICE < N_NODES) printf("     ALICE (%.4f) | ", v_dominant[ALICE]);
+    if (HATTER < N_NODES) printf("HATTER (%.4f) | ", v_dominant[HATTER]);
+    if (LIKES < N_NODES) printf("LIKES (%.4f) | ", v_dominant[LIKES]);
+    if (MAD < N_NODES) printf("MAD (%.4f)\n", v_dominant[MAD]);
+
+    if (QUEEN < N_NODES) printf("     QUEEN (%.4f) | ", v_dominant[QUEEN]);
+    if (RABBIT < N_NODES) printf("RABBIT (%.4f) | ", v_dominant[RABBIT]);
+    if (TEA < N_NODES) printf("TEA (%.4f) | ", v_dominant[TEA]);
+    if (DREAM < N_NODES) printf("DREAM (%.4f)\n\n", v_dominant[DREAM]);
 
 
     // 5. LINGUISTIC EVALUATION
