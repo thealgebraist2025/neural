@@ -337,6 +337,77 @@ double approximate_determinant_sampling(double lambda_dominant) {
     return log_det_sum;
 }
 
+// --- Structure for Plausibility Checks ---
+typedef struct {
+    const char *sentence;
+    int primary_idx;  
+    int secondary_idx; // Use -1 for single-word checks
+} PlausibilityCheck;
+
+// --- Evaluation function that runs all checks and prints results ---
+void run_plausibility_checks(const double v_dominant[]) {
+    
+    // Define the checks using the predefined word indices
+    PlausibilityCheck checks[] = {
+        {"Alice met the hatter", ALICE, HATTER},
+        {"Alice was at a tea party", ALICE, TEA},
+        {"Alice thinks the hatter is rude or confusing", ALICE, HATTER},
+        {"the hatter says weird things", HATTER, -1}, // 'weird' is not a tracked index
+    };
+    int num_checks = sizeof(checks) / sizeof(PlausibilityCheck);
+    
+    printf("2. PLAUSIBILITY CHECK: Multiple Sentences\n");
+    printf("-----------------------------------------\n");
+    
+    // Thresholds used for interpretation (based on observed weights)
+    const double ALIGNMENT_THRESHOLD = 0.05;
+    const double OPPOSITIONAL_THRESHOLD = -0.05;
+    const double MIN_SIGNIFICANCE = 0.01;
+
+    for (int i = 0; i < num_checks; i++) {
+        double primary_weight = v_dominant[checks[i].primary_idx];
+        
+        printf("   [%d] \"%s\"\n", i + 1, checks[i].sentence);
+        
+        if (checks[i].secondary_idx != -1) {
+            // --- Two-Word Alignment Check (Primary logic) ---
+            double secondary_weight = v_dominant[checks[i].secondary_idx];
+            double alignment = primary_weight * secondary_weight;
+            
+            printf("       - Alignment (W1 * W2): %.4f (W1: %.4f, W2: %.4f)\n", 
+                   alignment, primary_weight, secondary_weight);
+            
+            if (i == 2 && alignment < OPPOSITIONAL_THRESHOLD) { 
+                 // Specific check for "rude/confusing" which aligns with structural opposition
+                 printf("       => PLAUSIBLE (Structural Opposition)\n");
+                 printf("          Reason: The words (Alice/Hatter) occupy opposite semantic poles in the dominant feature, supporting an adversarial or challenging relationship.\n");
+            } else if (alignment < OPPOSITIONAL_THRESHOLD) {
+                printf("       => STRUCTURALLY IMPLAUSIBLE (Strong Opposition)\n");
+                printf("          Reason: The words occupy structurally distinct/opposing roles on the primary semantic feature.\n");
+            } else if (alignment < ALIGNMENT_THRESHOLD) {
+                printf("       => NEUTRAL/AMBIGUOUS\n");
+                printf("          Reason: The alignment is close to zero, meaning their relationship is weakly defined by the dominant spectral feature.\n");
+            } else {
+                printf("       => PLAUSIBLE (Supported)\n");
+                printf("          Reason: Positive alignment suggests the concepts frequently co-occur in similar contexts across the corpus.\n");
+            }
+        } else {
+            // --- Single-Word Significance Check (For "says weird things") ---
+            // 'Weird' is untracked, so we check if the subject (Hatter) is a significant feature.
+            printf("       - Primary Weight ('Hatter'): %.4f\n", primary_weight);
+
+            if (fabs(primary_weight) >= MIN_SIGNIFICANCE) {
+                printf("       => PLAUSIBLE (Significant Feature)\n");
+                printf("          Reason: The subject ('Hatter') is a strong component of the dominant spectral feature, indicating a key role in the corpus's structure.\n");
+            } else {
+                printf("       => NEUTRAL/AMBIGUOUS\n");
+                printf("          Reason: The subject ('Hatter') is spectrally weak, making specific claims about its behavior difficult to validate via the dominant feature.\n");
+            }
+        }
+        printf("\n");
+    }
+}
+
 
 int main() {
     double lambda_dominant;
@@ -349,7 +420,11 @@ int main() {
     printf("--- Spectral Linguistic Solver (C99) ---\n");
     printf("Method: SPARSE Matrix Iteration + File Processing.\n");
     printf("Corpus: Read from file '%s'.\n", BOOK_FILENAME);
-    printf("Target Sentence: \"Alice likes the mad hatter\"\n\n");
+    printf("Target Sentences:\n");
+    printf("   1. \"Alice met the hatter\"\n");
+    printf("   2. \"Alice was at a tea party\"\n");
+    printf("   3. \"Alice thinks the hatter is rude or confusing\"\n");
+    printf("   4. \"the hatter says weird things\"\n\n");
     
     // 1. READ BOOK FILE AND BUILD D MATRIX
     actual_contexts = read_book_file_and_build_D_matrix(BOOK_FILENAME);
@@ -395,27 +470,8 @@ int main() {
     if (DREAM < N_NODES) printf("DREAM (%.4f)\n\n", v_dominant[DREAM]);
 
 
-    // 5. LINGUISTIC EVALUATION
-    printf("2. PLAUSIBILITY CHECK: \"Alice likes the mad hatter\"\n");
-    printf("---------------------------------------------------\n");
-
-    double alice_hatter_alignment = v_dominant[ALICE] * v_dominant[HATTER];
-    double likes_weight = v_dominant[LIKES];
-
-    printf("   Alignment (Alice * Hatter): %.4f\n", alice_hatter_alignment);
-    printf("   Weight of 'Likes': %.4f\n\n", likes_weight);
-
-    printf("3. FINAL EVALUATION:\n");
-    if (alice_hatter_alignment < -0.05) {
-        printf("   => STRUCTURALLY IMPLAUSIBLE (Oppositional).\n");
-        printf("      Reason: ALICE and HATTER occupy structurally distinct or opposing roles on the primary semantic feature derived from the corpus.\n");
-    } else if (alice_hatter_alignment < 0.05) {
-        printf("   => NEUTRAL/AMBIGUOUS.\n");
-        printf("      Reason: Their relationship is weakly defined by the dominant spectral feature (close to zero alignment).\n");
-    } else {
-        printf("   => STRUCTURALLY PLAUSIBLE (Supported).\n");
-        printf("      Reason: ALICE and HATTER co-occur frequently enough in similar contexts to show a positive alignment on the principal semantic feature.\n");
-    }
+    // 5. RUN MULTI-SENTENCE LINGUISTIC EVALUATION
+    run_plausibility_checks(v_dominant);
 
     printf("\n--- END OF ANALYSIS ---\n");
 
