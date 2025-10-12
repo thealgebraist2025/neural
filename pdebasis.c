@@ -12,12 +12,12 @@
 #define N_INPUT D_SIZE     // NN Input Dimension
 #define N_OUTPUT 5         // NN Output: [Classification, x, y, w, h]
 #define N_HIDDEN 64        // Hidden layer size
-#define N_TEST_SAMPLES 15000 // Standard test set size
+#define N_TEST_SAMPLES 45000 // Standard test set size
 #define N_REGRESSION_TESTS 500 // Regression test size
 
 // Neural Network Parameters
-#define LEARNING_RATE 0.005 
-#define N_EPOCHS_TRAIN 100000 // FIXED: Increased training epochs significantly
+#define LEARNING_RATE 0.002 
+#define N_EPOCHS_TRAIN 250000 // FIXED: Increased training epochs significantly
 #define TARGET_RECTANGLE 1.0
 #define TARGET_LINE_SET 0.0
 #define CLASSIFICATION_WEIGHT 1.0 
