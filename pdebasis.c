@@ -6,24 +6,24 @@
 #include <string.h> 
 
 // --- Configuration ---
-#define N_SAMPLES_MAX 50000 // Maximum target size
+#define N_SAMPLES_MAX 1000 // Maximum training size
 #define D_SIZE 256         // 16x16 image size (RAW INPUT DIMENSION)
 #define N_INPUT D_SIZE     // NN Input Dimension is now the raw image size
-#define N_HIDDEN 64        // Increased hidden layer size for more complex input
-#define N_TEST_SAMPLES 50000 // Test set size
+#define N_HIDDEN 12        // Hidden layer size
+#define N_TEST_SAMPLES 500 // Standard test set size
 
 // Time limit in seconds
-#define MAX_TIME_NN_SEC 320.0
+#define MAX_TIME_NN_SEC 120.0
 
 // Neural Network Parameters
 #define LEARNING_RATE 0.01 // Reduced learning rate for stability with large input
-#define N_EPOCHS_MAX 100000 
+#define N_EPOCHS_MAX 10000 
 #define TARGET_RECTANGLE 1.0
 #define TARGET_LINE_SET 0.0
 // ---------------------
 
 // --- Dynamic Globals ---
-int N_SAMPLES = 10000; 
+int N_SAMPLES = 1000; 
 int N_EPOCHS;  
 
 // Global Data & Matrices (Sized by MAX N)
@@ -59,9 +59,11 @@ double sigmoid(double x);
 double forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], double* output);
 void backward_pass_and_update(const double input[N_INPUT], const double hidden_out[N_HIDDEN], double output, double target);
 
+// New Robustness Test
+void test_noise_robustness();
 
 // -----------------------------------------------------------------
-// --- DATA GENERATION FUNCTIONS (Unchanged) ---
+// --- DATA GENERATION FUNCTIONS ---
 // -----------------------------------------------------------------
 
 void generate_rectangle(double image[D_SIZE]) {
@@ -139,7 +141,7 @@ void generate_test_set() {
 }
 
 // -----------------------------------------------------------------
-// --- PROFILING FUNCTIONS (Basis parts removed) ---
+// --- PROFILING FUNCTIONS ---
 // -----------------------------------------------------------------
 
 void estimate_nn_epochs() {
@@ -150,10 +152,8 @@ void estimate_nn_epochs() {
 
     start = clock();
     for (int epoch = 0; epoch < N_EPOCHS_PROFILE; epoch++) {
-        int sample_index = rand() % 50; // Use a small portion of the dataset
+        int sample_index = rand() % 50; 
         double hidden_out[N_HIDDEN]; double output;
-        
-        // Pass the raw data sample [sample_index]
         forward_pass(dataset[sample_index], hidden_out, &output);
         backward_pass_and_update(dataset[sample_index], hidden_out, output, targets[sample_index]);
     }
@@ -174,11 +174,10 @@ void estimate_nn_epochs() {
 }
 
 // -----------------------------------------------------------------
-// --- NN CORE FUNCTIONS (Updated for D_SIZE input) ---
+// --- NN CORE FUNCTIONS ---
 // -----------------------------------------------------------------
 
 void initialize_nn() {
-    // Weights and biases are initialized for D_SIZE input
     for (int i = 0; i < N_INPUT; i++) {
         for (int j = 0; j < N_HIDDEN; j++) {
             w_ih[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * 0.1;
@@ -195,8 +194,6 @@ void train_nn(const double input_set[N_SAMPLES_MAX][N_INPUT]) {
     printf("Training on raw %d-dimensional image pixels...\n", N_INPUT);
     for (int epoch = 0; epoch < N_EPOCHS; epoch++) {
         int sample_index = rand() % N_SAMPLES;
-        
-        // Use raw dataset[sample_index] as input
         double hidden_out[N_HIDDEN];
         double output;
         forward_pass(input_set[sample_index], hidden_out, &output);
@@ -209,7 +206,6 @@ double sigmoid(double x) {
 }
 
 double forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], double* output) {
-    // Input to Hidden Layer - uses N_INPUT
     for (int j = 0; j < N_HIDDEN; j++) {
         double h_net = b_h[j];
         for (int i = 0; i < N_INPUT; i++) {
@@ -217,7 +213,6 @@ double forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], do
         }
         hidden_out[j] = sigmoid(h_net);
     }
-    // Hidden to Output Layer
     double o_net = b_o[0]; 
     for (int j = 0; j < N_HIDDEN; j++) { 
         o_net += hidden_out[j] * w_ho[j][0]; 
@@ -227,11 +222,9 @@ double forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], do
 }
 
 void backward_pass_and_update(const double input[N_INPUT], const double hidden_out[N_HIDDEN], double output, double target) {
-    // Output Layer Delta
     double error_o = (output - target); 
     double delta_o = error_o * output * (1.0 - output); 
     
-    // Hidden Layer Deltas
     double error_h[N_HIDDEN]; 
     for (int j = 0; j < N_HIDDEN; j++) { 
         error_h[j] = delta_o * w_ho[j][0]; 
@@ -241,13 +234,11 @@ void backward_pass_and_update(const double input[N_INPUT], const double hidden_o
         delta_h[j] = error_h[j] * hidden_out[j] * (1.0 - hidden_out[j]); 
     }
     
-    // Update Weights and Biases
     for (int j = 0; j < N_HIDDEN; j++) { 
         w_ho[j][0] -= LEARNING_RATE * delta_o * hidden_out[j]; 
     } 
     b_o[0] -= LEARNING_RATE * delta_o;
     
-    // Update Input-to-Hidden weights - uses N_INPUT
     for (int i = 0; i < N_INPUT; i++) { 
         for (int j = 0; j < N_HIDDEN; j++) { 
             w_ih[i][j] -= LEARNING_RATE * delta_h[j] * input[i]; 
@@ -274,14 +265,72 @@ double test_on_set(int n_set_size, const double input_set[][N_INPUT], const doub
 }
 
 // -----------------------------------------------------------------
-// --- MAIN EXECUTION (Simplified) ---
+// --- NOISE ROBUSTNESS TEST ---
+// -----------------------------------------------------------------
+
+void test_noise_robustness() {
+    double original_image[D_SIZE];
+    double noisy_image[D_SIZE];
+    
+    // 1. Generate a single random rectangle image
+    generate_rectangle(original_image);
+
+    printf("\n--- NOISE ROBUSTNESS TEST ---\n");
+    printf("Testing trained NN on a single random rectangle image with increasing noise:\n");
+    printf("-------------------------------------------------------------------------\n");
+    printf("| Noise %% | Output Score | Prediction | Correct |\n");
+    printf("|---------|--------------|------------|---------|\n");
+
+    double hidden_out[N_HIDDEN];
+    double output;
+    int correct_count = 0;
+    int total_tests = 0;
+
+    for (int noise_percent = 10; noise_percent <= 100; noise_percent += 10) {
+        total_tests++;
+        
+        // 2. Clone the original and apply noise
+        memcpy(noisy_image, original_image, D_SIZE * sizeof(double));
+        
+        int pixels_to_randomize = (int)(D_SIZE * (noise_percent / 100.0));
+        
+        for (int i = 0; i < pixels_to_randomize; i++) {
+            int idx = rand() % D_SIZE;
+            // Randomize pixel value (0.0 to 250.0)
+            noisy_image[idx] = (double)(rand() % 251); 
+        }
+
+        // 3. Run forward pass
+        forward_pass(noisy_image, hidden_out, &output);
+
+        // 4. Calculate result
+        double prediction = (output >= 0.5) ? TARGET_RECTANGLE : TARGET_LINE_SET;
+        int is_correct = (fabs(prediction - TARGET_RECTANGLE) < DBL_EPSILON);
+        
+        if (is_correct) {
+            correct_count++;
+        }
+
+        printf("| %7d | %12.4f | %10.0f | %7s |\n", 
+               noise_percent, 
+               output, 
+               prediction, 
+               is_correct ? "YES" : "NO");
+    }
+
+    printf("-------------------------------------------------------------------------\n");
+    printf("Summary: The NN correctly classified the noisy rectangle %d out of %d times.\n", 
+           correct_count, total_tests);
+}
+
+// -----------------------------------------------------------------
+// --- MAIN EXECUTION ---
 // -----------------------------------------------------------------
 int main() {
     srand(time(NULL));
     clock_t start_total, end_total;
     start_total = clock();
 
-    // Only estimate epochs (no basis profiling needed)
     estimate_nn_epochs();
 
     load_balanced_dataset(); 
@@ -298,8 +347,8 @@ int main() {
     clock_t end_nn = clock();
     printf("NN Training time: %.4f seconds.\n", (double)(end_nn - start_nn) / CLOCKS_PER_SEC);
 
-    // --- STEP 2: Comparative Testing ---
-    printf("\n--- STEP 2: Testing Results ---\n");
+    // --- STEP 2: Standard Testing ---
+    printf("\n--- STEP 2: Standard Testing Results ---\n");
     
     // Test on Training Set
     double acc_train = test_on_set(N_SAMPLES, dataset, targets);
@@ -308,6 +357,9 @@ int main() {
     // Test on Unseen Test Set
     double acc_test = test_on_set(N_TEST_SAMPLES, test_data, test_targets);
     printf("NN Testing Accuracy: %.2f%%\n", acc_test * 100.0);
+    
+    // --- STEP 3: Noise Robustness Testing ---
+    test_noise_robustness();
     
     end_total = clock();
     printf("\nTotal execution time (including profiling): %.4f seconds.\n", (double)(end_total - start_total) / CLOCKS_PER_SEC);
