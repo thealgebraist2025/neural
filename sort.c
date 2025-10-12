@@ -7,8 +7,8 @@
 #define INPUT_DIM 100       // 10x10 image flattened
 #define HIDDEN_DIM 10       // The dimension for the invertible matrix (N)
 #define N HIDDEN_DIM        // Alias for the matrix size
-#define EPOCHS 1500000       // Increased to match user environment
-#define LEARNING_RATE 0.02  // INCREASED to help escape the 0.5 minimum
+#define EPOCHS 150000       // REVERTED: Back to full training run
+#define LEARNING_RATE 0.02  // Increased to help escape the 0.5 minimum
 #define IMAGE_SIZE 10
 
 // --- 1. Linear Algebra Utilities & Core Analysis ---
@@ -500,6 +500,7 @@ void make_rectangle(float *img, int is_present) {
         for (int r = 0; r < IMAGE_SIZE; r++) {
             for (int c = 0; c < IMAGE_SIZE; c++) {
                 if (r > start_row && r < start_row + height && c > start_col && c < start_col + width) {
+                    // Use alternating values to add texture/complexity
                     if ((r + c) % 2 == 0) {
                         img[r * IMAGE_SIZE + c] = 1.0f;
                     } else {
@@ -529,6 +530,7 @@ int main() {
 
     printf("Starting Cascaded Deep Ensemble Training (5->3->2->1 structure).)\n");
     printf("Total Networks: 11. Core Invertible Matrix size: %d x %d.\n", N, N);
+    printf("Training for %d epochs with improved initialization and learning rate %.2f.\n", EPOCHS, LEARNING_RATE);
 
     float input_image[INPUT_DIM];
     float target;
@@ -546,7 +548,7 @@ int main() {
     float dominant_eigenvector[N];
 
     for (int epoch = 1; epoch <= EPOCHS; epoch++) {
-        // --- 1. Prepare Data
+        // --- 1. Prepare Data: Generates one new, random, balanced sample every epoch
         int is_present = rand() % 2;
         target = (float)is_present;
         make_rectangle(input_image, is_present);
@@ -557,7 +559,7 @@ int main() {
         for (int i = 0; i < 2; i++) output_s3[i] = forward_s3(&nets3[i], output_s2);
         float final_output = forward_s4(&net_final, output_s3);
 
-        // --- 3. Compute Loss
+        // --- 3. Compute Loss (Exponential Moving Average)
         float loss = (target - final_output) * (target - final_output);
         avg_loss = avg_loss * 0.99f + loss * 0.01f;
 
@@ -567,40 +569,32 @@ int main() {
         float delta_final = (final_output - target) * final_output * (1.0f - final_output);
 
         // *** STAGE 4 BACKPROP (Corrected Flow) ***
-        // S4 updates its weights AND returns the gradient w.r.t its input (delta_out_s3)
         backward_s4(&net_final, output_s3, delta_final, delta_out_s3); 
         
         // --- STAGE 3 BACKPROP (2 Nets) ---
         memset(delta_s3_in, 0, sizeof(delta_s3_in));
         for(int i = 0; i < 2; i++) {
-            float current_delta_input[3]; // dLoss/d(OutputS2) for this single net
-            // delta_out_s3[i] is the error signal (dLoss/d(OutputS3[i])) for nets3[i]
+            float current_delta_input[3];
             backward_s3(&nets3[i], output_s2, delta_out_s3[i], current_delta_input); 
-
-            // Accumulate the delta_input (size 3) for S2
             for(int j = 0; j < 3; j++) delta_s3_in[j] += current_delta_input[j];
         }
 
         // --- STAGE 2 BACKPROP (3 Nets) ---
         memset(delta_s2_in, 0, sizeof(delta_s2_in));
         for(int i = 0; i < 3; i++) {
-            float current_delta_input[5]; // dLoss/d(OutputS1) for this single net
-            // delta_s3_in[i] is the error signal (dLoss/d(OutputS2[i])) for nets2[i]
+            float current_delta_input[5];
             backward_s2(&nets2[i], output_s1, delta_s3_in[i], current_delta_input); 
-
-            // Accumulate the delta_input (size 5) for S1
             for(int j = 0; j < 5; j++) delta_s2_in[j] += current_delta_input[j];
         }
 
         // --- STAGE 1 BACKPROP (5 Nets) ---
         for(int i = 0; i < 5; i++) {
-            // delta_s2_in[i] is the error signal (dLoss/d(OutputS1[i])) for nets1[i]
             backward_s1(&nets1[i], input_image, delta_s2_in[i]);
         }
 
 
         // --- 5. Periodic O(N^3) Analysis and Reporting ---
-        if (epoch % (EPOCHS / 10) == 0) {
+        if (epoch % (EPOCHS / 10) == 0) { // Reports every 15,000 epochs
             printf("\n--- Epoch %d/%d ---\n", epoch, EPOCHS);
             printf("Target: %.0f | Final Output: %.4f | Smooth Loss: %.6f\n", target, final_output, avg_loss);
 
