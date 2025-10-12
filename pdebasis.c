@@ -20,6 +20,8 @@
 // Graph Parameters (RE-TUNED FOR L1 DISTANCE)
 #define EPSILON 10000.0   // L1 distance threshold for connectivity.
 #define SIGMA 2000.0      // L1 scale for kernel smoothing.
+// SUPERVISED BIAS: A large penalty to disconnect samples of different classes.
+#define LABEL_PENALTY 10000000.0 
 
 // Optimization Parameters
 #define MAX_POWER_ITER 5000 
@@ -70,10 +72,18 @@ void estimate_nn_epochs();
 
 // Graph Core Functions
 double l1_distance(int idx1, int idx2); 
-double l1_distance_embedded(const double embedded_set[][N_BASIS], int idx1, int idx2);
+double l1_distance_embedded(int idx1, int idx2);
 void calculate_random_walk_matrix();
 void run_basis_generation(int layer);
 void project_samples_to_basis(double target_coords[N_SAMPLES_MAX][N_BASIS]);
+
+// Nyström Projection (OOS Testing)
+void oos_nystrom_projection(
+    const double test_set[][D_SIZE], int n_test, 
+    const double train_set[][D_SIZE], int n_train,
+    const double train_coords[][N_BASIS],
+    double projected_coords[][N_BASIS]
+);
 
 // NN Core Functions
 void set_active_nn(int layer);
@@ -171,7 +181,7 @@ void generate_test_set() {
 }
 
 // -----------------------------------------------------------------
-// --- METRIC FUNCTIONS ---
+// --- METRIC FUNCTIONS (NOW WITH SUPERVISED BIAS) ---
 // -----------------------------------------------------------------
 
 double l1_distance(int idx1, int idx2) { 
@@ -180,16 +190,34 @@ double l1_distance(int idx1, int idx2) {
         double diff = dataset[idx1][i] - dataset[idx2][i]; 
         dist_l1 += fabs(diff); 
     } 
+
+    // SUPERVISED BIAS: Add a massive penalty if the classes are different.
+    if (fabs(targets[idx1] - targets[idx2]) > DBL_EPSILON) {
+        dist_l1 += LABEL_PENALTY; 
+    }
+    
     return dist_l1; 
 }
 
-double l1_distance_embedded(const double embedded_set[][N_BASIS], int idx1, int idx2) { 
+double l1_distance_embedded(int idx1, int idx2) { 
+    // This function measures distance between two training points in the L1 embedding space.
+    // We do NOT apply the supervised bias here, as the bias was only to create the L1 embedding itself.
     double dist_l1 = 0.0; 
     for (int i = 0; i < N_BASIS; i++) { 
-        double diff = embedded_set[idx1][i] - embedded_set[idx2][i]; 
+        double diff = embedded_coords_L1[idx1][i] - embedded_coords_L1[idx2][i]; 
         dist_l1 += fabs(diff); 
     } 
     return dist_l1; 
+}
+
+// --- Generic Distance function for Nyström Extension ---
+// It needs to handle raw data (Layer 1) or embedded data (Layer 2)
+double generic_l1_distance_raw(const double sample1[D_SIZE], const double sample2[D_SIZE]) {
+    double dist_l1 = 0.0;
+    for (int i = 0; i < D_SIZE; i++) {
+        dist_l1 += fabs(sample1[i] - sample2[i]);
+    }
+    return dist_l1;
 }
 
 // -----------------------------------------------------------------
@@ -226,11 +254,12 @@ void run_basis_generation(int layer) {
     
     // 1. Construct Adjacency Matrix A
     if (layer == 1) {
-        printf("--- Running BASIS Layer 1 (Input: Raw Images) ---\n");
+        printf("--- Running BASIS Layer 1 (Input: Raw Images - SUPERVISED) ---\n");
+        // L1 is calculated using l1_distance, which now contains the supervised bias.
         for (int i = 0; i < N_SAMPLES; i++) {
             for (int j = i + 1; j < N_SAMPLES; j++) {
-                double dist = l1_distance(i, j); // Use raw data L1 distance
-                if (dist < EPSILON) { 
+                double dist = l1_distance(i, j); 
+                if (dist < EPSILON + LABEL_PENALTY) { // Check against penalized distance
                     double weight = exp(-(dist * dist) / sigma_sq);
                     A[i][j] = weight; A[j][i] = weight; 
                 } else { A[i][j] = 0.0; A[j][i] = 0.0; }
@@ -239,9 +268,10 @@ void run_basis_generation(int layer) {
         }
     } else { // layer == 2
         printf("--- Running BASIS Layer 2 (Input: Layer 1 Embedded Coords) ---\n");
+        // L2 uses the L1 features as input, without an extra supervised bias.
         for (int i = 0; i < N_SAMPLES; i++) {
             for (int j = i + 1; j < N_SAMPLES; j++) {
-                double dist = l1_distance_embedded(embedded_coords_L1, i, j); // Use embedded data L1 distance
+                double dist = l1_distance_embedded(i, j); // Use embedded data L1 distance
                 if (dist < EPSILON) {
                     double weight = exp(-(dist * dist) / sigma_sq);
                     A[i][j] = weight; A[j][i] = weight; 
@@ -271,10 +301,61 @@ void run_basis_generation(int layer) {
 }
 
 // -----------------------------------------------------------------
-// --- PROFILING FUNCTIONS ---
+// --- NYSTRÖM OUT-OF-SAMPLE PROJECTION (FOR TESTING) ---
 // -----------------------------------------------------------------
 
+void oos_nystrom_projection(
+    const double test_set[][D_SIZE], int n_test, 
+    const double train_set[][D_SIZE], int n_train,
+    const double train_coords[][N_BASIS],
+    double projected_coords[][N_BASIS]
+) {
+    double sigma_sq = SIGMA * SIGMA;
+
+    for (int i = 0; i < n_test; i++) { // For each test sample
+        double sum_of_weights = 0.0;
+        double numerator[N_BASIS] = {0.0};
+        
+        for (int j = 0; j < n_train; j++) { // Compare against all training samples
+            
+            // NOTE: This distance needs to be the RAW pixel distance for L1 features,
+            // or the L1-feature distance for L2 features. Since this is being called
+            // to test the final NN, we assume we are projecting the RAW data 
+            // (test_data) onto the basis derived from the RAW data.
+            double dist = generic_l1_distance_raw(test_set[i], train_set[j]);
+
+            // NOTE: The supervised penalty is NOT applied here, as the penalty 
+            // was only used to help train the basis, not for the actual kernel calculation.
+            double weight = exp(-(dist * dist) / sigma_sq);
+            
+            sum_of_weights += weight;
+
+            for (int k = 0; k < N_BASIS; k++) {
+                numerator[k] += weight * train_coords[j][k];
+            }
+        }
+        
+        if (sum_of_weights > DBL_EPSILON) {
+            for (int k = 0; k < N_BASIS; k++) {
+                projected_coords[i][k] = numerator[k] / sum_of_weights;
+            }
+        } else {
+            // Should not happen, but if it does, set to zero (random feature point)
+            for (int k = 0; k < N_BASIS; k++) {
+                projected_coords[i][k] = 0.0;
+            }
+        }
+    }
+}
+
+
+// -----------------------------------------------------------------
+// --- PROFILING FUNCTIONS ---
+// -----------------------------------------------------------------
+// (Functions remain the same as they were correct and stable)
+
 void estimate_basis_samples() {
+    // ... (unchanged, but uses the updated l1_distance via direct call)
     clock_t start, end;
     load_subset_for_profiling(N_PROFILE);
     start = clock();
@@ -284,10 +365,13 @@ void estimate_basis_samples() {
     double sigma_sq = SIGMA * SIGMA;
     for (i = 0; i < N_PROFILE; i++) {
         for (j = i + 1; j < N_PROFILE; j++) {
+            // Note: l1_distance used here on subset [0..N_PROFILE-1]
             dist_l1 = l1_distance(i, j); 
-            if (dist_l1 < EPSILON) {
+            if (dist_l1 < EPSILON + LABEL_PENALTY) {
                 double weight = exp(-(dist_l1 * dist_l1) / sigma_sq);
                 A[i][j] = weight; A[j][i] = weight; 
+            } else {
+                A[i][j] = 0.0; A[j][i] = 0.0;
             }
         }
     }
@@ -308,10 +392,11 @@ void estimate_basis_samples() {
 }
 
 void estimate_nn_epochs() {
+    // ... (unchanged)
     clock_t start, end;
     #define N_EPOCHS_PROFILE 100
     
-    set_active_nn(1); // Set to L1 NN for profiling
+    set_active_nn(1); 
     initialize_nn(); 
 
     start = clock();
@@ -342,6 +427,7 @@ void estimate_nn_epochs() {
 // -----------------------------------------------------------------
 // --- NN CORE FUNCTIONS ---
 // -----------------------------------------------------------------
+// (All NN functions remain the same as they were correct and stable)
 
 void set_active_nn(int layer) {
     current_nn_layer = layer;
@@ -386,13 +472,11 @@ double sigmoid(double x) {
 }
 
 double forward_pass(const double input[N_BASIS], double hidden_out[N_HIDDEN], double* output) {
-    // Pointers for active weights/biases
     double (*w_ih_ptr)[N_HIDDEN] = (current_nn_layer == 1) ? w_ih_L1 : w_ih_L2;
     double *b_h_ptr = (current_nn_layer == 1) ? b_h_L1 : b_h_L2;
     double (*w_ho_ptr)[1] = (current_nn_layer == 1) ? w_ho_L1 : w_ho_L2;
     double *b_o_ptr = (current_nn_layer == 1) ? b_o_L1 : b_o_L2;
 
-    // Input to Hidden Layer
     for (int j = 0; j < N_HIDDEN; j++) {
         double h_net = b_h_ptr[j];
         for (int i = 0; i < N_BASIS; i++) {
@@ -400,7 +484,6 @@ double forward_pass(const double input[N_BASIS], double hidden_out[N_HIDDEN], do
         }
         hidden_out[j] = sigmoid(h_net);
     }
-    // Hidden to Output Layer
     double o_net = b_o_ptr[0]; 
     for (int j = 0; j < N_HIDDEN; j++) { 
         o_net += hidden_out[j] * w_ho_ptr[j][0]; 
@@ -410,17 +493,14 @@ double forward_pass(const double input[N_BASIS], double hidden_out[N_HIDDEN], do
 }
 
 void backward_pass_and_update(const double input[N_BASIS], const double hidden_out[N_HIDDEN], double output, double target) {
-    // Pointers for active weights/biases
     double (*w_ih_ptr)[N_HIDDEN] = (current_nn_layer == 1) ? w_ih_L1 : w_ih_L2;
     double *b_h_ptr = (current_nn_layer == 1) ? b_h_L1 : b_h_L2;
     double (*w_ho_ptr)[1] = (current_nn_layer == 1) ? w_ho_L1 : w_ho_L2;
     double *b_o_ptr = (current_nn_layer == 1) ? b_o_L1 : b_o_L2;
 
-    // Output Layer Delta
     double error_o = (output - target); 
     double delta_o = error_o * output * (1.0 - output); 
     
-    // Hidden Layer Deltas
     double error_h[N_HIDDEN]; 
     for (int j = 0; j < N_HIDDEN; j++) { 
         error_h[j] = delta_o * w_ho_ptr[j][0]; 
@@ -430,7 +510,6 @@ void backward_pass_and_update(const double input[N_BASIS], const double hidden_o
         delta_h[j] = error_h[j] * hidden_out[j] * (1.0 - hidden_out[j]); 
     }
     
-    // Update Weights and Biases
     for (int j = 0; j < N_HIDDEN; j++) { 
         w_ho_ptr[j][0] -= LEARNING_RATE * delta_o * hidden_out[j]; 
     } 
@@ -463,6 +542,7 @@ double test_on_set(int n_set_size, const double input_set[][N_BASIS], const doub
 // -----------------------------------------------------------------
 // --- UTILITY EIGENVECTOR FUNCTIONS ---
 // -----------------------------------------------------------------
+// (Unchanged)
 
 void matrix_vector_multiply(const double mat[N_SAMPLES_MAX][N_SAMPLES_MAX], const double vec_in[N_SAMPLES_MAX], double vec_out[N_SAMPLES_MAX]) {
     for (int i = 0; i < N_SAMPLES; i++) {
@@ -528,12 +608,14 @@ int main() {
     load_balanced_dataset(); 
 
     printf("\n--- GLOBAL CONFIGURATION ---\n");
-    printf("Metric: L1 (Manhattan) | EPSILON: %.1f | SIGMA: %.1f\n", EPSILON, SIGMA);
+    printf("Metric: L1 (Manhattan) | EPSILON: %.1f | SIGMA: %.1f | **SUPERVISED BIAS ADDED**\n", EPSILON, SIGMA);
 
     // --- STEP 1: Basis Layer 1 (Raw Pixels -> Features L1) ---
+    // The supervised bias is used here.
     run_basis_generation(1); 
 
     // --- STEP 2: Basis Layer 2 (Features L1 -> Features L2) ---
+    // The resulting L1 coordinates are the input to the L2 graph.
     run_basis_generation(2);
     
     // --- STEP 3: NN Training and Comparison ---
@@ -556,32 +638,44 @@ int main() {
     clock_t end_nn2 = clock();
     printf("NN Training (L2) time: %.4f seconds.\n", (double)(end_nn2 - start_nn2) / CLOCKS_PER_SEC);
 
-    // --- STEP 4: Comparative Testing ---
+    // --- STEP 4: Comparative Testing (NOW WITH PROPER OOS PROJECTION) ---
     generate_test_set(); 
     
-    // Test Input Generation (Proxy for OOS on both layers)
-    double proxy_test_coords[N_TEST_SAMPLES][N_BASIS];
-    for(int i=0; i < N_TEST_SAMPLES; i++) {
-        // Simple OOS proxy: generates coordinates based on the label, perturbed slightly.
-        double val = (test_targets[i] == TARGET_RECTANGLE) ? 0.5 : -0.5;
-        for(int k=0; k < N_BASIS; k++) {
-            proxy_test_coords[i][k] = val + (double)(rand() % 100 - 50) / 500.0;
-        }
-    }
+    // 4a. Project Test Data onto L1 Basis (Raw data onto L1 basis)
+    double test_coords_L1[N_TEST_SAMPLES][N_BASIS];
+    oos_nystrom_projection(
+        test_data, N_TEST_SAMPLES,   // Test data
+        dataset, N_SAMPLES,          // Training data (raw pixels)
+        embedded_coords_L1,          // Training features
+        test_coords_L1               // Output test features
+    );
+    
+    // 4b. Project Test Data onto L2 Basis (Raw data onto L2 basis)
+    // NOTE: This uses the original raw data as input to the Nystrom projection 
+    // to keep the testing equivalent across layers, as the L2 basis ultimately 
+    // depends on the raw data space. A more complex Nystrom (iterative) would be needed 
+    // to map to L2 features based on L1 features. For simplicity, we use the same train set.
+    double test_coords_L2[N_TEST_SAMPLES][N_BASIS];
+    oos_nystrom_projection(
+        test_data, N_TEST_SAMPLES,   // Test data
+        dataset, N_SAMPLES,          // Training data (raw pixels)
+        embedded_coords_L2,          // Training features
+        test_coords_L2               // Output test features
+    );
     
     printf("\n--- STEP 4: Comparative Testing Results ---\n");
     
     // Test on Layer 1 Features (Single Basis)
     set_active_nn(1);
     double acc_L1_train = test_on_set(N_SAMPLES, embedded_coords_L1, targets);
-    double acc_L1_test = test_on_set(N_TEST_SAMPLES, proxy_test_coords, test_targets);
+    double acc_L1_test = test_on_set(N_TEST_SAMPLES, test_coords_L1, test_targets);
     printf("Single Basis (L1 Features) Training Accuracy: %.2f%%\n", acc_L1_train * 100.0);
     printf("Single Basis (L1 Features) Testing Accuracy: %.2f%%\n", acc_L1_test * 100.0);
 
     // Test on Layer 2 Features (Double Basis)
     set_active_nn(2);
     double acc_L2_train = test_on_set(N_SAMPLES, embedded_coords_L2, targets);
-    double acc_L2_test = test_on_set(N_TEST_SAMPLES, proxy_test_coords, test_targets);
+    double acc_L2_test = test_on_set(N_TEST_SAMPLES, test_coords_L2, test_targets);
     printf("Double Basis (L2 Features) Training Accuracy: %.2f%%\n", acc_L2_train * 100.0);
     printf("Double Basis (L2 Features) Testing Accuracy: %.2f%%\n", acc_L2_test * 100.0);
     
