@@ -7,7 +7,7 @@
 #define INPUT_DIM 100       // 10x10 image flattened
 #define HIDDEN_DIM 10       // The dimension for the invertible matrix (N)
 #define N HIDDEN_DIM        // Alias for the matrix size
-#define EPOCHS 5000
+#define EPOCHS 150000
 #define LEARNING_RATE 0.01
 #define IMAGE_SIZE 10
 
