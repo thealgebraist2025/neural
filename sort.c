@@ -7,14 +7,15 @@
 #define INPUT_DIM 100       // 10x10 image flattened
 #define HIDDEN_DIM 10       // The dimension for the invertible matrix (N)
 #define N HIDDEN_DIM        // Alias for the matrix size
-#define EPOCHS 150000
-#define LEARNING_RATE 0.01
+#define EPOCHS 1500000       // Increased to match user environment
+#define LEARNING_RATE 0.02  // INCREASED to help escape the 0.5 minimum
 #define IMAGE_SIZE 10
 
 // --- 1. Linear Algebra Utilities & Core Analysis ---
 
-float rand_float() {
-    return ((float)rand() / RAND_MAX) - 0.5f;
+// Helper for generating uniform random float in [min, max]
+float rand_uniform(float min, float max) {
+    return (max - min) * ((float)rand() / RAND_MAX) + min;
 }
 
 float sigmoid(float x) {
@@ -126,7 +127,7 @@ void power_iteration(const float *A, float *eigenvalue, float *eigenvector) {
     const float tolerance = 1e-6f;
 
     for (int i = 0; i < N; i++) {
-        eigenvector[i] = rand_float();
+        eigenvector[i] = rand_uniform(-0.5f, 0.5f); // Use new helper
     }
     vec_normalize(eigenvector, N);
 
@@ -215,16 +216,19 @@ typedef struct {
 // --- 3. Initialization ---
 
 void init_weights(float *W, int M, int K) {
-    for (int i = 0; i < M * K; i++) W[i] = rand_float() / sqrtf((float)K);
+    // Glorot/Xavier uniform initialization scale: range +/- sqrt(1/fan_in)
+    // This is crucial for avoiding vanishing gradients in the first layer (S1)
+    float scale = sqrtf(1.0f / (float)K); 
+    for (int i = 0; i < M * K; i++) W[i] = rand_uniform(-scale, scale);
 }
 
 void init_bias(float *b, int M) {
-    for (int i = 0; i < M; i++) b[i] = rand_float() / 10.0f;
+    // Small bias initialization
+    for (int i = 0; i < M; i++) b[i] = rand_uniform(-0.05f, 0.05f);
 }
 
 void init_invertible_layer(float *W, float *b) {
-    // Slightly increased random initial values for better gradient flow
-    for (int i = 0; i < N * N; i++) W[i] = rand_float() / 10.0f;
+    for (int i = 0; i < N * N; i++) W[i] = rand_uniform(-0.05f, 0.05f);
     for (int i = 0; i < N; i++) W[i * N + i] += 1.0f; // Near Identity
     init_bias(b, N);
 }
@@ -313,8 +317,6 @@ float forward_s4(NetS4 *net, const float *input) {
 
 // --- 5. Backpropagation Functions ---
 
-// delta_out is dLoss/d(z_out) = dLoss/d(output) * d(output)/d(z_out)
-
 // MODIFIED: Calculates and returns delta_input (size 2) to the previous stage (S3)
 void backward_s4(NetS4 *net, const float *input, float delta_out, float *delta_input) {
     float grad_W_out[N];
@@ -354,11 +356,9 @@ void backward_s4(NetS4 *net, const float *input, float delta_out, float *delta_i
     float *grad_b_feat = delta_h1;
 
     // *** Calculate delta_input (size 2) for the previous stage (S3 outputs) ***
-    // This is the error signal to be passed back to the S3 networks
     for (int i = 0; i < 2; i++) {
         delta_input[i] = 0.0f;
         for (int j = 0; j < N; j++) {
-            // dLoss/d(input_i) = sum_j (dLoss/d(h1_pre_tanh)_j * W_feat[j, i])
             delta_input[i] += delta_h1[j] * net->W_feat[j * 2 + i];
         }
     }
@@ -637,17 +637,17 @@ int main() {
     for (int i = 0; i < 5; i++) output_s1[i] = forward_s1(&nets1[i], test_image);
     for (int i = 0; i < 3; i++) output_s2[i] = forward_s2(&nets2[i], output_s1);
     for (int i = 0; i < 2; i++) output_s3[i] = forward_s3(&nets3[i], output_s2);
-    float test_output_present = forward_s4(&net_final, output_s3);
+    float final_output_present = forward_s4(&net_final, output_s3);
 
-    printf("\nTEST (Rectangle Present): Final Output = %.4f (Expected near 1.0)\n", test_output_present);
+    printf("\nTEST (Rectangle Present): Final Output = %.4f (Expected near 1.0)\n", final_output_present);
 
     make_rectangle(test_image, 0);
     for (int i = 0; i < 5; i++) output_s1[i] = forward_s1(&nets1[i], test_image);
     for (int i = 0; i < 3; i++) output_s2[i] = forward_s2(&nets2[i], output_s1);
     for (int i = 0; i < 2; i++) output_s3[i] = forward_s3(&nets3[i], output_s2);
-    float test_output_absent = forward_s4(&net_final, output_s3);
+    float final_output_absent = forward_s4(&net_final, output_s3);
 
-    printf("TEST (No Rectangle): Final Output = %.4f (Expected near 0.0)\n", test_output_absent);
+    printf("TEST (No Rectangle): Final Output = %.4f (Expected near 0.0)\n", final_output_absent);
 
     return 0;
 }
