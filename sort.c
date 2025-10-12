@@ -5,20 +5,28 @@
 #include <string.h>
 
 #define INPUT_DIM 100       // 10x10 image flattened
-#define HIDDEN_DIM 20       // CHANGED: Increased from 10 to 20 for more capacity
+#define HIDDEN_DIM 20       // Core dimension N=20
 #define N HIDDEN_DIM        // Alias for the matrix size
 #define EPOCHS 150000       // Full training run
-#define LEARNING_RATE 0.05  // CHANGED: Increased from 0.02 to 0.05 for faster training
+#define LEARNING_RATE 0.07  // CHANGED: Increased from 0.05 to 0.07 for aggressive exit from loss plateau
 #define IMAGE_SIZE 10
+#define GRADIENT_CLIP_MAX 0.1f // NEW: Maximum magnitude for gradient steps
 
 // --- 1. Linear Algebra Utilities & Core Analysis ---
 
-// NEW: ReLU activation function
+// ReLU activation and derivative helper
 #define ReLU(x) ((x) > 0.0f ? (x) : 0.0f)
 
 // Helper for generating uniform random float in [min, max]
 float rand_uniform(float min, float max) {
     return (max - min) * ((float)rand() / RAND_MAX) + min;
+}
+
+// NEW: Function to clip gradient to prevent explosion/instability
+float clip_gradient(float grad) {
+    if (grad > GRADIENT_CLIP_MAX) return GRADIENT_CLIP_MAX;
+    if (grad < -GRADIENT_CLIP_MAX) return -GRADIENT_CLIP_MAX;
+    return grad;
 }
 
 float sigmoid(float x) {
@@ -43,26 +51,8 @@ void vec_add(const float *x, const float *b, int D, float *y) {
     }
 }
 
-// Vector normalization
-float vec_normalize(float *vec, int D) {
-    float norm = 0.0f;
-    for (int i = 0; i < D; i++) {
-        norm += vec[i] * vec[i];
-    }
-    norm = sqrtf(norm);
-    if (norm > 1e-6) {
-        for (int i = 0; i < D; i++) {
-            vec[i] /= norm;
-        }
-    }
-    return norm;
-}
-
-/**
- * Calculates the inverse of the N x N matrix W and its determinant using
- * Gaussian-Jordan elimination on an augmented matrix [W | I]. (O(N^3))
- */
 float inverse_and_determinant(const float *W_in, float *W_inv) {
+    // ... O(N^3) Gaussian-Jordan elimination for Det and Inverse ...
     float W_aug[N * 2 * N];
     for (int i = 0; i < N; i++) {
         for (int j = 0; j < N; j++) {
@@ -121,18 +111,19 @@ float inverse_and_determinant(const float *W_in, float *W_inv) {
     return det;
 }
 
-/**
- * Finds the dominant eigenvalue (largest magnitude) and its eigenvector
- * using the Power Iteration method. (O(N^2) per iteration)
- */
 void power_iteration(const float *A, float *eigenvalue, float *eigenvector) {
+    // ... O(N^2) Power Iteration for Dominant Eigenvalue ...
     const int max_iterations = 50;
     const float tolerance = 1e-6f;
 
     for (int i = 0; i < N; i++) {
         eigenvector[i] = rand_uniform(-0.5f, 0.5f);
     }
-    vec_normalize(eigenvector, N);
+    float norm = 0.0f;
+    for (int i = 0; i < N; i++) norm += eigenvector[i] * eigenvector[i];
+    norm = sqrtf(norm);
+    if (norm > 1e-6) { for (int i = 0; i < N; i++) eigenvector[i] /= norm; }
+
 
     float y[N];
     float lambda_prev = 0.0f;
@@ -153,36 +144,41 @@ void power_iteration(const float *A, float *eigenvalue, float *eigenvector) {
         lambda_prev = lambda;
 
         memcpy(eigenvector, y, N * sizeof(float));
-        vec_normalize(eigenvector, N);
+        norm = 0.0f;
+        for (int i = 0; i < N; i++) norm += eigenvector[i] * eigenvector[i];
+        norm = sqrtf(norm);
+        if (norm > 1e-6) { for (int i = 0; i < N; i++) eigenvector[i] /= norm; }
     }
 
     *eigenvalue = lambda_prev;
 }
 
 
-// --- 2. Cascading Network Structures (N=20 is the constant Hidden/Invertible size) ---
+// --- 2. Cascading Network Structures (N=20) ---
+
+// Struct definitions remain the same, relying on N=20
+
 
 // Stage 1: Input 100 -> Hidden 20 -> Output 1 (5 Networks)
 typedef struct {
-    float W_feat[N * INPUT_DIM]; // 20x100
+    float W_feat[N * INPUT_DIM]; 
     float b_feat[N];
-    float W_inv[N * N]; // 20x20 (Invertible Core)
+    float W_inv[N * N];
     float b_inv[N];
-    float W_out[N]; // 1x20
+    float W_out[N];
     float b_out;
-    // Internal States for Backprop
-    float h1[N]; // Output of L1 (ReLU activation)
-    float h2[N]; // Output of L2 (linear, pre-output)
-    float z_out; // Pre-sigmoid output
+    float h1[N]; 
+    float h2[N];
+    float z_out;
 } NetS1;
 
 // Stage 2: Input 5 -> Hidden 20 -> Output 1 (3 Networks)
 typedef struct {
-    float W_feat[N * 5]; // 20x5
+    float W_feat[N * 5];
     float b_feat[N];
-    float W_inv[N * N]; // 20x20 (Invertible Core)
+    float W_inv[N * N];
     float b_inv[N];
-    float W_out[N]; // 1x20
+    float W_out[N];
     float b_out;
     float h1[N]; 
     float h2[N];
@@ -191,11 +187,11 @@ typedef struct {
 
 // Stage 3: Input 3 -> Hidden 20 -> Output 1 (2 Networks)
 typedef struct {
-    float W_feat[N * 3]; // 20x3
+    float W_feat[N * 3];
     float b_feat[N];
-    float W_inv[N * N]; // 20x20 (Invertible Core)
+    float W_inv[N * N];
     float b_inv[N];
-    float W_out[N]; // 1x20
+    float W_out[N];
     float b_out;
     float h1[N]; 
     float h2[N];
@@ -204,11 +200,11 @@ typedef struct {
 
 // Stage 4: Input 2 -> Hidden 20 -> Output 1 (1 Network)
 typedef struct {
-    float W_feat[N * 2]; // 20x2
+    float W_feat[N * 2];
     float b_feat[N];
-    float W_inv[N * N]; // 20x20 (Invertible Core)
+    float W_inv[N * N];
     float b_inv[N];
-    float W_out[N]; // 1x20
+    float W_out[N];
     float b_out;
     float h1[N]; 
     float h2[N];
@@ -216,44 +212,45 @@ typedef struct {
 } NetS4;
 
 
-// --- 3. Initialization ---
+// --- 3. Initialization (HE Initialization for ReLU) ---
 
-void init_weights(float *W, int M, int K) {
-    // Glorot/Xavier uniform initialization
-    float scale = sqrtf(1.0f / (float)K); 
+void init_weights_he(float *W, int M, int K) {
+    // NEW: He Initialization scale for ReLU: sqrt(2 / fan_in)
+    float scale = sqrtf(2.0f / (float)K); 
     for (int i = 0; i < M * K; i++) W[i] = rand_uniform(-scale, scale);
 }
 
 void init_bias(float *b, int M) {
-    for (int i = 0; i < M; i++) b[i] = rand_uniform(-0.05f, 0.05f);
+    for (int i = 0; i < M; i++) b[i] = 0.0f; // Initialize bias to 0 for ReLU
 }
 
 void init_invertible_layer(float *W, float *b) {
+    // Note: We keep a small uniform rand for the invertible core to allow variation,
+    // but the final bias is 0.
     for (int i = 0; i < N * N; i++) W[i] = rand_uniform(-0.05f, 0.05f);
     for (int i = 0; i < N; i++) W[i * N + i] += 1.0f; // Near Identity
     init_bias(b, N);
 }
 
 void init_net_s1(NetS1 *net) {
-    init_weights(net->W_feat, N, INPUT_DIM);
+    init_weights_he(net->W_feat, N, INPUT_DIM); // Use He Init
     init_bias(net->b_feat, N);
     init_invertible_layer(net->W_inv, net->b_inv);
-    init_weights(net->W_out, 1, N);
+    init_weights_he(net->W_out, 1, N); // Use He Init
     init_bias(&net->b_out, 1);
 }
 
-void init_net_s2(NetS2 *net) { init_weights(net->W_feat, N, 5); init_bias(net->b_feat, N); init_invertible_layer(net->W_inv, net->b_inv); init_weights(net->W_out, 1, N); init_bias(&net->b_out, 1); }
-void init_net_s3(NetS3 *net) { init_weights(net->W_feat, N, 3); init_bias(net->b_feat, N); init_invertible_layer(net->W_inv, net->b_inv); init_weights(net->W_out, 1, N); init_bias(&net->b_out, 1); }
-void init_net_s4(NetS4 *net) { init_weights(net->W_feat, N, 2); init_bias(net->b_feat, N); init_invertible_layer(net->W_inv, net->b_inv); init_weights(net->W_out, 1, N); init_bias(&net->b_out, 1); }
+void init_net_s2(NetS2 *net) { init_weights_he(net->W_feat, N, 5); init_bias(net->b_feat, N); init_invertible_layer(net->W_inv, net->b_inv); init_weights_he(net->W_out, 1, N); init_bias(&net->b_out, 1); }
+void init_net_s3(NetS3 *net) { init_weights_he(net->W_feat, N, 3); init_bias(net->b_feat, N); init_invertible_layer(net->W_inv, net->b_inv); init_weights_he(net->W_out, 1, N); init_bias(&net->b_out, 1); }
+void init_net_s4(NetS4 *net) { init_weights_he(net->W_feat, N, 2); init_bias(net->b_feat, N); init_invertible_layer(net->W_inv, net->b_inv); init_weights_he(net->W_out, 1, N); init_bias(&net->b_out, 1); }
 
 
 // --- 4. Forward Pass Functions (ReLU Activation) ---
 
-// Returns the network's output (1x1 float)
 float forward_s1(NetS1 *net, const float *input) {
     mat_vec_mul(net->W_feat, N, INPUT_DIM, input, net->h1);
     vec_add(net->h1, net->b_feat, N, net->h1);
-    for (int i = 0; i < N; i++) net->h1[i] = ReLU(net->h1[i]); // CHANGED: ReLU Activation
+    for (int i = 0; i < N; i++) net->h1[i] = ReLU(net->h1[i]);
 
     mat_vec_mul(net->W_inv, N, N, net->h1, net->h2);
     vec_add(net->h2, net->b_inv, N, net->h2);
@@ -269,7 +266,7 @@ float forward_s1(NetS1 *net, const float *input) {
 float forward_s2(NetS2 *net, const float *input) {
     mat_vec_mul(net->W_feat, N, 5, input, net->h1);
     vec_add(net->h1, net->b_feat, N, net->h1);
-    for (int i = 0; i < N; i++) net->h1[i] = ReLU(net->h1[i]); // CHANGED: ReLU Activation
+    for (int i = 0; i < N; i++) net->h1[i] = ReLU(net->h1[i]);
 
     mat_vec_mul(net->W_inv, N, N, net->h1, net->h2);
     vec_add(net->h2, net->b_inv, N, net->h2);
@@ -285,7 +282,7 @@ float forward_s2(NetS2 *net, const float *input) {
 float forward_s3(NetS3 *net, const float *input) {
     mat_vec_mul(net->W_feat, N, 3, input, net->h1);
     vec_add(net->h1, net->b_feat, N, net->h1);
-    for (int i = 0; i < N; i++) net->h1[i] = ReLU(net->h1[i]); // CHANGED: ReLU Activation
+    for (int i = 0; i < N; i++) net->h1[i] = ReLU(net->h1[i]);
 
     mat_vec_mul(net->W_inv, N, N, net->h1, net->h2);
     vec_add(net->h2, net->b_inv, N, net->h2);
@@ -301,7 +298,7 @@ float forward_s3(NetS3 *net, const float *input) {
 float forward_s4(NetS4 *net, const float *input) {
     mat_vec_mul(net->W_feat, N, 2, input, net->h1);
     vec_add(net->h1, net->b_feat, N, net->h1);
-    for (int i = 0; i < N; i++) net->h1[i] = ReLU(net->h1[i]); // CHANGED: ReLU Activation
+    for (int i = 0; i < N; i++) net->h1[i] = ReLU(net->h1[i]);
 
     mat_vec_mul(net->W_inv, N, N, net->h1, net->h2);
     vec_add(net->h2, net->b_inv, N, net->h2);
@@ -315,64 +312,9 @@ float forward_s4(NetS4 *net, const float *input) {
 }
 
 
-// --- 5. Backpropagation Functions (ReLU Derivative) ---
+// --- 5. Backpropagation Functions (ReLU Derivative & Clipping) ---
 
 void backward_s4(NetS4 *net, const float *input, float delta_out, float *delta_input) {
-    float grad_W_out[N];
-    float delta_h2[N];
-    for (int i = 0; i < N; i++) {
-        grad_W_out[i] = delta_out * net->h2[i];
-        delta_h2[i] = delta_out * net->W_out[i];
-    }
-    float grad_b_out = delta_out;
-
-    // Backprop L2 (Invertible Core)
-    float grad_W_inv[N * N];
-    for (int i = 0; i < N; i++) {
-        for (int j = 0; j < N; j++) {
-            grad_W_inv[i * N + j] = delta_h2[i] * net->h1[j];
-        }
-    }
-    float delta_h1[N]; // dLoss/d(h1_pre_activation)
-    for (int i = 0; i < N; i++) {
-        delta_h1[i] = 0.0f;
-        for (int j = 0; j < N; j++) {
-            delta_h1[i] += delta_h2[j] * net->W_inv[j * N + i];
-        }
-    }
-    float *grad_b_inv = delta_h2;
-
-    // Backprop L1 (dLoss/d(h1_pre_activation) * ReLU')
-    for (int i = 0; i < N; i++) {
-        delta_h1[i] *= (net->h1[i] > 0.0f ? 1.0f : 0.0f); // CHANGED: ReLU prime
-    }
-    float grad_W_feat[N * 2];
-    for (int i = 0; i < N; i++) {
-        for (int j = 0; j < 2; j++) {
-            grad_W_feat[i * 2 + j] = delta_h1[i] * input[j];
-        }
-    }
-    float *grad_b_feat = delta_h1;
-
-    // Calculate delta_input (size 2) for the previous stage (S3 outputs)
-    for (int i = 0; i < 2; i++) {
-        delta_input[i] = 0.0f;
-        for (int j = 0; j < N; j++) {
-            delta_input[i] += delta_h1[j] * net->W_feat[j * 2 + i];
-        }
-    }
-
-    // Update Weights
-    for (int i = 0; i < N; i++) net->W_out[i] -= LEARNING_RATE * grad_W_out[i];
-    net->b_out -= LEARNING_RATE * grad_b_out;
-    for (int i = 0; i < N * N; i++) net->W_inv[i] -= LEARNING_RATE * grad_W_inv[i];
-    for (int i = 0; i < N; i++) net->b_inv[i] -= LEARNING_RATE * grad_b_inv[i];
-    for (int i = 0; i < N * 2; i++) net->W_feat[i] -= LEARNING_RATE * grad_W_feat[i];
-    for (int i = 0; i < N; i++) net->b_feat[i] -= LEARNING_RATE * grad_b_feat[i];
-}
-
-
-void backward_s3(NetS3 *net, const float *input, float delta_out, float *delta_input) {
     float grad_W_out[N];
     float delta_h2[N];
     for (int i = 0; i < N; i++) {
@@ -397,31 +339,72 @@ void backward_s3(NetS3 *net, const float *input, float delta_out, float *delta_i
     float *grad_b_inv = delta_h2;
 
     for (int i = 0; i < N; i++) {
-        delta_h1[i] *= (net->h1[i] > 0.0f ? 1.0f : 0.0f); // CHANGED: ReLU prime
+        delta_h1[i] *= (net->h1[i] > 0.0f ? 1.0f : 0.0f); // ReLU prime
     }
-    float grad_W_feat[N * 3];
+    float grad_W_feat[N * 2];
     for (int i = 0; i < N; i++) {
-        for (int j = 0; j < 3; j++) {
-            grad_W_feat[i * 3 + j] = delta_h1[i] * input[j];
+        for (int j = 0; j < 2; j++) {
+            grad_W_feat[i * 2 + j] = delta_h1[i] * input[j];
         }
     }
     float *grad_b_feat = delta_h1;
 
-    // Calculate delta_input (size 3) for the previous stage (S2 outputs)
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 2; i++) {
         delta_input[i] = 0.0f;
         for (int j = 0; j < N; j++) {
-            delta_input[i] += delta_h1[j] * net->W_feat[j * 3 + i];
+            delta_input[i] += delta_h1[j] * net->W_feat[j * 2 + i];
         }
     }
 
-    // Update Weights
-    for (int i = 0; i < N; i++) net->W_out[i] -= LEARNING_RATE * grad_W_out[i];
-    net->b_out -= LEARNING_RATE * grad_b_out;
-    for (int i = 0; i < N * N; i++) net->W_inv[i] -= LEARNING_RATE * grad_W_inv[i];
-    for (int i = 0; i < N; i++) net->b_inv[i] -= LEARNING_RATE * grad_b_inv[i];
-    for (int i = 0; i < N * 3; i++) net->W_feat[i] -= LEARNING_RATE * grad_W_feat[i];
-    for (int i = 0; i < N; i++) net->b_feat[i] -= LEARNING_RATE * grad_b_feat[i];
+    // Update Weights with Clipping
+    for (int i = 0; i < N; i++) net->W_out[i] -= LEARNING_RATE * clip_gradient(grad_W_out[i]);
+    net->b_out -= LEARNING_RATE * clip_gradient(grad_b_out);
+    for (int i = 0; i < N * N; i++) net->W_inv[i] -= LEARNING_RATE * clip_gradient(grad_W_inv[i]);
+    for (int i = 0; i < N; i++) net->b_inv[i] -= LEARNING_RATE * clip_gradient(grad_b_inv[i]);
+    for (int i = 0; i < N * 2; i++) net->W_feat[i] -= LEARNING_RATE * clip_gradient(grad_W_feat[i]);
+    for (int i = 0; i < N; i++) net->b_feat[i] -= LEARNING_RATE * clip_gradient(grad_b_feat[i]);
+}
+
+
+void backward_s3(NetS3 *net, const float *input, float delta_out, float *delta_input) {
+    float grad_W_out[N];
+    float delta_h2[N];
+    for (int i = 0; i < N; i++) {
+        grad_W_out[i] = delta_out * net->h2[i];
+        delta_h2[i] = delta_out * net->W_out[i];
+    }
+    float grad_b_out = delta_out;
+
+    float grad_W_inv[N * N];
+    for (int i = 0; i < N * N; i++) grad_W_inv[i] = delta_h2[i / N] * net->h1[i % N];
+
+    float delta_h1[N];
+    for (int i = 0; i < N; i++) {
+        delta_h1[i] = 0.0f;
+        for (int j = 0; j < N; j++) delta_h1[i] += delta_h2[j] * net->W_inv[j * N + i];
+    }
+    float *grad_b_inv = delta_h2;
+
+    for (int i = 0; i < N; i++) delta_h1[i] *= (net->h1[i] > 0.0f ? 1.0f : 0.0f); // ReLU prime
+
+    float grad_W_feat[N * 3];
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < 3; j++) grad_W_feat[i * 3 + j] = delta_h1[i] * input[j];
+    }
+    float *grad_b_feat = delta_h1;
+
+    for (int i = 0; i < 3; i++) {
+        delta_input[i] = 0.0f;
+        for (int j = 0; j < N; j++) delta_input[i] += delta_h1[j] * net->W_feat[j * 3 + i];
+    }
+
+    // Update Weights with Clipping
+    for (int i = 0; i < N; i++) net->W_out[i] -= LEARNING_RATE * clip_gradient(grad_W_out[i]);
+    net->b_out -= LEARNING_RATE * clip_gradient(grad_b_out);
+    for (int i = 0; i < N * N; i++) net->W_inv[i] -= LEARNING_RATE * clip_gradient(grad_W_inv[i]);
+    for (int i = 0; i < N; i++) net->b_inv[i] -= LEARNING_RATE * clip_gradient(grad_b_inv[i]);
+    for (int i = 0; i < N * 3; i++) net->W_feat[i] -= LEARNING_RATE * clip_gradient(grad_W_feat[i]);
+    for (int i = 0; i < N; i++) net->b_feat[i] -= LEARNING_RATE * clip_gradient(grad_b_feat[i]);
 }
 
 
@@ -437,7 +420,7 @@ void backward_s2(NetS2 *net, const float *input, float delta_out, float *delta_i
     for (int i = 0; i < N; i++) { delta_h1[i] = 0.0f; for (int j = 0; j < N; j++) delta_h1[i] += delta_h2[j] * net->W_inv[j * N + i]; }
     float *grad_b_inv = delta_h2;
 
-    for (int i = 0; i < N; i++) delta_h1[i] *= (net->h1[i] > 0.0f ? 1.0f : 0.0f); // CHANGED: ReLU prime
+    for (int i = 0; i < N; i++) delta_h1[i] *= (net->h1[i] > 0.0f ? 1.0f : 0.0f); // ReLU prime
 
     float grad_W_feat[N * 5];
     for (int i = 0; i < N; i++) { for (int j = 0; j < 5; j++) grad_W_feat[i * 5 + j] = delta_h1[i] * input[j]; }
@@ -448,12 +431,13 @@ void backward_s2(NetS2 *net, const float *input, float delta_out, float *delta_i
         for (int j = 0; j < N; j++) delta_input[i] += delta_h1[j] * net->W_feat[j * 5 + i];
     }
 
-    for (int i = 0; i < N; i++) net->W_out[i] -= LEARNING_RATE * grad_W_out[i];
-    net->b_out -= LEARNING_RATE * grad_b_out;
-    for (int i = 0; i < N * N; i++) net->W_inv[i] -= LEARNING_RATE * grad_W_inv[i];
-    for (int i = 0; i < N; i++) net->b_inv[i] -= LEARNING_RATE * grad_b_inv[i];
-    for (int i = 0; i < N * 5; i++) net->W_feat[i] -= LEARNING_RATE * grad_W_feat[i];
-    for (int i = 0; i < N; i++) net->b_feat[i] -= LEARNING_RATE * grad_b_feat[i];
+    // Update Weights with Clipping
+    for (int i = 0; i < N; i++) net->W_out[i] -= LEARNING_RATE * clip_gradient(grad_W_out[i]);
+    net->b_out -= LEARNING_RATE * clip_gradient(grad_b_out);
+    for (int i = 0; i < N * N; i++) net->W_inv[i] -= LEARNING_RATE * clip_gradient(grad_W_inv[i]);
+    for (int i = 0; i < N; i++) net->b_inv[i] -= LEARNING_RATE * clip_gradient(grad_b_inv[i]);
+    for (int i = 0; i < N * 5; i++) net->W_feat[i] -= LEARNING_RATE * clip_gradient(grad_W_feat[i]);
+    for (int i = 0; i < N; i++) net->b_feat[i] -= LEARNING_RATE * clip_gradient(grad_b_feat[i]);
 }
 
 void backward_s1(NetS1 *net, const float *input, float delta_out) {
@@ -468,18 +452,19 @@ void backward_s1(NetS1 *net, const float *input, float delta_out) {
     for (int i = 0; i < N; i++) { delta_h1[i] = 0.0f; for (int j = 0; j < N; j++) delta_h1[i] += delta_h2[j] * net->W_inv[j * N + i]; }
     float *grad_b_inv = delta_h2;
 
-    for (int i = 0; i < N; i++) delta_h1[i] *= (net->h1[i] > 0.0f ? 1.0f : 0.0f); // CHANGED: ReLU prime
+    for (int i = 0; i < N; i++) delta_h1[i] *= (net->h1[i] > 0.0f ? 1.0f : 0.0f); // ReLU prime
 
     float grad_W_feat[N * INPUT_DIM];
     for (int i = 0; i < N; i++) { for (int j = 0; j < INPUT_DIM; j++) grad_W_feat[i * INPUT_DIM + j] = delta_h1[i] * input[j]; }
     float *grad_b_feat = delta_h1;
 
-    for (int i = 0; i < N; i++) net->W_out[i] -= LEARNING_RATE * grad_W_out[i];
-    net->b_out -= LEARNING_RATE * grad_b_out;
-    for (int i = 0; i < N * N; i++) net->W_inv[i] -= LEARNING_RATE * grad_W_inv[i];
-    for (int i = 0; i < N; i++) net->b_inv[i] -= LEARNING_RATE * grad_b_inv[i];
-    for (int i = 0; i < N * INPUT_DIM; i++) net->W_feat[i] -= LEARNING_RATE * grad_W_feat[i];
-    for (int i = 0; i < N; i++) net->b_feat[i] -= LEARNING_RATE * grad_b_feat[i];
+    // Update Weights with Clipping
+    for (int i = 0; i < N; i++) net->W_out[i] -= LEARNING_RATE * clip_gradient(grad_W_out[i]);
+    net->b_out -= LEARNING_RATE * clip_gradient(grad_b_out);
+    for (int i = 0; i < N * N; i++) net->W_inv[i] -= LEARNING_RATE * clip_gradient(grad_W_inv[i]);
+    for (int i = 0; i < N; i++) net->b_inv[i] -= LEARNING_RATE * clip_gradient(grad_b_inv[i]);
+    for (int i = 0; i < N * INPUT_DIM; i++) net->W_feat[i] -= LEARNING_RATE * clip_gradient(grad_W_feat[i]);
+    for (int i = 0; i < N; i++) net->b_feat[i] -= LEARNING_RATE * clip_gradient(grad_b_feat[i]);
 }
 
 
@@ -525,10 +510,11 @@ int main() {
     init_net_s4(&net_final);
 
     printf("Starting Cascaded Deep Ensemble Training (5->3->2->1 structure).)\n");
-    printf("--- NEW CONFIGURATION ---\n");
-    printf("Activation: ReLU (Replaced tanh to fix vanishing gradient)\n");
-    printf("Core Hidden Dimension (N): %d (Increased for capacity)\n", N);
-    printf("Learning Rate: %.2f (Increased)\n", LEARNING_RATE);
+    printf("--- NEW CONFIGURATION (Fixes for Zero Learning) ---\n");
+    printf("Initialization: He (Optimized for ReLU)\n");
+    printf("Gradient Update: Clipped (Max Step: %.2f) to ensure stability\n", GRADIENT_CLIP_MAX);
+    printf("Core Hidden Dimension (N): %d\n", N);
+    printf("Learning Rate: %.2f (Aggressive)\n", LEARNING_RATE);
     printf("-------------------------\n");
     printf("Training for %d epochs.\n", EPOCHS);
 
@@ -536,7 +522,7 @@ int main() {
     float target;
     float avg_loss = 0.0f;
 
-    // Buffers for cascading data flow (N is 20, but sizes below are determined by ensemble structure)
+    // Buffers for cascading data flow
     float output_s1[5], output_s2[3], output_s3[2];
     float delta_out_s3[2];
     float delta_s3_in[3];
@@ -564,14 +550,10 @@ int main() {
         avg_loss = avg_loss * 0.99f + loss * 0.01f;
 
         // --- 4. Cascading Backward Pass ---
-
-        // Final Layer Error (dLoss/d(z_out))
         float delta_final = (final_output - target) * final_output * (1.0f - final_output);
-
-        // STAGE 4 BACKPROP
+        
         backward_s4(&net_final, output_s3, delta_final, delta_out_s3); 
         
-        // STAGE 3 BACKPROP
         memset(delta_s3_in, 0, sizeof(delta_s3_in));
         for(int i = 0; i < 2; i++) {
             float current_delta_input[3];
@@ -579,7 +561,6 @@ int main() {
             for(int j = 0; j < 3; j++) delta_s3_in[j] += current_delta_input[j];
         }
 
-        // STAGE 2 BACKPROP
         memset(delta_s2_in, 0, sizeof(delta_s2_in));
         for(int i = 0; i < 3; i++) {
             float current_delta_input[5];
@@ -587,21 +568,19 @@ int main() {
             for(int j = 0; j < 5; j++) delta_s2_in[j] += current_delta_input[j];
         }
 
-        // STAGE 1 BACKPROP
         for(int i = 0; i < 5; i++) {
             backward_s1(&nets1[i], input_image, delta_s2_in[i]);
         }
 
 
         // --- 5. Periodic O(N^3) Analysis and Reporting ---
-        if (epoch % (EPOCHS / 10) == 0) { // Reports every 15,000 epochs
+        if (epoch % (EPOCHS / 10) == 0) {
             printf("\n--- Epoch %d/%d ---\n", epoch, EPOCHS);
             printf("Target: %.0f | Final Output: %.4f | Smooth Loss: %.6f\n", target, final_output, avg_loss);
 
-            // Analysis on the final stage's N x N Invertible Matrix
             printf("--- High-Demand Matrix Analysis (Net S4, O(N^3) on %d x %d) ---\n", N, N);
 
-            // A. Inverse and Determinant (Gaussian-Jordan Elimination: O(N^3))
+            // A. Inverse and Determinant
             memcpy(W_inv_copy, net_final.W_inv, N * N * sizeof(float));
             float det = inverse_and_determinant(W_inv_copy, W_inverse); 
 
@@ -612,7 +591,7 @@ int main() {
                 printf("   [INVERSE] W_inv is invertible. (Top-Left Element of W_inv: %.4f)\n", W_inverse[0]);
             }
 
-            // B. Dominant Eigenvalue (Power Iteration: O(N^2) per iteration)
+            // B. Dominant Eigenvalue
             power_iteration(net_final.W_inv, &dominant_eigenvalue, dominant_eigenvector);
 
             printf("   [EIGENVALUE] Dominant $\\lambda$: %.6f\n", dominant_eigenvalue);
