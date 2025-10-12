@@ -5,28 +5,28 @@
 #include <string.h>
 
 #define INPUT_DIM 1         // Single normalized integer input
-#define HIDDEN_DIM 4        // N=4 hidden neurons
+#define HIDDEN_DIM 12       // **INCREASED:** More neurons needed to model the 9 separate binary functions
 #define OUTPUT_DIM 9        // 9 binary outputs as requested (bits 0-8)
 #define MAX_INT_VALUE 127   // Range is [0, 127]
 
-#define EPOCHS 300000       // Increased epochs for convergence on numerical task
+#define EPOCHS 500000       // **INCREASED:** More epochs for the larger network to converge
 #define GRADIENT_CLIP_MAX 0.1f 
-#define LEARNING_RATE 0.05f 
-#define L2_REG_LAMBDA 0.0001f 
+#define LEARNING_RATE 0.08f // **ADJUSTED:** Slightly higher learning rate
+#define L2_REG_LAMBDA 0.00001f // **ADJUSTED:** Lower L2 to allow complex weight solutions
 
 // --- 1. Network Structure ---
 
 typedef struct { 
-    // W1: HIDDEN_DIM x INPUT_DIM (4x1)
+    // W1: HIDDEN_DIM x INPUT_DIM (12x1)
     float W1[HIDDEN_DIM * INPUT_DIM]; 
-    float b1[HIDDEN_DIM];             // 4x1
-    // W2: OUTPUT_DIM x HIDDEN_DIM (9x4)
+    float b1[HIDDEN_DIM];             // 12x1
+    // W2: OUTPUT_DIM x HIDDEN_DIM (9x12)
     float W2[OUTPUT_DIM * HIDDEN_DIM]; 
     float b2[OUTPUT_DIM];             // 9x1
     
     // Activation storage
-    float h1_pre[HIDDEN_DIM];         // 4x1 pre-ReLU
-    float h1_act[HIDDEN_DIM];         // 4x1 ReLU output
+    float h1_pre[HIDDEN_DIM];         // 12x1 pre-ReLU
+    float h1_act[HIDDEN_DIM];         // 12x1 ReLU output
 } NetBinary;
 
 
@@ -175,13 +175,13 @@ void run_test(NetBinary *net) {
         // 3. Print results
         printf("%-2d| ", I);
         
-        // Print Target (LSB to MSB)
+        // Print Target (MSB to LSB) - changed display order to match standard binary notation (e.g., 127 is 001111111)
         for (int k = OUTPUT_DIM - 1; k >= 0; k--) {
             printf("%d", (int)target[k]);
         }
         printf(" | ");
 
-        // Print Prediction (LSB to MSB)
+        // Print Prediction (MSB to LSB)
         int bits_correct = 0;
         for (int k = OUTPUT_DIM - 1; k >= 0; k--) {
             int predicted_bit = (output[k] > 0.5f) ? 1 : 0;
@@ -220,7 +220,7 @@ int main() {
     float avg_loss = 0.0f;
     float current_loss;
 
-    printf("Starting Training for %d -> 4 -> %d Binary Converter...\n", INPUT_DIM, OUTPUT_DIM);
+    printf("Starting Training for %d -> %d -> %d Binary Converter...\n", INPUT_DIM, HIDDEN_DIM, OUTPUT_DIM);
 
     for (int epoch = 1; epoch <= EPOCHS; epoch++) {
         int I = rand() % (MAX_INT_VALUE + 1); // Random integer in [0, 127]
@@ -231,7 +231,7 @@ int main() {
         current_loss = backward_constrained(&net, input, target, LEARNING_RATE);
         avg_loss = avg_loss * 0.999f + current_loss * 0.001f;
         
-        if (epoch % 30000 == 0) {
+        if (epoch % 50000 == 0) { // Increased interval due to more epochs
             printf("[Epoch %d] Average Loss: %.8f\n", epoch, avg_loss);
         }
     }
