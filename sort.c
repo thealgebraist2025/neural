@@ -104,6 +104,8 @@ void backward_constrained(NetConstrained *net, const float *input, float delta_o
 // --- 4. Data Generation for Training ---
 
 void generate_training_image(float *img, int is_present, int is_rotated) {
+    // Training image generation logic (omitted for brevity, identical to previous run)
+    // ...
     for (int i = 0; i < INPUT_DIM; i++) img[i] = 0.0f;
 
     if (is_present) {
@@ -133,7 +135,7 @@ void generate_training_image(float *img, int is_present, int is_rotated) {
                 if (r_prime >= -half_h && r_prime <= half_h && 
                     c_prime >= -half_w && c_prime <= half_w) 
                 {
-                    img[r * IMAGE_SIZE + c] = 1.0f; // Simplified solid rectangle for speed
+                    img[r * IMAGE_SIZE + c] = 1.0f;
                 }
             }
         }
@@ -174,7 +176,9 @@ void generate_test_rect_3x3(float *img) {
     int center = IMAGE_SIZE / 2;
     for (int r = center - 1; r <= center + 1; r++) {
         for (int c = center - 1; c <= center + 1; c++) {
-            img[r * IMAGE_SIZE + c] = 1.0f;
+            if (r >= 0 && r < IMAGE_SIZE && c >= 0 && c < IMAGE_SIZE) {
+                 img[r * IMAGE_SIZE + c] = 1.0f;
+            }
         }
     }
 }
@@ -182,20 +186,21 @@ void generate_test_rect_3x3(float *img) {
 void generate_test_noisy_blank(float *img) {
     for (int i = 0; i < INPUT_DIM; i++) img[i] = 0.0f;
     
-    // Add 20% consistent noise
-    for (int i = 0; i < INPUT_DIM * 0.2; i++) {
-        img[i * 5] = 0.2f; // Deterministic scattered noise pattern
+    // Add deterministic scattered noise pattern (20% of pixels)
+    int noise_pixels = (int)(INPUT_DIM * 0.20f);
+    for (int i = 0; i < noise_pixels; i++) {
+        img[i * 5] = 0.2f; // Use index 0, 5, 10, ... as a deterministic pattern
     }
 }
 
 void generate_test_rotated(float *img) {
     for (int i = 0; i < INPUT_DIM; i++) img[i] = 0.0f;
     
-    float center_r = 4.5f; // Center of 10x10 grid
+    float center_r = 4.5f; 
     float center_c = 4.5f;
     int width = 4;
     int height = 2;
-    float angle = 20.0f * PI / 180.0f; // 20 degrees rotation
+    float angle = 20.0f * PI / 180.0f; 
     float cos_a = cosf(angle);
     float sin_a = sinf(angle);
 
@@ -222,8 +227,9 @@ void generate_test_rotated(float *img) {
 
 // --- 6. Visualization Utilities ---
 
-void print_ascii_image(const float *data, float min_val, float max_val, const char *title, int feature_index, float b1_val, float w2_val) {
-    printf("\n%s (Feature %d / Bias: %.4f / Output Weight: %.4f):\n", title, feature_index, b1_val, w2_val);
+// Prints an ASCII map where values are scaled between 0-9
+void print_ascii_map(const float *data, float min_val, float max_val, const char *title) {
+    printf("\n%s:\n", title);
     
     float range = max_val - min_val;
     if (range < 1e-6) range = 1.0f; 
@@ -232,12 +238,25 @@ void print_ascii_image(const float *data, float min_val, float max_val, const ch
         for (int c = 0; c < IMAGE_SIZE; c++) {
             float val = data[r * IMAGE_SIZE + c];
             
-            // Normalize value to 0-1, then scale to 0-9
             int scaled_val = (int)roundf(((val - min_val) / range) * 9.0f);
             
             if (scaled_val < 0) scaled_val = 0;
             if (scaled_val > 9) scaled_val = 9;
 
+            printf("%d ", scaled_val);
+        }
+        printf("\n");
+    }
+}
+
+// Prints the raw input image (scaled 0-9, assumes max is 1.0)
+void print_input_image_ascii(const float *data, const char *title) {
+    printf("\n--- INPUT IMAGE: %s ---\n", title);
+    
+    for (int r = 0; r < IMAGE_SIZE; r++) {
+        for (int c = 0; c < IMAGE_SIZE; c++) {
+            int scaled_val = (int)roundf(data[r * IMAGE_SIZE + c] * 9.0f);
+            if (scaled_val > 9) scaled_val = 9;
             printf("%d ", scaled_val);
         }
         printf("\n");
@@ -255,16 +274,53 @@ void visualize_features(const NetConstrained *net) {
         if (net->W1[i] > global_max) global_max = net->W1[i];
     }
     
-    printf("\n\n---------------------------------------------------------------------------\n");
-    printf("CONSTRAINED/L2 FEATURE MAPS (N=%d)\n", N_eff);
-    printf("Weights normalized from global_min=%.4f to global_max=%.4f\n", global_min, global_max);
-    printf("---------------------------------------------------------------------------\n");
+    printf("\n\n===========================================================================\n");
+    printf("CONSTRAINED/L2 LEARNED FEATURE MAPS (N=%d)\n", N_eff);
+    printf("W1 Weights normalized from global_min=%.4f to global_max=%.4f\n", global_min, global_max);
+    printf("===========================================================================\n");
 
     for (int i = 0; i < N_eff; i++) {
-        char title[50];
-        snprintf(title, sizeof(title), "Feature %d (Input Weights of Neuron %d)", i + 1, i + 1);
-        print_ascii_image(&net->W1[i * INPUT_DIM], global_min, global_max, title, i + 1, net->b1[i], net->W2[i]);
+        char title[80];
+        snprintf(title, sizeof(title), "FEATURE %d (W2 Output Weight: %.4f | Bias: %.4f)", i + 1, net->W2[i], net->b1[i]);
+        print_ascii_map(&net->W1[i * INPUT_DIM], global_min, global_max, title);
     }
+}
+
+void analyze_single_test_case(const NetConstrained *net, const float *input_img, const char *title) {
+    float weighted_activation_map[INPUT_DIM];
+    float h_pre[N_VISUALIZE];
+    int N_eff = N_VISUALIZE;
+
+    print_input_image_ascii(input_img, title);
+    
+    // Calculate full forward pass to get final result
+    float final_output = forward_network(net, input_img, N_eff);
+
+    printf("\n--- FEATURE ACTIVATION MAPS & SUMS ---\n");
+    for (int i = 0; i < N_eff; i++) {
+        float map_min = 0.0f;
+        float map_max = 0.0f;
+        
+        // Calculate W1[i] * input (element-wise product)
+        for (int j = 0; j < INPUT_DIM; j++) {
+            weighted_activation_map[j] = net->W1[i * INPUT_DIM + j] * input_img[j];
+            if (weighted_activation_map[j] < map_min) map_min = weighted_activation_map[j];
+            if (weighted_activation_map[j] > map_max) map_max = weighted_activation_map[j];
+        }
+
+        char map_title[100];
+        snprintf(map_title, sizeof(map_title), 
+                 "Weighted Activation Map (Feature %d / Min %.4f to Max %.4f)", 
+                 i + 1, map_min, map_max);
+        
+        print_ascii_map(weighted_activation_map, map_min, map_max, map_title);
+        
+        // Print the pre-ReLU, pre-sigmoid sum for the feature (h_pre is calculated in forward_network)
+        printf(" -> Pre-ReLU Sum (W1.x + b1): %.4f\n", net->h1_pre[i]);
+    }
+    printf("--------------------------------------\n");
+    printf("FINAL NETWORK OUTPUT: %.4f\n", final_output);
+    printf("===========================================================================\n");
 }
 
 
@@ -272,43 +328,15 @@ void analyze_activation_patterns(const NetConstrained *net) {
     float rect_img[INPUT_DIM];
     float noisy_img[INPUT_DIM];
     float rotated_img[INPUT_DIM];
-    float h_pre[N_VISUALIZE];
 
     generate_test_rect_3x3(rect_img);
+    analyze_single_test_case(net, rect_img, "3x3 Rectangle (Perfect Match)");
+
     generate_test_noisy_blank(noisy_img);
+    analyze_single_test_case(net, noisy_img, "Noisy Blank (Absent/Distractor Case)");
+
     generate_test_rotated(rotated_img);
-
-    printf("\n\n---------------------------------------------------------------------------\n");
-    printf("FEATURE ACTIVATION ANALYSIS (h_pre = W1 * x + b1)\n");
-    printf("---------------------------------------------------------------------------\n");
-
-    printf("Neuron (W2 Weight) | Activation for 3x3 Rect | Activation for Noisy Blank | Activation for Rotated Rect |\n");
-    printf("-------------------|-------------------------|----------------------------|-----------------------------|\n");
-
-    // 1. 3x3 Rectangle Activation
-    mat_vec_mul(net->W1, N_VISUALIZE, INPUT_DIM, rect_img, h_pre); 
-    for(int i=0; i<N_VISUALIZE; i++) h_pre[i] += net->b1[i];
-    
-    printf("3x3 Rect Input:");
-    for(int i=0; i<N_VISUALIZE; i++) printf(" (F%d) %.4f ", i+1, h_pre[i]);
-    printf("\n");
-
-    // 2. Noisy Blank Activation
-    mat_vec_mul(net->W1, N_VISUALIZE, INPUT_DIM, noisy_img, h_pre); 
-    for(int i=0; i<N_VISUALIZE; i++) h_pre[i] += net->b1[i];
-    
-    printf("Noisy Blank Input:");
-    for(int i=0; i<N_VISUALIZE; i++) printf(" (F%d) %.4f ", i+1, h_pre[i]);
-    printf("\n");
-
-    // 3. Rotated Rectangle Activation
-    mat_vec_mul(net->W1, N_VISUALIZE, INPUT_DIM, rotated_img, h_pre); 
-    for(int i=0; i<N_VISUALIZE; i++) h_pre[i] += net->b1[i];
-    
-    printf("Rotated Rect Input:");
-    for(int i=0; i<N_VISUALIZE; i++) printf(" (F%d) %.4f ", i+1, h_pre[i]);
-    printf("\n");
-    printf("---------------------------------------------------------------------------\n");
+    analyze_single_test_case(net, rotated_img, "Rotated Rectangle (Generalization Test)");
 }
 
 
