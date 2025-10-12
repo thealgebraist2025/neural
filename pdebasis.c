@@ -7,10 +7,10 @@
 // --- Configuration ---
 #define N_SAMPLES 100    // Number of images in the dataset
 #define D_SIZE 256       // Dimension of the image vector (16x16)
-#define EPSILON 500.0    // Max Euclidean distance for connection
-#define SIGMA 100.0      // Controls the weight decay
-#define MAX_POWER_ITER 5000 // Iterations for Power Method
-#define PI_TOLERANCE 1.0e-7 // Power Iteration convergence tolerance
+#define EPSILON 2500.0   // FIX: INCREASED for denser graph
+#define SIGMA 500.0      // FIX: INCREASED for smoother weight decay
+#define MAX_POWER_ITER 5000 
+#define PI_TOLERANCE 1.0e-7 
 // ---------------------
 
 // Global matrices
@@ -76,7 +76,7 @@ void construct_adjacency_matrix() {
     double epsilon_sq = EPSILON * EPSILON;
     double sigma_sq = SIGMA * SIGMA;
 
-    printf("Constructing Adjacency Matrix A...\n");
+    printf("Constructing Adjacency Matrix A with EPSILON=%.0f...\n", EPSILON);
 
     for (i = 0; i < N_SAMPLES; i++) {
         for (j = i + 1; j < N_SAMPLES; j++) {
@@ -166,7 +166,7 @@ double power_iteration() {
     double f_old[N_SAMPLES];
     double f_new[N_SAMPLES];
     
-    // Robust Initialization
+    // Robust Initialization (Wider Range)
     for (iter = 0; iter < N_SAMPLES; iter++) {
         f_old[iter] = (double)(rand() % 200 - 100) / 100.0; 
     }
@@ -234,9 +234,8 @@ void calculate_intrinsic_distance(int start_node) {
 
         // Update dist value of the adjacent nodes
         for (int v = 0; v < N_SAMPLES; v++) {
-            // Check for edge and ensure not comparing to self
             if (visited[v] == 0 && A[u][v] > DBL_EPSILON) { 
-                // Cost is the inverse of similarity (smaller similarity means longer path)
+                // Cost is the inverse of similarity
                 double edge_cost = 1.0 / A[u][v]; 
                 if (dist[u] != DBL_MAX && dist[u] + edge_cost < dist[v]) {
                     dist[v] = dist[u] + edge_cost;
@@ -286,7 +285,7 @@ int main() {
     printf("Node 0 to Node 50: %.2f\n", intrinsic_dist[0][50]);
     printf("Node 50 to Node 99: %.2f\n", intrinsic_dist[50][99]);
     
-    printf("\nNote: The Eigenvector (basis) and Intrinsic Distance are derived from the same graph structure, demonstrating the interdependence of metric and basis in manifold learning.\n");
+    printf("\nNote: The increased EPSILON and SIGMA should ensure graph connectivity and stable convergence.\n");
     
     return 0;
 }
