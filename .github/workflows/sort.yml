@@ -12,24 +12,7 @@ jobs:
       uses: actions/checkout@v2
 
     - name: Build with gcc
-      run: gcc -O0 -g -fsanitize=address -msse4.1 -std=c11 sort.c -lm -o sort
-
-    - name: Install LLDB
-      run: sudo apt-get install -y lldb valgrind
-
-    - name: Create LLDB Debug Command File
-      run: |
-         echo "run" > debug_commands.lldb
-         echo "bt" >> debug_commands.lldb
-         echo "quit" >> debug_commands.lldb
-         cat debug_commands.lldb
-  
-    - name: Run Executable Under LLDB
-      run: |
-         echo "--- Starting LLDB Analysis ---"
-         lldb --batch -s debug_commands.lldb ./sort
-         echo "--- LLDB Analysis Complete ---"
-      continue-on-error: true 
+      run: clang -O0 -g -fsanitize=address -msse4.1 -std=c11 sort.c -lm -o sort
 
     - name: Run the program
       run: ./sort 
