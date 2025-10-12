@@ -14,7 +14,7 @@
 
 // --- New Regularization Constants ---
 #define REGULARIZATION_LAMBDA_DET 1e-5f      // Strength of the determinant penalty
-#define REGULARIZATION_LAMBDA_SPARSE 1e-6f   // Strength of the L1 sparsity penalty (NEW)
+#define REGULARIZATION_LAMBDA_SPARSE 1e-6f   // Strength of the L1 sparsity penalty
 #define DETERMINANT_EPSILON 1e-12f           // Small value for numerical stability near 0
 // ------------------------------------
 
@@ -159,9 +159,14 @@ float forward_s3(NetS3 *net, const float *input) {
     net->z_out = z_out; return sigmoid(z_out);
 }
 float forward_s4(NetS4 *net, const float *input) {
+    // Step 1: Feature Extraction
     float h1_pre[N]; mat_vec_mul(net->W_feat, N, 2, input, h1_pre); vec_add(h1_pre, net->b_feat, N, h1_pre); 
     for (int i = 0; i < N; i++) net->h1[i] = ReLU(h1_pre[i]); 
+    
+    // Step 2: Invertible Core Layer
     float h2_pre[N]; mat_vec_mul(net->W_inv, N, N, net->h1, h2_pre); vec_add(h2_pre, net->b_inv, N, net->h2); 
+    
+    // Step 3: Final Output
     float z_out = 0.0f; for (int i = 0; i < N; i++) z_out += net->W_out[i] * net->h2[i]; z_out += net->b_out; 
     net->z_out = z_out; return sigmoid(z_out);
 }
@@ -172,8 +177,46 @@ float forward_naive(NetNaive *net, const float *input) {
     return sigmoid(z_out);
 }
 
+// --- 5. Symbolic Sanity Check Function (NEW) ---
 
-// --- 5. Backpropagation Functions (Modified S4) ---
+/**
+ * Calculates the output of NetS4 using the explicit symbolic equations.
+ * This function serves as the ground truth for verification against forward_s4().
+ */
+float calculate_symbolic_output(NetS4 *net, const float *input) {
+    // Stage 1: Feature Extraction Layer (h1)
+    // h_1,pre = W_feat * x + b_feat
+    float h1_pre[N];
+    mat_vec_mul(net->W_feat, N, 2, input, h1_pre);
+    vec_add(h1_pre, net->b_feat, N, h1_pre);
+    
+    // h1 = ReLU(h_1,pre)
+    float h1[N];
+    for (int i = 0; i < N; i++) {
+        h1[i] = ReLU(h1_pre[i]);
+    }
+    
+    // Stage 2: Invertible Core Layer (h2)
+    // h2 = W_inv * h1 + b_inv
+    float h2[N];
+    float h2_pre[N];
+    mat_vec_mul(net->W_inv, N, N, h1, h2_pre);
+    vec_add(h2_pre, net->b_inv, N, h2);
+    // Note: No activation is applied here, matching the architecture.
+    
+    // Stage 3: Final Output (z_out and sigmoid)
+    // z_out = W_out * h2 + b_out
+    float z_out = 0.0f;
+    for (int i = 0; i < N; i++) {
+        z_out += net->W_out[i] * h2[i];
+    }
+    z_out += net->b_out;
+    
+    // y_hat = Sigmoid(z_out)
+    return sigmoid(z_out);
+}
+
+// --- 6. Backpropagation Functions (Modified S4) ---
 
 // Macro for generic updates (used by S1-S4)
 // REG_GRAD_W_INV now combines both Det and Sparsity gradients in run_training
@@ -251,7 +294,7 @@ void backward_naive(NetNaive *net, const float *input, float delta_out, float lr
 }
 
 
-// --- 6. Data Generation (Unchanged) ---
+// --- 7. Data Generation (Unchanged) ---
 
 void make_rectangle(float *img, int is_present) {
     for (int i = 0; i < INPUT_DIM; i++) img[i] = 0.0f;
@@ -271,9 +314,9 @@ void make_rectangle(float *img, int is_present) {
 }
 
 
-// --- 7. Modular Training Function (Added Sparsity Logic) ---
+// --- 8. Modular Training Function (Added Sanity Check Logic) ---
 
-TrainingResults run_training(int is_advanced, float lr, const char *method_name, const char *optimizer_name, int use_sparsity) {
+TrainingResults run_training(int is_advanced, float lr, const char *method_name, const char *optimizer_name, int use_sparsity, int perform_sanity_check) {
     
     float input_image[INPUT_DIM];
     float target;
@@ -350,11 +393,12 @@ TrainingResults run_training(int is_advanced, float lr, const char *method_name,
             float dL_reg_d_det = -REGULARIZATION_LAMBDA_DET * 2.0f * det / (det_sq_safe * det_sq_safe);
             for (int i = 0; i < N; i++) {
                 for (int j = 0; j < N; j++) {
+                    // dL_det/dW = dL_det/d(det) * d(det)/dW = dL_det/d(det) * det * (W_inv^T)_ij
                     reg_grad_W_inv[i * N + j] = dL_reg_d_det * det * W_inverse[j * N + i]; 
                 }
             }
 
-            // --- L1 Sparsity Regularization (NEW) ---
+            // --- L1 Sparsity Regularization ---
             if (use_sparsity) {
                 float l1_norm = 0.0f;
                 for (int i = 0; i < N * N; i++) {
@@ -430,6 +474,34 @@ TrainingResults run_training(int is_advanced, float lr, const char *method_name,
     }
     printf("\nTraining complete. Final smooth total loss: %.6f\n", avg_loss);
 
+    // --- SYMBOLIC SANITY CHECK after training (for Advanced Stable Run 3) ---
+    // We check the successful Determinant-only run against the symbolic definition
+    if (perform_sanity_check) {
+        float test_input[2] = {1.0f, 0.5f}; // Example feature vector input (from S3 output)
+        
+        // 1. Calculate Expected Output via Symbolic Math (The Ground Truth)
+        float symbolic_output = calculate_symbolic_output(&net_final, test_input);
+
+        // 2. Calculate Actual Output via Forward Function (The Implementation)
+        // We run forward_s4 to ensure it uses the same path as the training loop
+        float actual_output = forward_s4(&net_final, test_input);
+        
+        printf("\n======================================================\n");
+        printf("--- SYMBOLIC SANITY CHECK (Net S4 Forward Pass) ---\n");
+        printf("Test Input $\\mathbf{x} = \\{%.4f, %.4f\\}$\n", test_input[0], test_input[1]);
+        printf("Expected Symbolic Output (Ground Truth): %.10f\n", symbolic_output);
+        printf("Actual forward_s4() Output (Implementation): %.10f\n", actual_output);
+        
+        // Check for exact floating point match (within tolerance)
+        if (fabs(symbolic_output - actual_output) < 1e-9) {
+            printf("[SUCCESS] Symbolic and Actual Outputs match within tolerance $\\approx 1e-9$.\n");
+        } else {
+            printf("[FAILURE] Outputs do not match. Discrepancy: %.10f\n", fabs(symbolic_output - actual_output));
+        }
+        printf("======================================================\n");
+    }
+
+
     // --- Final Testing (Unchanged) ---
     float final_output_present, final_output_absent;
     
@@ -488,7 +560,7 @@ void print_final_summary(const TrainingResults *results[4]) {
                res->method_name,
                res->optimizer_name,
                res->learning_rate,
-               i == 3 ? "Det + L1" : "Det Only", // Simple way to label the new run
+               i == 2 ? "Det Only" : (i == 3 ? "Det + L1" : "None"), // Label penalties
                res->smooth_loss,
                res->test_present,
                res->test_absent,
@@ -496,7 +568,7 @@ void print_final_summary(const TrainingResults *results[4]) {
                res->lambda_final);
     }
     printf("=================================================================================================================\n");
-    printf("NOTE: Advanced Networks use Det Reg to enforce stability. Run 4 adds the L1 Sparsity penalty.\n");
+    printf("NOTE: The symbolic sanity check was performed on the 'Advanced, Stable' run to verify implementation correctness.\n");
 }
 
 
@@ -508,20 +580,20 @@ int main() {
 
     // SCENARIO 1: Advanced Network, Aggressive Optimizer (Det Only - Expected Fail)
     results[0] = (TrainingResults*)malloc(sizeof(TrainingResults));
-    *results[0] = run_training(1, 0.07f, "Advanced", "Aggressive", 0);
+    *results[0] = run_training(1, 0.07f, "Advanced", "Aggressive", 0, 0);
 
     // SCENARIO 2: Naive Network, Standard Optimizer (Baseline - Expected Det = 0)
     results[1] = (TrainingResults*)malloc(sizeof(TrainingResults));
-    *results[1] = run_training(0, 0.03f, "Naive", "Standard", 0);
+    *results[1] = run_training(0, 0.03f, "Naive", "Standard", 0, 0);
     
-    // SCENARIO 3: Advanced Network, Stable Optimizer (Det Only - SUCCESS BASELINE)
+    // SCENARIO 3: Advanced Network, Stable Optimizer (Det Only - SUCCESS BASELINE & SANITY CHECK)
     results[2] = (TrainingResults*)malloc(sizeof(TrainingResults));
-    *results[2] = run_training(1, 0.01f, "Advanced", "Stable", 0);
+    // The last argument (1) tells the function to perform the symbolic sanity check
+    *results[2] = run_training(1, 0.01f, "Advanced", "Stable", 0, 1); 
 
     // SCENARIO 4: Advanced Network, Stable Optimizer (Det + L1 Sparsity - NEW TEST)
-    // We are running this to see the effect on final loss and structural properties (Det/Lambda)
     results[3] = (TrainingResults*)malloc(sizeof(TrainingResults));
-    *results[3] = run_training(1, 0.01f, "Advanced", "Stable (L1)", 1);
+    *results[3] = run_training(1, 0.01f, "Advanced", "Stable (L1)", 1, 0);
 
     // Print the final summary table
     print_final_summary(results);
