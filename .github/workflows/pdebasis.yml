@@ -1,0 +1,24 @@
+name: Build pde basis
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Build 
+      run: clang -O0 -g -fsanitize=address -msse4.1 -std=c11 pdebasis.c -lm -o pdebasis
+
+    - name: Run the program
+      run: ./pdebasis 
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4 # Use the latest version
+      with:
+        name: segmentation 
+        path: segmentation_output.png
