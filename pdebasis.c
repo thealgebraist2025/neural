@@ -16,9 +16,9 @@
 #define MAX_TIME_BASIS_SEC 120.0
 #define MAX_TIME_NN_SEC 120.0
 
-// Graph Parameters (TUNED for sparser graph)
-#define EPSILON 1500.0   
-#define SIGMA 250.0      
+// Graph Parameters (AGGRESSIVELY TUNED - NOW TESTING WITH CLEAN DATA)
+#define EPSILON 500.0    // Remains aggressively low
+#define SIGMA 100.0      // Remains aggressively low
 
 // Optimization Parameters
 #define MAX_POWER_ITER 5000 
@@ -83,16 +83,18 @@ void load_subset(int n_subset) {
     for (int k = 0; k < n_subset; ++k) {
         int rect_w = 4 + (rand() % 8); int rect_h = 4 + (rand() % 8);
         int start_x = rand() % (16 - rect_w); int start_y = rand() % (16 - rect_h);
-        for (int i = 0; i < D_SIZE; i++) { dataset[k][i] = (rand() % 100 < 5) ? (double)(rand() % 256) : 0.0; }
+        
+        // Initialize all pixels to 0 (black background)
+        for (int i = 0; i < D_SIZE; i++) { dataset[k][i] = 0.0; }
+        
         if (k < n_subset / 2) { // Rectangle
             for (int y = start_y; y < start_y + rect_h; ++y) {
                 for (int x = start_x; x < start_x + rect_w; ++x) {
                     dataset[k][16 * y + x] = 200.0 + (double)(rand() % 50);
                 }
             }
-            for (int i = 0; i < (int)(0.05 * D_SIZE); i++) { dataset[k][rand() % D_SIZE] = 0.0; }
             targets[k] = TARGET_RECTANGLE;
-        } else { // Non-Rectangle
+        } else { // Non-Rectangle (remains black background)
             targets[k] = TARGET_NO_RECTANGLE;
         }
     }
@@ -175,13 +177,13 @@ void estimate_nn_epochs() {
 // -----------------------------------------------------------------
 
 void load_mock_dataset() {
-    printf("Generating TRAINING dataset (%d images). BALANCED (50%% rect, 50%% non-rect).\n", N_SAMPLES);
+    printf("Generating TRAINING dataset (%d images). BALANCED (50%% rect, 50%% non-rect) and NO NOISE.\n", N_SAMPLES);
     
     for (int k = 0; k < N_SAMPLES; ++k) {
         
-        // Shared Initialization: 5% random noise across the board
+        // Initialize all pixels to 0 (black background)
         for (int i = 0; i < D_SIZE; i++) {
-            dataset[k][i] = (rand() % 100 < 5) ? (double)(rand() % 256) : 0.0;
+            dataset[k][i] = 0.0;
         }
 
         // 50% Rectangle Images (k < N_SAMPLES/2)
@@ -197,11 +199,6 @@ void load_mock_dataset() {
                     dataset[k][16 * y + x] = 200.0 + (double)(rand() % 50);
                 }
             }
-            // Add 5% black noise
-            int black_noise_count = (int)(0.05 * D_SIZE);
-            for (int i = 0; i < black_noise_count; i++) {
-                dataset[k][rand() % D_SIZE] = 0.0;
-            }
             targets[k] = TARGET_RECTANGLE;
 
         } 
@@ -213,32 +210,27 @@ void load_mock_dataset() {
 }
 
 void generate_test_set() {
-    printf("Generating TEST dataset (%d images). 50/50 mix of rectangles/black.\n", N_TEST_SAMPLES);
+    printf("Generating TEST dataset (%d images). 50/50 mix of rectangles/black and NO NOISE.\n", N_TEST_SAMPLES);
     for (int k = 0; k < N_TEST_SAMPLES; ++k) {
+        
+        // Initialize all pixels to 0 (black background)
+        for (int i = 0; i < D_SIZE; i++) {
+            test_data[k][i] = 0.0;
+        }
+
         if (k % 2 == 0) { // Rectangle
             int rect_w = 4 + (rand() % 8);
             int rect_h = 4 + (rand() % 8);
             int start_x = rand() % (16 - rect_w);
             int start_y = rand() % (16 - rect_h);
-
-            for (int i = 0; i < D_SIZE; i++) {
-                test_data[k][i] = (rand() % 100 < 5) ? (double)(rand() % 256) : 0.0;
-            }
             
             for (int y = start_y; y < start_y + rect_h; ++y) {
                 for (int x = start_x; x < start_x + rect_w; ++x) {
                     test_data[k][16 * y + x] = 200.0 + (double)(rand() % 50);
                 }
             }
-            int black_noise_count = (int)(0.05 * D_SIZE);
-            for (int i = 0; i < black_noise_count; i++) {
-                test_data[k][rand() % D_SIZE] = 0.0;
-            }
             test_targets[k] = TARGET_RECTANGLE;
-        } else { // Non-Rectangle
-            for (int i = 0; i < D_SIZE; i++) {
-                test_data[k][i] = (rand() % 100 < 5) ? (double)(rand() % 256) : 0.0;
-            }
+        } else { // Non-Rectangle (remains black background)
             test_targets[k] = TARGET_NO_RECTANGLE;
         }
     }
@@ -430,7 +422,7 @@ double forward_pass(const double input[N_BASIS], double hidden_out[N_HIDDEN], do
         o_net += hidden_out[j] * w_ho[j][0]; 
     } 
     *output = sigmoid(o_net);
-    // Loss calculation proxy (requires target, but here we estimate it for the profile)
+    // Loss calculation proxy
     return 0.5 * pow(*output - TARGET_RECTANGLE, 2); 
 }
 
@@ -491,7 +483,7 @@ int main() {
     estimate_basis_samples();
     estimate_nn_epochs();
 
-    // 2. Data Generation (N_SAMPLES=1000, 500 rect / 500 non-rect)
+    // 2. Data Generation (N_SAMPLES=1000, 500 rect / 500 non-rect, NO NOISE)
     load_mock_dataset(); 
     generate_test_set(); 
 
