@@ -5,20 +5,20 @@
 #include <float.h>
 
 // --- Configuration (Time-Critical) ---
-#define N_SAMPLES_MAX 1000 // Maximum target size
+#define N_SAMPLES_MAX 1000 // Maximum target size (used as practical limit)
 #define N_PROFILE 50       // Small subset size for profiling
 #define D_SIZE 256
 #define N_BASIS 16         // Basis vectors (NN input size)
 #define N_HIDDEN 8
-#define N_TEST_SAMPLES 500
+#define N_TEST_SAMPLES 500 // Test set size
 
 // Time limits in seconds (2 minutes = 120 seconds)
 #define MAX_TIME_BASIS_SEC 120.0
 #define MAX_TIME_NN_SEC 120.0
 
-// Graph Parameters (TUNED TO FIX COLLAPSE)
-#define EPSILON 1500.0   // Reduced to force sparser connectivity
-#define SIGMA 250.0      // Reduced to make weights drop off faster with distance
+// Graph Parameters (TUNED for sparser graph)
+#define EPSILON 1500.0   
+#define SIGMA 250.0      
 
 // Optimization Parameters
 #define MAX_POWER_ITER 5000 
@@ -31,11 +31,11 @@
 #define TARGET_NO_RECTANGLE 0.0
 // ---------------------
 
-// --- Dynamic Globals (Sized by MAX N for dynamic allocation proxy) ---
-int N_SAMPLES; // Will be set dynamically by profiling
+// --- Dynamic Globals (N_SAMPLES fixed at 1000 for practical execution) ---
+int N_SAMPLES = 1000; 
 int N_EPOCHS;  // Will be set dynamically by profiling
 
-// Global Data & Matrices 
+// Global Data & Matrices (Sized by MAX N)
 double dataset[N_SAMPLES_MAX][D_SIZE];  
 double A[N_SAMPLES_MAX][N_SAMPLES_MAX]; 
 double M[N_SAMPLES_MAX][N_SAMPLES_MAX];
@@ -43,51 +43,60 @@ double basis_vectors[N_BASIS][N_SAMPLES_MAX];
 double embedded_coords[N_SAMPLES_MAX][N_BASIS]; 
 double targets[N_SAMPLES_MAX];
 
-// Neural Network Weights and Biases
+// Neural Network Weights and Biases (fixed size)
 double w_ih[N_BASIS][N_HIDDEN];   
 double b_h[N_HIDDEN];             
 double w_ho[N_HIDDEN][1];         
 double b_o[1];                    
 
-// Test Data
+// Test Data (fixed size)
 double test_data[N_TEST_SAMPLES][D_SIZE];
 double test_targets[N_TEST_SAMPLES];
+
+// --- Function Prototypes ---
+void load_subset(int n_subset);
+void estimate_basis_samples();
+void estimate_nn_epochs();
+void load_mock_dataset();
+void generate_test_set();
+double euclidean_distance_sq(int idx1, int idx2);
+void construct_adjacency_matrix();
+void calculate_random_walk_matrix();
+void matrix_vector_multiply(const double mat[N_SAMPLES_MAX][N_SAMPLES_MAX], const double vec_in[N_SAMPLES_MAX], double vec_out[N_SAMPLES_MAX]);
+void normalize_vector(double vec[N_SAMPLES_MAX]);
+double max_vector_diff(const double vec1[N_SAMPLES_MAX], const double vec2[N_SAMPLES_MAX]);
+void orthogonalize_vector(double vec[N_SAMPLES_MAX], int current_basis_count);
+double power_iteration(int basis_index, double M_current[N_SAMPLES_MAX][N_SAMPLES_MAX]);
+void project_samples_to_basis();
+double sigmoid(double x);
+void initialize_nn();
+double forward_pass(const double input[N_BASIS], double hidden_out[N_HIDDEN], double* output);
+void backward_pass_and_update(const double input[N_BASIS], const double hidden_out[N_HIDDEN], double output, double target);
+double test_on_set(int n_set_size, const double input_set[][N_BASIS], const double target_set[]);
+
 
 // -----------------------------------------------------------------
 // --- PROFILING AND SCALING FUNCTIONS ---
 // -----------------------------------------------------------------
 
-// Helper function to load only a subset of data
 void load_subset(int n_subset) {
     for (int k = 0; k < n_subset; ++k) {
-        int rect_w = 4 + (rand() % 8);
-        int rect_h = 4 + (rand() % 8);
-        int start_x = rand() % (16 - rect_w);
-        int start_y = rand() % (16 - rect_h);
-
-        for (int i = 0; i < D_SIZE; i++) {
-            dataset[k][i] = (rand() % 100 < 5) ? (double)(rand() % 256) : 0.0;
-        }
-        
-        for (int y = start_y; y < start_y + rect_h; ++y) {
-            for (int x = start_x; x < start_x + rect_w; ++x) {
-                dataset[k][16 * y + x] = 200.0 + (double)(rand() % 50);
+        int rect_w = 4 + (rand() % 8); int rect_h = 4 + (rand() % 8);
+        int start_x = rand() % (16 - rect_w); int start_y = rand() % (16 - rect_h);
+        for (int i = 0; i < D_SIZE; i++) { dataset[k][i] = (rand() % 100 < 5) ? (double)(rand() % 256) : 0.0; }
+        if (k < n_subset / 2) { // Rectangle
+            for (int y = start_y; y < start_y + rect_h; ++y) {
+                for (int x = start_x; x < start_x + rect_w; ++x) {
+                    dataset[k][16 * y + x] = 200.0 + (double)(rand() % 50);
+                }
             }
+            for (int i = 0; i < (int)(0.05 * D_SIZE); i++) { dataset[k][rand() % D_SIZE] = 0.0; }
+            targets[k] = TARGET_RECTANGLE;
+        } else { // Non-Rectangle
+            targets[k] = TARGET_NO_RECTANGLE;
         }
-        int black_noise_count = (int)(0.05 * D_SIZE);
-        for (int i = 0; i < black_noise_count; i++) {
-            dataset[k][rand() % D_SIZE] = 0.0;
-        }
-        targets[k] = TARGET_RECTANGLE;
     }
 }
-
-// Function declaration for dependency
-double euclidean_distance_sq(int idx1, int idx2); 
-void initialize_nn();
-double forward_pass(const double input[N_BASIS], double hidden_out[N_HIDDEN], double* output);
-void backward_pass_and_update(const double input[N_BASIS], const double hidden_out[N_HIDDEN], double output, double target);
-
 
 void estimate_basis_samples() {
     clock_t start, end;
@@ -96,7 +105,7 @@ void estimate_basis_samples() {
     load_subset(N_PROFILE);
     start = clock();
     
-    // --- Basis Generation Profile (O(N^2 * D)) ---
+    // Profile Adjacency Matrix calc (most expensive part)
     int i, j;
     double dist_sq, epsilon_sq = EPSILON * EPSILON, sigma_sq = SIGMA * SIGMA;
     for (i = 0; i < N_PROFILE; i++) {
@@ -104,8 +113,7 @@ void estimate_basis_samples() {
             dist_sq = euclidean_distance_sq(i, j); 
             if (dist_sq < epsilon_sq) {
                 double weight = exp(-dist_sq / sigma_sq);
-                A[i][j] = weight;
-                A[j][i] = weight; 
+                A[i][j] = weight; A[j][i] = weight; 
             }
         }
     }
@@ -116,19 +124,14 @@ void estimate_basis_samples() {
 
     end = clock();
     time_spent_profile = (double)(end - start) / CLOCKS_PER_SEC;
-    
     if (time_spent_profile < 1e-6) time_spent_profile = 1e-6; 
 
     double scale_factor = MAX_TIME_BASIS_SEC / time_spent_profile;
     double N_scaled = (double)N_PROFILE * sqrt(scale_factor);
     
-    N_SAMPLES = (int)N_scaled;
-    if (N_SAMPLES > N_SAMPLES_MAX) N_SAMPLES = N_SAMPLES_MAX;
-    if (N_SAMPLES < N_PROFILE) N_SAMPLES = N_PROFILE;
-
     printf("\n--- BASIS TIME PROFILING ---\n");
     printf("Profile (N=%d): %.4f sec\n", N_PROFILE, time_spent_profile);
-    printf("Estimated N for %.1f sec limit: %d (Using N=%d)\n", MAX_TIME_BASIS_SEC, (int)N_scaled, N_SAMPLES);
+    printf("Estimated N for %.1f sec limit: %d (Using N=%d as practical limit)\n", MAX_TIME_BASIS_SEC, (int)N_scaled, N_SAMPLES);
 }
 
 void estimate_nn_epochs() {
@@ -140,15 +143,14 @@ void estimate_nn_epochs() {
     initialize_nn(); 
 
     start = clock();
-    // --- NN Training Profile (O(N_EPOCHS)) ---
+    // Profile NN Training
     for (int epoch = 0; epoch < N_EPOCHS_PROFILE; epoch++) {
         int sample_index = rand() % N_PROFILE;
-        double input[N_BASIS];
-        for (int i = 0; i < N_BASIS; i++) {
+        double input[N_BASIS]; 
+        for (int i = 0; i < N_BASIS; i++) { 
             input[i] = ((double)rand() / RAND_MAX); 
         }
-        double hidden_out[N_HIDDEN];
-        double output;
+        double hidden_out[N_HIDDEN]; double output;
         forward_pass(input, hidden_out, &output);
         backward_pass_and_update(input, hidden_out, output, 1.0);
     }
@@ -165,7 +167,7 @@ void estimate_nn_epochs() {
 
     printf("\n--- NN EPOCHS TIME PROFILING ---\n");
     printf("Profile (%d epochs): %.4f sec\n", N_EPOCHS_PROFILE, time_spent_profile);
-    printf("Estimated Epochs for %.1f sec limit: %d (Using N_EPOCHS=%d)\n", MAX_TIME_NN_SEC, (int)(N_EPOCHS_PROFILE * epoch_scale_factor), N_EPOCHS);
+    printf("Estimated Epochs for %.1f sec limit: %d (Using N_EPOCHS=%d as practical limit)\n", MAX_TIME_NN_SEC, (int)(N_EPOCHS_PROFILE * epoch_scale_factor), N_EPOCHS);
 }
 
 // -----------------------------------------------------------------
@@ -173,34 +175,47 @@ void estimate_nn_epochs() {
 // -----------------------------------------------------------------
 
 void load_mock_dataset() {
-    printf("Generating TRAINING dataset (%d images). All have rectangles.\n", N_SAMPLES);
+    printf("Generating TRAINING dataset (%d images). BALANCED (50%% rect, 50%% non-rect).\n", N_SAMPLES);
+    
     for (int k = 0; k < N_SAMPLES; ++k) {
-        int rect_w = 4 + (rand() % 8);
-        int rect_h = 4 + (rand() % 8);
-        int start_x = rand() % (16 - rect_w);
-        int start_y = rand() % (16 - rect_h);
-
+        
+        // Shared Initialization: 5% random noise across the board
         for (int i = 0; i < D_SIZE; i++) {
             dataset[k][i] = (rand() % 100 < 5) ? (double)(rand() % 256) : 0.0;
         }
-        
-        for (int y = start_y; y < start_y + rect_h; ++y) {
-            for (int x = start_x; x < start_x + rect_w; ++x) {
-                dataset[k][16 * y + x] = 200.0 + (double)(rand() % 50);
+
+        // 50% Rectangle Images (k < N_SAMPLES/2)
+        if (k < N_SAMPLES / 2) { 
+            int rect_w = 4 + (rand() % 8);
+            int rect_h = 4 + (rand() % 8);
+            int start_x = rand() % (16 - rect_w);
+            int start_y = rand() % (16 - rect_h);
+            
+            // Draw Rectangle (High Value)
+            for (int y = start_y; y < start_y + rect_h; ++y) {
+                for (int x = start_x; x < start_x + rect_w; ++x) {
+                    dataset[k][16 * y + x] = 200.0 + (double)(rand() % 50);
+                }
             }
+            // Add 5% black noise
+            int black_noise_count = (int)(0.05 * D_SIZE);
+            for (int i = 0; i < black_noise_count; i++) {
+                dataset[k][rand() % D_SIZE] = 0.0;
+            }
+            targets[k] = TARGET_RECTANGLE;
+
+        } 
+        // 50% Non-Rectangle Images (k >= N_SAMPLES/2)
+        else { 
+            targets[k] = TARGET_NO_RECTANGLE; 
         }
-        int black_noise_count = (int)(0.05 * D_SIZE);
-        for (int i = 0; i < black_noise_count; i++) {
-            dataset[k][rand() % D_SIZE] = 0.0;
-        }
-        targets[k] = TARGET_RECTANGLE;
     }
 }
 
 void generate_test_set() {
     printf("Generating TEST dataset (%d images). 50/50 mix of rectangles/black.\n", N_TEST_SAMPLES);
     for (int k = 0; k < N_TEST_SAMPLES; ++k) {
-        if (k % 2 == 0) {
+        if (k % 2 == 0) { // Rectangle
             int rect_w = 4 + (rand() % 8);
             int rect_h = 4 + (rand() % 8);
             int start_x = rand() % (16 - rect_w);
@@ -220,7 +235,7 @@ void generate_test_set() {
                 test_data[k][rand() % D_SIZE] = 0.0;
             }
             test_targets[k] = TARGET_RECTANGLE;
-        } else {
+        } else { // Non-Rectangle
             for (int i = 0; i < D_SIZE; i++) {
                 test_data[k][i] = (rand() % 100 < 5) ? (double)(rand() % 256) : 0.0;
             }
@@ -285,7 +300,7 @@ void calculate_random_walk_matrix() {
 }
 
 // -----------------------------------------------------------------
-// --- EIGENVECTOR GENERATION & NN CORE (DEFINITIONS) ---
+// --- EIGENVECTOR GENERATION & NN CORE DEFINITIONS ---
 // -----------------------------------------------------------------
 
 void matrix_vector_multiply(const double mat[N_SAMPLES_MAX][N_SAMPLES_MAX], const double vec_in[N_SAMPLES_MAX], double vec_out[N_SAMPLES_MAX]) {
@@ -340,13 +355,15 @@ double power_iteration(int basis_index, double M_current[N_SAMPLES_MAX][N_SAMPLE
     double f_old[N_SAMPLES_MAX];
     double f_new[N_SAMPLES_MAX];
     
+    // Initialize with random vector
     for (iter = 0; iter < N_SAMPLES; iter++) {
         f_old[iter] = (double)(rand() % 200 - 100) / 100.0; 
     }
     normalize_vector(f_old);
     orthogonalize_vector(f_old, basis_index);
     normalize_vector(f_old);
-    
+
+    // Power Iteration loop
     for (iter = 0; iter < MAX_POWER_ITER; iter++) {
         matrix_vector_multiply(M_current, f_old, f_new);
         orthogonalize_vector(f_new, basis_index);
@@ -362,6 +379,7 @@ double power_iteration(int basis_index, double M_current[N_SAMPLES_MAX][N_SAMPLE
         }
     }
     
+    // Store the found eigenvector
     for (int i = 0; i < N_SAMPLES; i++) {
         basis_vectors[basis_index][i] = f_old[i];
     }
@@ -371,6 +389,7 @@ double power_iteration(int basis_index, double M_current[N_SAMPLES_MAX][N_SAMPLE
 void project_samples_to_basis() {
     for (int i = 0; i < N_SAMPLES; i++) { 
         for (int k = 0; k < N_BASIS; k++) { 
+            // The coordinates are the eigenvector entries
             embedded_coords[i][k] = basis_vectors[k][i];
         }
     }
@@ -378,7 +397,10 @@ void project_samples_to_basis() {
 
 // --- NN CORE FUNCTIONS ---
 
-double sigmoid(double x) { return 1.0 / (1.0 + exp(-x)); }
+double sigmoid(double x) { 
+    return 1.0 / (1.0 + exp(-x)); 
+}
+
 void initialize_nn() {
     for (int i = 0; i < N_BASIS; i++) {
         for (int j = 0; j < N_HIDDEN; j++) {
@@ -394,6 +416,7 @@ void initialize_nn() {
 
 double forward_pass(const double input[N_BASIS], double hidden_out[N_HIDDEN], double* output) {
     double o_net = 0.0;
+    // Input to Hidden Layer
     for (int j = 0; j < N_HIDDEN; j++) {
         double h_net = b_h[j];
         for (int i = 0; i < N_BASIS; i++) {
@@ -401,50 +424,56 @@ double forward_pass(const double input[N_BASIS], double hidden_out[N_HIDDEN], do
         }
         hidden_out[j] = sigmoid(h_net);
     }
-    o_net = b_o[0];
-    for (int j = 0; j < N_HIDDEN; j++) {
-        o_net += hidden_out[j] * w_ho[j][0];
-    }
+    // Hidden to Output Layer
+    o_net = b_o[0]; 
+    for (int j = 0; j < N_HIDDEN; j++) { 
+        o_net += hidden_out[j] * w_ho[j][0]; 
+    } 
     *output = sigmoid(o_net);
+    // Loss calculation proxy (requires target, but here we estimate it for the profile)
     return 0.5 * pow(*output - TARGET_RECTANGLE, 2); 
 }
 
 void backward_pass_and_update(const double input[N_BASIS], const double hidden_out[N_HIDDEN], double output, double target) {
+    // Output Layer Delta
     double error_o = (output - target); 
     double delta_o = error_o * output * (1.0 - output); 
-    double error_h[N_HIDDEN];
-    for (int j = 0; j < N_HIDDEN; j++) {
-        error_h[j] = delta_o * w_ho[j][0];
+    
+    // Hidden Layer Deltas
+    double error_h[N_HIDDEN]; 
+    for (int j = 0; j < N_HIDDEN; j++) { 
+        error_h[j] = delta_o * w_ho[j][0]; 
     }
-    double delta_h[N_HIDDEN];
-    for (int j = 0; j < N_HIDDEN; j++) {
-        delta_h[j] = error_h[j] * hidden_out[j] * (1.0 - hidden_out[j]);
+    double delta_h[N_HIDDEN]; 
+    for (int j = 0; j < N_HIDDEN; j++) { 
+        delta_h[j] = error_h[j] * hidden_out[j] * (1.0 - hidden_out[j]); 
     }
-    for (int j = 0; j < N_HIDDEN; j++) {
-        w_ho[j][0] -= LEARNING_RATE * delta_o * hidden_out[j];
-    }
+    
+    // Update Weights and Biases
+    for (int j = 0; j < N_HIDDEN; j++) { 
+        w_ho[j][0] -= LEARNING_RATE * delta_o * hidden_out[j]; 
+    } 
     b_o[0] -= LEARNING_RATE * delta_o;
-    for (int i = 0; i < N_BASIS; i++) {
-        for (int j = 0; j < N_HIDDEN; j++) {
-            w_ih[i][j] -= LEARNING_RATE * delta_h[j] * input[i];
-        }
+    for (int i = 0; i < N_BASIS; i++) { 
+        for (int j = 0; j < N_HIDDEN; j++) { 
+            w_ih[i][j] -= LEARNING_RATE * delta_h[j] * input[i]; 
+        } 
     }
-    for (int j = 0; j < N_HIDDEN; j++) {
-        b_h[j] -= LEARNING_RATE * delta_h[j];
+    for (int j = 0; j < N_HIDDEN; j++) { 
+        b_h[j] -= LEARNING_RATE * delta_h[j]; 
     }
 }
 
 double test_on_set(int n_set_size, const double input_set[][N_BASIS], const double target_set[]) {
-    int correct_predictions = 0;
-    double hidden_out[N_HIDDEN];
+    int correct_predictions = 0; 
+    double hidden_out[N_HIDDEN]; 
     double output;
-
     for (int i = 0; i < n_set_size; i++) {
         forward_pass(input_set[i], hidden_out, &output);
         double prediction = (output >= 0.5) ? 1.0 : 0.0;
         double actual = target_set[i];
-        if (prediction == actual) {
-            correct_predictions++;
+        if (prediction == actual) { 
+            correct_predictions++; 
         }
     }
     return (double)correct_predictions / n_set_size;
@@ -462,7 +491,7 @@ int main() {
     estimate_basis_samples();
     estimate_nn_epochs();
 
-    // 2. Data Generation
+    // 2. Data Generation (N_SAMPLES=1000, 500 rect / 500 non-rect)
     load_mock_dataset(); 
     generate_test_set(); 
 
