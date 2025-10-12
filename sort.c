@@ -1,440 +1,666 @@
-#define _POSIX_C_SOURCE 200809L // Enable POSIX features for clock_gettime/CLOCK_MONOTONIC
-
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
+#include <time.h>
 #include <string.h>
-#include <time.h>      
-#include <stdbool.h>
 
-// Compiler check for SSE/SIMD intrinsics
-#if defined(__GNUC__) || defined(__clang__)
-#if defined(__SSE4_1__)
-#include <smmintrin.h> // SSE4.1 intrinsics
-#define USE_SIMD
-#define VW_long 2 // Vector Width: 2 longs fit in one 128-bit XMM register (8 bytes * 2 = 16 bytes)
-#else
-#undef USE_SIMD
-#define VW_long 1
-#endif
-#else
-#undef USE_SIMD
-#define VW_long 1
-#endif
+#define INPUT_DIM 100       // 10x10 image flattened
+#define HIDDEN_DIM 10       // The dimension for the invertible matrix (N)
+#define N HIDDEN_DIM        // Alias for the matrix size
+#define EPOCHS 5000
+#define LEARNING_RATE 0.01
+#define IMAGE_SIZE 10
 
-// --- Configuration ---
-#define N (1 << 18) // Array size: 262,144 elements
-#define RUNS 5      // Number of benchmark runs
+// --- 1. Linear Algebra Utilities ---
 
-// ====================================================================
-// SECTION 1: UTILITY FUNCTIONS
-// ====================================================================
+float rand_float() {
+    return ((float)rand() / RAND_MAX) - 0.5f;
+}
 
-// Initialization and Verification for long
-void initialize_array_long(long *arr, int size) {
-    srand(42); // Deterministic seed
-    for (int i = 0; i < size; i++) {
-        arr[i] = (long)((i * 3 + rand() % 100) % size);
+float sigmoid(float x) {
+    return 1.0f / (1.0f + expf(-x));
+}
+
+// Matrix-Vector multiplication: y = A * x (M x N_A * N_A x 1 -> M x 1)
+void mat_vec_mul(const float *A, int M, int N_A, const float *x, float *y) {
+    for (int i = 0; i < M; i++) {
+        float sum = 0.0f;
+        for (int j = 0; j < N_A; j++) {
+            sum += A[i * N_A + j] * x[j];
+        }
+        y[i] = sum;
     }
 }
 
-bool is_sorted_long(const long *arr, int size) {
-    for (int i = 1; i < size; i++) {
-        if (arr[i - 1] > arr[i]) {
-            fprintf(stderr, "Verification failed at index %d: %ld > %ld\n", i - 1, arr[i - 1], arr[i]);
-            return false;
+// Vector addition/subtraction (y = x + b)
+void vec_add(const float *x, const float *b, int D, float *y) {
+    for (int i = 0; i < D; i++) {
+        y[i] = x[i] + b[i];
+    }
+}
+
+// Vector normalization
+float vec_normalize(float *vec, int D) {
+    float norm = 0.0f;
+    for (int i = 0; i < D; i++) {
+        norm += vec[i] * vec[i];
+    }
+    norm = sqrtf(norm);
+    if (norm > 1e-6) {
+        for (int i = 0; i < D; i++) {
+            vec[i] /= norm;
         }
     }
-    return true;
+    return norm;
 }
 
-// Timer
-double get_time_sec() {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
-}
-
-// ====================================================================
-// SECTION 2: MERGE IMPLEMENTATIONS for 'long'
-// ====================================================================
-
-// --- Function Declarations for long ---
-void merge_asm_scalar_1x_long(long *arr, const long *aux, int low, int mid, int high);
-#ifdef USE_SIMD
-void merge_asm_simd_1x_long(long *arr, const long *aux, int low, int mid, int high);
-#endif
-void merge_scalar_1x_long(long *arr, const long *aux, int low, int mid, int high);
-void merge_scalar_2x_long(long *arr, const long *aux, int low, int mid, int high);
-void merge_scalar_4x_long(long *arr, const long *aux, int low, int mid, int high);
-void merge_scalar_8x_long(long *arr, const long *aux, int low, int mid, int high);
-
-#ifdef USE_SIMD
-void merge_simd_1x_long(long *arr, const long *aux, int low, int mid, int high);
-void merge_simd_2x_long(long *arr, const long *aux, int low, int mid, int high);
-void merge_simd_4x_long(long *arr, const long *aux, int low, int mid, int high);
-void merge_simd_8x_long(long *arr, const long *aux, int low, int mid, int high);
-void merge_simd_16x_long(long *arr, const long *aux, int low, int mid, int high);
-#endif
-
-
-// --------------------------------------------------------------------
-// Assembly Implementations (long)
-// --------------------------------------------------------------------
+// --- 2. O(N^3) Complex Matrix Analysis: Inverse and Determinant ---
+// (Functions are kept the same as they operate only on the N x N W_inv matrix)
 
 /**
- * @brief Performs a 1x merge using inline assembly, strictly controlling register usage (max 8 GPRs).
+ * Calculates the inverse of the N x N matrix W and its determinant using
+ * Gaussian-Jordan elimination on an augmented matrix [W | I]. (O(N^3))
  */
-void merge_asm_scalar_1x_long(long *arr, const long *aux, int low, int mid, int high) {
-    // Setup initial pointers
-    long *i_ptr = (long*)&aux[low];
-    long *j_ptr = (long*)&aux[mid + 1];
-    long *k_ptr = (long*)&arr[low];
-    long *i_limit = (long*)&aux[mid];
-    long *j_limit = (long*)&aux[high]; // Output limit
-
-    // Uses 7 GPRs: RDI (k_ptr), RDX (i_ptr), RCX (j_ptr), R8 (i_limit), R9 (j_limit), R10 (aux[i]), R11 (aux[j])
-    __asm__ __volatile__ (
-        // Initialize pointers/limits into dedicated GPRs
-        "movq %0, %%rdx\n"      // RDX = i_ptr
-        "movq %1, %%rcx\n"      // RCX = j_ptr
-        "movq %2, %%r8\n"       // R8 = i_limit
-        "movq %3, %%r9\n"       // R9 = j_limit
-        "movq %4, %%rdi\n"      // RDI = k_ptr
-        
-        "2:\n"                  // Loop start
-        
-        // --- ADDED PREFETCHING ---
-        // Pre-fetch 64 bytes (8 longs) ahead of i_ptr (RDX) and j_ptr (RCX)
-        "prefetcht0 64(%%rdx)\n" // Prefetch RDX + 64 bytes
-        "prefetcht0 64(%%rcx)\n" // Prefetch RCX + 64 bytes
-        // -------------------------
-
-        // 1. Check if left side (i) is exhausted: RDX > R8
-        "cmpq %%r8, %%rdx\n"    
-        "jg I_EXHAUSTED\n"      // Jump to I_EXHAUSTED
-
-        // 2. Check if right side (j) is exhausted: RCX > R9
-        "cmpq %%r9, %%rcx\n"    
-        "jg J_EXHAUSTED\n"      // Jump to J_EXHAUSTED
-
-        // 3. Both sides have elements: load and compare
-        "movq (%%rdx), %%r10\n" // R10 = aux[i]
-        "movq (%%rcx), %%r11\n" // R11 = aux[j]
-        "cmpq %%r10, %%r11\n"   // Compare aux[j] (R11) to aux[i] (R10)
-        "jl TAKE_J\n"           // If aux[j] < aux[i], jump to TAKE_J
-        
-        // TAKE FROM I (Fallthrough from compare: aux[i] <= aux[j])
-        "TAKE_I:\n"             
-        "movq %%r10, (%%rdi)\n" // arr[k] = aux[i] (R10 is pre-loaded)
-        "addq $8, %%rdx\n"      // i_ptr++
-        "jmp 5f\n"              // Jump to next iteration/exit check
-
-        // J-EXHAUSTED (Jump from exhaustion check 2)
-        "J_EXHAUSTED:\n"
-        "movq (%%rdx), %%r10\n" // FIX: R10 = aux[i] (Must load here!)
-        "jmp TAKE_I\n"          // Jump to the write-I path
-
-        // TAKE FROM J (Jump from compare: aux[j] < aux[i] or I-Exhausted)
-        "TAKE_J:\n"             
-        "movq %%r11, (%%rdi)\n" // arr[k] = aux[j] (R11 is pre-loaded)
-        "addq $8, %%rcx\n"      // j_ptr++
-        "jmp 5f\n"
-
-        // I-EXHAUSTED (Jump from exhaustion check 1)
-        "I_EXHAUSTED:\n"
-        "movq (%%rcx), %%r11\n" // FIX: R11 = aux[j] (Must load here!)
-        "jmp TAKE_J\n"          // Jump to the write-J path
-
-        // Loop end / Iteration complete
-        "5:\n"
-        "addq $8, %%rdi\n"      // k_ptr++
-        
-        // 4. Check if output array (k) is complete: RDI > R9
-        "cmpq %%r9, %%rdi\n"    
-        "jle 2b\n"              // If k_ptr <= aux[high], jump back to loop start (2b)
-
-        : // No explicit outputs needed for this block
-        : "g" (i_ptr), "g" (j_ptr), "g" (i_limit), "g" (j_limit), "g" (k_ptr) // Inputs
-        : "rdx", "rcx", "r8", "r9", "rdi", "r10", "r11", "cc", "memory" // Clobbered: 7 GPRs + Flags + Memory
-    );
-}
-
-#ifdef USE_SIMD
-/**
- * @brief Performs a 1x merge using inline assembly with SIMD (SSE4.1) block transfer.
- */
-void merge_asm_simd_1x_long(long *arr, const long *aux, int low, int mid, int high) { 
-    long *i_ptr = (long*)&aux[low];
-    long *j_ptr = (long*)&aux[mid + 1];
-    long *k_ptr = (long*)&arr[low];
-    long *i_limit = (long*)&aux[mid];
-    long *j_limit = (long*)&aux[high];
-
-    if (high - low < VW_long || mid < low || mid >= high) {
-        merge_scalar_1x_long(arr, aux, low, mid, high);
-        return;
-    }
-
-    // GPRs: RDX (i_ptr), RCX (j_ptr), R8 (k_ptr), R9 (j_limit), R11 (i_limit)
-    // XMMs: XMM0, XMM1
-    __asm__ __volatile__ (
-        "movq %0, %%rdx\n"      // RDX = i_ptr
-        "movq %1, %%rcx\n"      // RCX = j_ptr
-        "movq %2, %%r8\n"       // R8 = k_ptr (output)
-        "movq %3, %%r9\n"       // R9 = j_limit
-        "movq %4, %%r11\n"      // R11 = i_limit
-        
-        "1:\n"                  // Loop start
-        
-        // --- ADDED PREFETCHING ---
-        // Pre-fetch 64 bytes (8 longs) ahead of i_ptr (RDX) and j_ptr (RCX)
-        "prefetcht0 64(%%rdx)\n" // Prefetch RDX + 64 bytes
-        "prefetcht0 64(%%rcx)\n" // Prefetch RCX + 64 bytes
-        // -------------------------
-
-        "cmpq %%r9, %%r8\n" 
-        "jg 7f\n"               // Exit if output complete
-
-        "cmpq %%r11, %%rdx\n"       
-        "jg I_EXHAUSTED_SIMD\n" // If i exhausted, jump to take j block 
-
-        "cmpq %%r9, %%rcx\n"        
-        "jg J_EXHAUSTED_SIMD\n" // If j exhausted, jump to take i block 
-
-        // Compare first elements for block-transfer decision (uses RAX, RBX)
-        "movq (%%rdx), %%rax\n"     // RAX = aux[i]
-        "movq (%%rcx), %%rbx\n"     // RBX = aux[j]
-        
-        "cmpq %%rbx, %%rax\n"       
-        "jg TAKE_J_SIMD\n"          // If aux[j] < aux[i], jump to attempt block from j 
-        
-        // Take 2 elements from i (aux[i] <= aux[j] or j exhausted)
-        "J_EXHAUSTED_SIMD:\n"       // Jump target for J Exhausted
-        "TAKE_I_SIMD:\n"            // Start of I-Write Path
-        // Check if a full vector can be read from i
-        "addq $8, %%rdx\n"          // Check i_ptr + 1
-        "cmpq %%r11, %%rdx\n"       
-        "ja 8f\n"                   // Jump to C cleanup for single element (8f)
-        "subq $8, %%rdx\n"          // Restore i_ptr
-
-        "movdqu (%%rdx), %%xmm0\n"  // XMM0 = [aux[i], aux[i+1]]
-        "movdqu %%xmm0, (%%r8)\n"   
-        "addq $16, %%rdx\n"         // i_ptr += 2
-        "addq $16, %%r8\n"          // k_ptr += 2
-        "jmp 1b\n"                  // Continue loop
-
-        // Take 2 elements from j (aux[j] < aux[i] or i exhausted)
-        "I_EXHAUSTED_SIMD:\n"       // Jump target for I Exhausted
-        "TAKE_J_SIMD:\n"            // Start of J-Write Path
-        // Check if a full vector can be read from j
-        "addq $8, %%rcx\n"          // Check j_ptr + 1
-        "cmpq %%r9, %%rcx\n"        
-        "ja 8f\n"                   // Jump to C cleanup for single element (8f)
-        "subq $8, %%rcx\n"          // Restore j_ptr
-        
-        "movdqu (%%rcx), %%xmm1\n"  // XMM1 = [aux[j], aux[j+1]]
-        "movdqu %%xmm1, (%%r8)\n"   
-        "addq $16, %%rcx\n"         // j_ptr += 2
-        "addq $16, %%r8\n"          // k_ptr += 2
-        "jmp 1b\n"                  // Continue loop
-
-        // 8f is the point where we fall back to C cleanup (only one element left)
-        "8:\n"
-        
-        "7:\n"                     // Assembly exit point/fallthrough
-        
-        : // No explicit outputs
-        : "g" (i_ptr), "g" (j_ptr), "g" (k_ptr), "g" (j_limit), "g" (i_limit)
-        : "rdx", "rcx", "r8", "r9", "r11", "rax", "rbx", "cc", "memory", "xmm0", "xmm1"
-    );
-    
-    // Terminate the inline assembly block
-    __asm__ __volatile__(""); 
-    
-    // C-based scalar cleanup loop
-    int k = (k_ptr - arr);
-    int i = (i_ptr - aux);
-    int j = (j_ptr - aux);
-    
-    for (; k <= high; k++) { 
-        if (i > mid) { arr[k] = aux[j++]; } 
-        else if (j > high) { arr[k] = aux[i++]; } 
-        else if (aux[j] < aux[i]) { arr[k] = aux[j++]; } 
-        else { arr[k] = aux[i++]; }
-    }
-}
-#endif // USE_SIMD
-
-// --------------------------------------------------------------------
-// C-based Implementations (long) - Unrolled versions fallback to 1x for simplicity
-// --------------------------------------------------------------------
-
-void merge_scalar_1x_long(long *arr, const long *aux, int low, int mid, int high) {
-    int i = low, j = mid + 1;
-    for (int k = low; k <= high; k++) {
-        if (i > mid) { arr[k] = aux[j++]; }
-        else if (j > high) { arr[k] = aux[i++]; }
-        else if (aux[j] < aux[i]) { arr[k] = aux[j++]; }
-        else { arr[k] = aux[i++]; }
-    }
-}
-
-void merge_scalar_2x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
-void merge_scalar_4x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
-void merge_scalar_8x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
-
-#ifdef USE_SIMD
-void merge_simd_1x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
-void merge_simd_2x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
-void merge_simd_4x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
-void merge_simd_8x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
-void merge_simd_16x_long(long *arr, const long *aux, int low, int mid, int high) { merge_scalar_1x_long(arr, aux, low, mid, high); }
-#endif
-
-// --------------------------------------------------------------------
-// Recursive Sort Driver 
-// --------------------------------------------------------------------
-
-/**
- * @brief Recursive function that performs the top-down merge sort.
- */
-void mergeSort_recursive_long(long *data, long *aux, int low, int high, 
-                              void (*merge_func)(long*, const long*, int, int, int)) {
-    
-    // Base case: 1 element or less
-    if (low >= high) {
-        if (low == high) {
-             aux[low] = data[low]; // Ensure aux has the base element
+float inverse_and_determinant(const float *W_in, float *W_inv, int N) {
+    float W_aug[N * 2 * N];
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            W_aug[i * (2 * N) + j] = W_in[i * N + j]; // Copy W
+            W_aug[i * (2 * N) + j + N] = (i == j) ? 1.0f : 0.0f; // Copy I
         }
-        return;
     }
 
-    int mid = low + (high - low) / 2;
+    float det = 1.0f;
 
-    // 1. Recursively sort the left half: (Swap data and aux roles)
-    mergeSort_recursive_long(aux, data, low, mid, merge_func); 
-    
-    // 2. Recursively sort the right half: (Swap data and aux roles)
-    mergeSort_recursive_long(aux, data, mid + 1, high, merge_func); 
-
-    // 3. Merge sorted halves from 'aux' back into 'data'.
-    // merge_func(destination_arr, source_aux, low, mid, high)
-    merge_func(data, aux, low, mid, high);
-}
-
-
-// ====================================================================
-// SECTION 3: BENCHMARK DRIVER
-// ====================================================================
-
-// Generic function to run the benchmark for a given data type (Simplified to match the specific type used in main)
-void run_benchmark_test(long *data, long *aux, size_t type_size, const char *type_name, int vw,
-                        void (*init_func)(long*, int),
-                        bool (*verify_func)(const long*, int),
-                        void (*sort_func)(long*, long*, int, int, void*),
-                        void **scalar_funcs, const char **scalar_names, int scalar_count,
-                        void **simd_funcs, const char **simd_names, int simd_count) {
-    
-    printf("\n--- Type: %s (Size: %zu bytes, VW: %d) ---\n", type_name, type_size, vw);
-
-    int total_count = scalar_count + simd_count;
-    void *all_funcs[total_count];
-    const char *all_names[total_count];
-    
-    for(int i = 0; i < scalar_count; i++) {
-        all_funcs[i] = scalar_funcs[i];
-        all_names[i] = scalar_names[i];
-    }
-    for(int i = 0; i < simd_count; i++) {
-        all_funcs[scalar_count + i] = simd_funcs[i];
-        all_names[scalar_count + i] = simd_names[i];
-    }
-
-    // Run tests
-    for (int i = 0; i < total_count; i++) {
-        double total_time = 0.0;
-        // Cast the function pointer back to the merge signature
-        void (*current_merge_func)(long*, const long*, int, int, int) = all_funcs[i];
-        bool verified = false;
-
-        for (int r = 0; r < RUNS; r++) {
-            init_func(data, N);
-            memcpy(aux, data, N * sizeof(long)); // aux starts as unsorted copy
-            
-            double start_time = get_time_sec();
-            
-            // The initial call starts the sort
-            sort_func(data, aux, 0, N - 1, current_merge_func);
-            
-            total_time += get_time_sec() - start_time;
-
-            if (r == 0) {
-                // The mergeSort_recursive_long function ensures the final result is in 'data'
-                verified = verify_func(data, N);
+    for (int i = 0; i < N; i++) {
+        int pivot = i;
+        for (int k = i + 1; k < N; k++) {
+            if (fabs(W_aug[k * (2 * N) + i]) > fabs(W_aug[pivot * (2 * N) + i])) {
+                pivot = k;
             }
         }
 
-        printf("  %-15s | Avg Time: %8.4f ms | Verified: %s\n", 
-               all_names[i], 
-               (total_time / RUNS) * 1000.0, 
-               verified ? "YES" : "NO ");
+        if (pivot != i) {
+            for (int j = 0; j < 2 * N; j++) {
+                float temp = W_aug[i * (2 * N) + j];
+                W_aug[i * (2 * N) + j] = W_aug[pivot * (2 * N) + j];
+                W_aug[pivot * (2 * N) + j] = temp;
+            }
+            det *= -1.0f;
+        }
+
+        float pivot_val = W_aug[i * (2 * N) + i];
+        if (fabs(pivot_val) < 1e-9) {
+            memset(W_inv, 0, N * N * sizeof(float));
+            return 0.0f;
+        }
+
+        det *= pivot_val;
+
+        for (int j = i; j < 2 * N; j++) {
+            W_aug[i * (2 * N) + j] /= pivot_val;
+        }
+
+        for (int k = 0; k < N; k++) {
+            if (k != i) {
+                float factor = W_aug[k * (2 * N) + i];
+                for (int j = i; j < 2 * N; j++) {
+                    W_aug[k * (2 * N) + j] -= factor * W_aug[i * (2 * N) + j];
+                }
+            }
+        }
+    }
+
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            W_inv[i * N + j] = W_aug[i * (2 * N) + j + N];
+        }
+    }
+
+    return det;
+}
+
+/**
+ * Finds the dominant eigenvalue (largest magnitude) and its eigenvector
+ * using the Power Iteration method. (O(N^2) per iteration)
+ */
+void power_iteration(const float *A, int N, float *eigenvalue, float *eigenvector) {
+    const int max_iterations = 50;
+    const float tolerance = 1e-6f;
+
+    for (int i = 0; i < N; i++) {
+        eigenvector[i] = rand_float();
+    }
+    vec_normalize(eigenvector, N);
+
+    float y[N];
+    float lambda_prev = 0.0f;
+
+    for (int iter = 0; iter < max_iterations; iter++) {
+        mat_vec_mul(A, N, N, eigenvector, y);
+
+        float lambda = 0.0f;
+        for (int i = 0; i < N; i++) {
+            lambda += y[i] * eigenvector[i];
+        }
+
+        if (fabs(lambda - lambda_prev) < tolerance) {
+            *eigenvalue = lambda;
+            return;
+        }
+
+        lambda_prev = lambda;
+
+        memcpy(eigenvector, y, N * sizeof(float));
+        vec_normalize(eigenvector, N);
+    }
+
+    *eigenvalue = lambda_prev;
+}
+
+
+// --- 3. Cascading Network Structures (N=10 is the constant Hidden/Invertible size) ---
+
+// Stage 1: Input 100 -> Hidden 10 -> Output 1 (5 Networks)
+typedef struct {
+    float W_feat[N * INPUT_DIM]; // 10x100
+    float b_feat[N];
+    float W_inv[N * N]; // 10x10 (Invertible Core)
+    float b_inv[N];
+    float W_out[N]; // 1x10
+    float b_out;
+    // Internal States for Backprop
+    float h1[N];
+    float h2[N];
+    float z_out; // Pre-sigmoid output
+} NetS1;
+
+// Stage 2: Input 5 -> Hidden 10 -> Output 1 (3 Networks)
+typedef struct {
+    float W_feat[N * 5]; // 10x5
+    float b_feat[N];
+    float W_inv[N * N]; // 10x10 (Invertible Core)
+    float b_inv[N];
+    float W_out[N]; // 1x10
+    float b_out;
+    // Internal States for Backprop
+    float h1[N];
+    float h2[N];
+    float z_out;
+} NetS2;
+
+// Stage 3: Input 3 -> Hidden 10 -> Output 1 (2 Networks)
+typedef struct {
+    float W_feat[N * 3]; // 10x3
+    float b_feat[N];
+    float W_inv[N * N]; // 10x10 (Invertible Core)
+    float b_inv[N];
+    float W_out[N]; // 1x10
+    float b_out;
+    // Internal States for Backprop
+    float h1[N];
+    float h2[N];
+    float z_out;
+} NetS3;
+
+// Stage 4: Input 2 -> Hidden 10 -> Output 1 (1 Network)
+typedef struct {
+    float W_feat[N * 2]; // 10x2
+    float b_feat[N];
+    float W_inv[N * N]; // 10x10 (Invertible Core)
+    float b_inv[N];
+    float W_out[N]; // 1x10
+    float b_out;
+    // Internal States for Backprop
+    float h1[N];
+    float h2[N];
+    float z_out;
+} NetS4;
+
+
+// --- 4. Initialization ---
+
+void init_weights(float *W, int M, int K) {
+    for (int i = 0; i < M * K; i++) W[i] = rand_float() / sqrtf((float)K);
+}
+
+void init_bias(float *b, int M) {
+    for (int i = 0; i < M; i++) b[i] = rand_float() / 10.0f;
+}
+
+void init_invertible_layer(float *W, float *b) {
+    for (int i = 0; i < N * N; i++) W[i] = rand_float() / 100.0f;
+    for (int i = 0; i < N; i++) W[i * N + i] += 1.0f; // Near Identity
+    init_bias(b, N);
+}
+
+void init_net_s1(NetS1 *net) {
+    init_weights(net->W_feat, N, INPUT_DIM);
+    init_bias(net->b_feat, N);
+    init_invertible_layer(net->W_inv, net->b_inv);
+    init_weights(net->W_out, 1, N); // Use W_out as 1xN vector
+    init_bias(&net->b_out, 1);
+}
+
+// Initialization for S2, S3, S4 follows the same pattern, adjusted for dimensions
+void init_net_s2(NetS2 *net) { init_weights(net->W_feat, N, 5); init_bias(net->b_feat, N); init_invertible_layer(net->W_inv, net->b_inv); init_weights(net->W_out, 1, N); init_bias(&net->b_out, 1); }
+void init_net_s3(NetS3 *net) { init_weights(net->W_feat, N, 3); init_bias(net->b_feat, N); init_invertible_layer(net->W_inv, net->b_inv); init_weights(net->W_out, 1, N); init_bias(&net->b_out, 1); }
+void init_net_s4(NetS4 *net) { init_weights(net->W_feat, N, 2); init_bias(net->b_feat, N); init_invertible_layer(net->W_inv, net->b_inv); init_weights(net->W_out, 1, N); init_bias(&net->b_out, 1); }
+
+
+// --- 5. Forward Pass Functions ---
+
+// Returns the network's output (1x1 float)
+float forward_s1(NetS1 *net, const float *input) {
+    mat_vec_mul(net->W_feat, N, INPUT_DIM, input, net->h1);
+    vec_add(net->h1, net->b_feat, N, net->h1);
+    for (int i = 0; i < N; i++) net->h1[i] = tanh(net->h1[i]); // L1 Activation
+
+    mat_vec_mul(net->W_inv, N, N, net->h1, net->h2);
+    vec_add(net->h2, net->b_inv, N, net->h2); // L2 (Invertible) Linear
+
+    float z_out = 0.0f;
+    for (int i = 0; i < N; i++) z_out += net->W_out[i] * net->h2[i];
+    z_out += net->b_out;
+
+    net->z_out = z_out; // Store pre-sigmoid for backprop
+    return sigmoid(z_out);
+}
+
+float forward_s2(NetS2 *net, const float *input) {
+    mat_vec_mul(net->W_feat, N, 5, input, net->h1);
+    vec_add(net->h1, net->b_feat, N, net->h1);
+    for (int i = 0; i < N; i++) net->h1[i] = tanh(net->h1[i]);
+
+    mat_vec_mul(net->W_inv, N, N, net->h1, net->h2);
+    vec_add(net->h2, net->b_inv, N, net->h2);
+
+    float z_out = 0.0f;
+    for (int i = 0; i < N; i++) z_out += net->W_out[i] * net->h2[i];
+    z_out += net->b_out;
+
+    net->z_out = z_out;
+    return sigmoid(z_out);
+}
+
+float forward_s3(NetS3 *net, const float *input) {
+    mat_vec_mul(net->W_feat, N, 3, input, net->h1);
+    vec_add(net->h1, net->b_feat, N, net->h1);
+    for (int i = 0; i < N; i++) net->h1[i] = tanh(net->h1[i]);
+
+    mat_vec_mul(net->W_inv, N, N, net->h1, net->h2);
+    vec_add(net->h2, net->b_inv, N, net->h2);
+
+    float z_out = 0.0f;
+    for (int i = 0; i < N; i++) z_out += net->W_out[i] * net->h2[i];
+    z_out += net->b_out;
+
+    net->z_out = z_out;
+    return sigmoid(z_out);
+}
+
+float forward_s4(NetS4 *net, const float *input) {
+    mat_vec_mul(net->W_feat, N, 2, input, net->h1);
+    vec_add(net->h1, net->b_feat, N, net->h1);
+    for (int i = 0; i < N; i++) net->h1[i] = tanh(net->h1[i]);
+
+    mat_vec_mul(net->W_inv, N, N, net->h1, net->h2);
+    vec_add(net->h2, net->b_inv, N, net->h2);
+
+    float z_out = 0.0f;
+    for (int i = 0; i < N; i++) z_out += net->W_out[i] * net->h2[i];
+    z_out += net->b_out;
+
+    net->z_out = z_out;
+    return sigmoid(z_out);
+}
+
+
+// --- 6. Backpropagation Functions ---
+
+// The delta_out must be provided by the NEXT stage or the final MSE derivative
+// delta_out is the gradient dLoss/d(final_output) * d(final_output)/d(z_out)
+void backward_s4(NetS4 *net, const float *input, float delta_out) {
+    float grad_W_out[N];
+    float delta_h2[N];
+    for (int i = 0; i < N; i++) {
+        grad_W_out[i] = delta_out * net->h2[i];
+        delta_h2[i] = delta_out * net->W_out[i];
+    }
+    float grad_b_out = delta_out;
+
+    // Backprop L2 (Invertible Core)
+    float grad_W_inv[N * N];
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            grad_W_inv[i * N + j] = delta_h2[i] * net->h1[j];
+        }
+    }
+    float delta_h1[N];
+    for (int i = 0; i < N; i++) {
+        delta_h1[i] = 0.0f;
+        for (int j = 0; j < N; j++) {
+            delta_h1[i] += delta_h2[j] * net->W_inv[j * N + i];
+        }
+    }
+    float *grad_b_inv = delta_h2;
+
+    // Backprop L1 (Output is delta_input, which is the gradient passed to the previous stage)
+    for (int i = 0; i < N; i++) {
+        delta_h1[i] *= (1.0f - net->h1[i] * net->h1[i]); // Tanh prime
+    }
+    float grad_W_feat[N * 2];
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < 2; j++) {
+            grad_W_feat[i * 2 + j] = delta_h1[i] * input[j];
+        }
+    }
+    float *grad_b_feat = delta_h1;
+
+    // Update Weights
+    for (int i = 0; i < N; i++) net->W_out[i] -= LEARNING_RATE * grad_W_out[i];
+    net->b_out -= LEARNING_RATE * grad_b_out;
+    for (int i = 0; i < N * N; i++) net->W_inv[i] -= LEARNING_RATE * grad_W_inv[i];
+    for (int i = 0; i < N; i++) net->b_inv[i] -= LEARNING_RATE * grad_b_inv[i];
+    for (int i = 0; i < N * 2; i++) net->W_feat[i] -= LEARNING_RATE * grad_W_feat[i];
+    for (int i = 0; i < N; i++) net->b_feat[i] -= LEARNING_RATE * grad_b_feat[i];
+    
+    // NOTE: The delta_input of S4 (size 2) is not returned here but would be necessary if S4 was a recurrent stage.
+}
+
+// Generates the delta for the INPUT of this stage, to be passed back to the previous stage (NetS3 input size = 3)
+void backward_s3(NetS3 *net, const float *input, float delta_out, float *delta_input) {
+    float grad_W_out[N];
+    float delta_h2[N];
+    for (int i = 0; i < N; i++) {
+        grad_W_out[i] = delta_out * net->h2[i];
+        delta_h2[i] = delta_out * net->W_out[i];
+    }
+    float grad_b_out = delta_out;
+
+    float grad_W_inv[N * N];
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            grad_W_inv[i * N + j] = delta_h2[i] * net->h1[j];
+        }
+    }
+    float delta_h1[N];
+    for (int i = 0; i < N; i++) {
+        delta_h1[i] = 0.0f;
+        for (int j = 0; j < N; j++) {
+            delta_h1[i] += delta_h2[j] * net->W_inv[j * N + i];
+        }
+    }
+    float *grad_b_inv = delta_h2;
+
+    for (int i = 0; i < N; i++) {
+        delta_h1[i] *= (1.0f - net->h1[i] * net->h1[i]);
+    }
+    float grad_W_feat[N * 3];
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < 3; j++) {
+            grad_W_feat[i * 3 + j] = delta_h1[i] * input[j];
+        }
+    }
+    float *grad_b_feat = delta_h1;
+
+    // Calculate delta_input (size 3) for the previous stage (S2 outputs)
+    for (int i = 0; i < 3; i++) {
+        delta_input[i] = 0.0f;
+        for (int j = 0; j < N; j++) {
+            delta_input[i] += delta_h1[j] * net->W_feat[j * 3 + i];
+        }
+    }
+
+    // Update Weights
+    for (int i = 0; i < N; i++) net->W_out[i] -= LEARNING_RATE * grad_W_out[i];
+    net->b_out -= LEARNING_RATE * grad_b_out;
+    for (int i = 0; i < N * N; i++) net->W_inv[i] -= LEARNING_RATE * grad_W_inv[i];
+    for (int i = 0; i < N; i++) net->b_inv[i] -= LEARNING_RATE * grad_b_inv[i];
+    for (int i = 0; i < N * 3; i++) net->W_feat[i] -= LEARNING_RATE * grad_W_feat[i];
+    for (int i = 0; i < N; i++) net->b_feat[i] -= LEARNING_RATE * grad_b_feat[i];
+}
+
+// Backward functions for S2 and S1 follow a similar structure, adjusting dimensions (5 and 100)
+void backward_s2(NetS2 *net, const float *input, float delta_out, float *delta_input) {
+    float grad_W_out[N], delta_h2[N];
+    for (int i = 0; i < N; i++) { grad_W_out[i] = delta_out * net->h2[i]; delta_h2[i] = delta_out * net->W_out[i]; }
+    float grad_b_out = delta_out;
+
+    float grad_W_inv[N * N];
+    for (int i = 0; i < N * N; i++) grad_W_inv[i] = delta_h2[i / N] * net->h1[i % N];
+
+    float delta_h1[N];
+    for (int i = 0; i < N; i++) { delta_h1[i] = 0.0f; for (int j = 0; j < N; j++) delta_h1[i] += delta_h2[j] * net->W_inv[j * N + i]; }
+    float *grad_b_inv = delta_h2;
+
+    for (int i = 0; i < N; i++) delta_h1[i] *= (1.0f - net->h1[i] * net->h1[i]);
+
+    float grad_W_feat[N * 5];
+    for (int i = 0; i < N; i++) { for (int j = 0; j < 5; j++) grad_W_feat[i * 5 + j] = delta_h1[i] * input[j]; }
+    float *grad_b_feat = delta_h1;
+
+    for (int i = 0; i < 5; i++) {
+        delta_input[i] = 0.0f;
+        for (int j = 0; j < N; j++) delta_input[i] += delta_h1[j] * net->W_feat[j * 5 + i];
+    }
+
+    for (int i = 0; i < N; i++) net->W_out[i] -= LEARNING_RATE * grad_W_out[i];
+    net->b_out -= LEARNING_RATE * grad_b_out;
+    for (int i = 0; i < N * N; i++) net->W_inv[i] -= LEARNING_RATE * grad_W_inv[i];
+    for (int i = 0; i < N; i++) net->b_inv[i] -= LEARNING_RATE * grad_b_inv[i];
+    for (int i = 0; i < N * 5; i++) net->W_feat[i] -= LEARNING_RATE * grad_W_feat[i];
+    for (int i = 0; i < N; i++) net->b_feat[i] -= LEARNING_RATE * grad_b_feat[i];
+}
+
+void backward_s1(NetS1 *net, const float *input, float delta_out) {
+    float grad_W_out[N], delta_h2[N];
+    for (int i = 0; i < N; i++) { grad_W_out[i] = delta_out * net->h2[i]; delta_h2[i] = delta_out * net->W_out[i]; }
+    float grad_b_out = delta_out;
+
+    float grad_W_inv[N * N];
+    for (int i = 0; i < N * N; i++) grad_W_inv[i] = delta_h2[i / N] * net->h1[i % N];
+
+    float delta_h1[N];
+    for (int i = 0; i < N; i++) { delta_h1[i] = 0.0f; for (int j = 0; j < N; j++) delta_h1[i] += delta_h2[j] * net->W_inv[j * N + i]; }
+    float *grad_b_inv = delta_h2;
+
+    for (int i = 0; i < N; i++) delta_h1[i] *= (1.0f - net->h1[i] * net->h1[i]);
+
+    float grad_W_feat[N * INPUT_DIM];
+    for (int i = 0; i < N; i++) { for (int j = 0; j < INPUT_DIM; j++) grad_W_feat[i * INPUT_DIM + j] = delta_h1[i] * input[j]; }
+    float *grad_b_feat = delta_h1;
+
+    // delta_input for S1 (size 100) is the final backprop output, but not needed for weight updates.
+
+    for (int i = 0; i < N; i++) net->W_out[i] -= LEARNING_RATE * grad_W_out[i];
+    net->b_out -= LEARNING_RATE * grad_b_out;
+    for (int i = 0; i < N * N; i++) net->W_inv[i] -= LEARNING_RATE * grad_W_inv[i];
+    for (int i = 0; i < N; i++) net->b_inv[i] -= LEARNING_RATE * grad_b_inv[i];
+    for (int i = 0; i < N * INPUT_DIM; i++) net->W_feat[i] -= LEARNING_RATE * grad_W_feat[i];
+    for (int i = 0; i < N; i++) net->b_feat[i] -= LEARNING_RATE * grad_b_feat[i];
+}
+
+
+// --- 7. Data Generation ---
+
+void make_rectangle(float *img, int is_present) {
+    for (int i = 0; i < INPUT_DIM; i++) img[i] = 0.0f;
+
+    if (is_present) {
+        int start_row = rand() % (IMAGE_SIZE - 4);
+        int start_col = rand() % (IMAGE_SIZE - 4);
+        int width = 3 + (rand() % 3);
+        int height = 3 + (rand() % 3);
+
+        for (int r = 0; r < IMAGE_SIZE; r++) {
+            for (int c = 0; c < IMAGE_SIZE; c++) {
+                if (r > start_row && r < start_row + height && c > start_col && c < start_col + width) {
+                    if ((r + c) % 2 == 0) {
+                        img[r * IMAGE_SIZE + c] = 1.0f;
+                    } else {
+                        img[r * IMAGE_SIZE + c] = 0.5f;
+                    }
+                }
+            }
+        }
     }
 }
 
 
-// ====================================================================
-// SECTION 4: MAIN DRIVER
-// ====================================================================
+// --- 8. Main Program ---
 
 int main() {
-    printf("--- Starting Comprehensive Merge Sort Benchmark (N=%d, RUNS=%d) ---\n", N, RUNS);
+    srand(time(NULL));
 
-    // --- Test long (Includes Assembly Tests) ---
-    long *data_long = (long*)malloc(N * sizeof(long));
-    // Allocate N+2 elements for the auxiliary buffer to guard against minor overflows
-    long *aux_long = (long*)malloc((N + 2) * sizeof(long)); 
-    if (!data_long || !aux_long) { perror("Memory allocation failed for long"); return 1; }
+    NetS1 nets1[5];
+    NetS2 nets2[3];
+    NetS3 nets3[2];
+    NetS4 net_final; // Only 1 network in Stage 4
 
-    void (*scalar_funcs_long[])(long*, const long*, int, int, int) = {
-        merge_asm_scalar_1x_long, 
-        merge_scalar_1x_long, 
-        merge_scalar_2x_long, 
-        merge_scalar_4x_long,
-        merge_scalar_8x_long
-    };
-    const char *scalar_names_long[] = { "ASM_1x_SCL (8Reg)", "C_1x_SCL", "C_2x_SCL", "C_4x_SCL", "C_8x_SCL" };
-    const int scalar_count_long = 5;
+    for (int i = 0; i < 5; i++) init_net_s1(&nets1[i]);
+    for (int i = 0; i < 3; i++) init_net_s2(&nets2[i]);
+    for (int i = 0; i < 2; i++) init_net_s3(&nets3[i]);
+    init_net_s4(&net_final);
+
+    printf("Starting Cascaded Deep Ensemble Training (5->3->2->1 structure)...\n");
+    printf("Total Networks: 11. Core Invertible Matrix size: %d x %d.\n", N, N);
+
+    float input_image[INPUT_DIM];
+    float target;
+    float avg_loss = 0.0f;
+
+    // Buffers for cascading data flow
+    float output_s1[5], output_s2[3], output_s3[2];
+    float delta_s3_in[3], delta_s2_in[5]; // Buffers for backward pass
+
+    float W_inv_copy[N * N];
+    float W_inverse[N * N];
+    float dominant_eigenvalue;
+    float dominant_eigenvector[N];
+
+    for (int epoch = 1; epoch <= EPOCHS; epoch++) {
+        // --- 1. Prepare Data
+        int is_present = rand() % 2;
+        target = (float)is_present;
+        make_rectangle(input_image, is_present);
+
+        // --- 2. Cascading Forward Pass ---
+
+        // Stage 1 (5 Nets): Input 100 -> Output 5
+        for (int i = 0; i < 5; i++) output_s1[i] = forward_s1(&nets1[i], input_image);
+
+        // Stage 2 (3 Nets): Input 5 -> Output 3
+        for (int i = 0; i < 3; i++) output_s2[i] = forward_s2(&nets2[i], output_s1);
+
+        // Stage 3 (2 Nets): Input 3 -> Output 2
+        for (int i = 0; i < 2; i++) output_s3[i] = forward_s3(&nets3[i], output_s2);
+
+        // Stage 4 (1 Net): Input 2 -> Final Output
+        float final_output = forward_s4(&net_final, output_s3);
+
+        // --- 3. Compute Loss
+        float loss = (target - final_output) * (target - final_output);
+        avg_loss = avg_loss * 0.99f + loss * 0.01f;
+
+        // --- 4. Cascading Backward Pass (Backpropagate final error through all stages) ---
+
+        // Final Layer Error (MSE derivative)
+        float delta_final = (final_output - target) * final_output * (1.0f - final_output);
+
+        // Stage 4 Backprop (S4 takes S3 output as input)
+        // Note: S4 delta_input (size 2) is not explicitly calculated as it's the final gradient needed.
+        backward_s4(&net_final, output_s3, delta_final);
+
+        // Stage 3 Backprop (S3 takes S2 output as input)
+        // The gradient W_feat^T * delta_h1 from S4 is the final delta_out for S3.
+        // Since S4 has only one output, the overall gradient is delta_final * W_out_S4 * tanh_prime...
+        // For simplicity in this deep structure, we use the error signal from S4's output:
+        // delta_out_s3_1 = delta_final * W_out_S4_i * sigmoid_prime(z_out_S4)
+        
+        // We calculate the gradient of the final error w.r.t the S3 outputs (size 2)
+        // The delta_out for the S3 networks is now coupled. Let's use the final delta_out (delta_final) for simplicity.
+        float delta_out_s3[2];
+        delta_out_s3[0] = delta_final * net_final.W_feat[0]; // Simplified contribution
+        delta_out_s3[1] = delta_final * net_final.W_feat[1];
+
+        // Stage 3 Backprop (2 Nets)
+        for(int i = 0; i < 2; i++) {
+            // Get the delta_input (size 3) for S2 from this S3 network
+            float current_delta_input[3];
+            // Backward pass computes weight updates AND returns delta_input (size 3)
+            backward_s3(&nets3[i], output_s2, delta_out_s3[i], current_delta_input); 
+
+            // Accumulate the delta_input (size 3) for S2
+            for(int j = 0; j < 3; j++) delta_s3_in[j] += current_delta_input[j];
+        }
+
+        // Stage 2 Backprop (3 Nets)
+        for(int i = 0; i < 3; i++) {
+            // The delta_out for S2 is the accumulated delta_s3_in at index i
+            float current_delta_input[5];
+            backward_s2(&nets2[i], output_s1, delta_s3_in[i], current_delta_input); 
+
+            // Accumulate the delta_input (size 5) for S1
+            for(int j = 0; j < 5; j++) delta_s2_in[j] += current_delta_input[j];
+        }
+
+        // Stage 1 Backprop (5 Nets)
+        for(int i = 0; i < 5; i++) {
+            // The delta_out for S1 is the accumulated delta_s2_in at index i
+            backward_s1(&nets1[i], input_image, delta_s2_in[i]);
+        }
+
+
+        // --- 5. Periodic O(N^3) Analysis and Reporting ---
+        if (epoch % (EPOCHS / 10) == 0) {
+            printf("\n--- Epoch %d/%d ---\n", epoch, EPOCHS);
+            printf("Target: %.0f | Final Output: %.4f | Smooth Loss: %.6f\n", target, final_output, avg_loss);
+
+            // Analysis on the final stage's 10x10 Invertible Matrix
+            printf("--- High-Demand Matrix Analysis (Net S4, O(N^3)) ---\n");
+
+            // A. Inverse and Determinant (Gaussian-Jordan Elimination: O(N^3))
+            memcpy(W_inv_copy, net_final.W_inv, N * N * sizeof(float));
+            float det = inverse_and_determinant(W_inv_copy, W_inverse, N);
+
+            printf("   [DETERMINANT] Calculated value: %.6f\n", det);
+            if (fabs(det) < 1e-6) {
+                printf("   [CRITICAL] Matrix is SINGULAR (Det $\\approx 0$). Invertible constraint violation!\n");
+            } else {
+                printf("   [INVERSE] W_inv is invertible. (Top-Left Element of W_inv: %.4f)\n", W_inverse[0]);
+            }
+
+            // B. Dominant Eigenvalue (Power Iteration: O(N^2) per iteration)
+            power_iteration(net_final.W_inv, N, &dominant_eigenvalue, dominant_eigenvector);
+
+            printf("   [EIGENVALUE] Dominant $\\lambda$: %.6f\n", dominant_eigenvalue);
+            printf("   [EIGENVECTOR] Dominant vector $v$ ($v_1$ to $v_3$): (%.4f, %.4f, %.4f) ...\n",
+                   dominant_eigenvector[0], dominant_eigenvector[1], dominant_eigenvector[2]);
+            printf("   [INTERPRET] The largest eigenvalue ($\\|\\lambda\\| > 1$) indicates directional feature expansion.\n");
+        }
+    }
+
+    printf("\nTraining complete. Final smooth loss: %.6f\n", avg_loss);
+
+    // --- Testing Example ---
+    float test_image[INPUT_DIM];
+    make_rectangle(test_image, 1);
     
-    void **simd_funcs_long_ptr = NULL;
-    const char **simd_names_long_ptr = NULL;
-    int simd_count_long = 0;
-    
-    #ifdef USE_SIMD
-    static void (*simd_funcs_long[])(long*, const long*, int, int, int) = {
-        merge_asm_simd_1x_long, 
-        merge_simd_1x_long, 
-        merge_simd_2x_long, 
-        merge_simd_4x_long,
-        merge_simd_8x_long,
-        merge_simd_16x_long
-    };
-    static const char *simd_names_long[] = { "ASM_1x_SIMD", "C_1x_SIMD", "C_2x_SIMD", "C_4x_SIMD", "C_8x_SIMD", "C_16x_SIMD" };
-    simd_funcs_long_ptr = (void**)simd_funcs_long;
-    simd_names_long_ptr = simd_names_long;
-    simd_count_long = 6;
-    #endif
-    
-    // Run the specific test for 'long'
-    run_benchmark_test(data_long, aux_long, sizeof(long), "long", VW_long,
-                       initialize_array_long,
-                       is_sorted_long,
-                       (void (*)(long*, long*, int, int, void*))mergeSort_recursive_long,
-                       (void**)scalar_funcs_long, scalar_names_long, scalar_count_long,
-                       simd_funcs_long_ptr, simd_names_long_ptr, simd_count_long
-                       );
-    free(data_long); 
-    free(aux_long); 
-    
-    printf("\n--- Benchmark Complete ---\n");
+    for (int i = 0; i < 5; i++) output_s1[i] = forward_s1(&nets1[i], test_image);
+    for (int i = 0; i < 3; i++) output_s2[i] = forward_s2(&nets2[i], output_s1);
+    for (int i = 0; i < 2; i++) output_s3[i] = forward_s3(&nets3[i], output_s2);
+    float test_output_present = forward_s4(&net_final, output_s3);
+
+    printf("\nTEST (Rectangle Present): Final Output = %.4f (Expected near 1.0)\n", test_output_present);
+
+    make_rectangle(test_image, 0);
+    for (int i = 0; i < 5; i++) output_s1[i] = forward_s1(&nets1[i], test_image);
+    for (int i = 0; i < 3; i++) output_s2[i] = forward_s2(&nets2[i], output_s1);
+    for (int i = 0; i < 2; i++) output_s3[i] = forward_s3(&nets3[i], output_s2);
+    float test_output_absent = forward_s4(&net_final, output_s3);
+
+    printf("TEST (No Rectangle): Final Output = %.4f (Expected near 0.0)\n", test_output_absent);
+
     return 0;
 }
