@@ -57,7 +57,6 @@ float vec_normalize(float *vec, int D) {
 /**
  * Calculates the inverse of the N x N matrix W and its determinant using
  * Gaussian-Jordan elimination on an augmented matrix [W | I]. (O(N^3))
- * NOTE: The size N is provided by the global macro N (10) and is no longer a parameter.
  */
 float inverse_and_determinant(const float *W_in, float *W_inv) {
     float W_aug[N * 2 * N];
@@ -121,7 +120,6 @@ float inverse_and_determinant(const float *W_in, float *W_inv) {
 /**
  * Finds the dominant eigenvalue (largest magnitude) and its eigenvector
  * using the Power Iteration method. (O(N^2) per iteration)
- * NOTE: The size N is provided by the global macro N (10) and is no longer a parameter.
  */
 void power_iteration(const float *A, float *eigenvalue, float *eigenvector) {
     const int max_iterations = 50;
@@ -169,8 +167,8 @@ typedef struct {
     float W_out[N]; // 1x10
     float b_out;
     // Internal States for Backprop
-    float h1[N];
-    float h2[N];
+    float h1[N]; // Output of L1 (tanh activation)
+    float h2[N]; // Output of L2 (linear, pre-output)
     float z_out; // Pre-sigmoid output
 } NetS1;
 
@@ -182,8 +180,7 @@ typedef struct {
     float b_inv[N];
     float W_out[N]; // 1x10
     float b_out;
-    // Internal States for Backprop
-    float h1[N];
+    float h1[N]; 
     float h2[N];
     float z_out;
 } NetS2;
@@ -196,8 +193,7 @@ typedef struct {
     float b_inv[N];
     float W_out[N]; // 1x10
     float b_out;
-    // Internal States for Backprop
-    float h1[N];
+    float h1[N]; 
     float h2[N];
     float z_out;
 } NetS3;
@@ -210,8 +206,7 @@ typedef struct {
     float b_inv[N];
     float W_out[N]; // 1x10
     float b_out;
-    // Internal States for Backprop
-    float h1[N];
+    float h1[N]; 
     float h2[N];
     float z_out;
 } NetS4;
@@ -228,7 +223,8 @@ void init_bias(float *b, int M) {
 }
 
 void init_invertible_layer(float *W, float *b) {
-    for (int i = 0; i < N * N; i++) W[i] = rand_float() / 100.0f;
+    // Slightly increased random initial values for better gradient flow
+    for (int i = 0; i < N * N; i++) W[i] = rand_float() / 10.0f;
     for (int i = 0; i < N; i++) W[i * N + i] += 1.0f; // Near Identity
     init_bias(b, N);
 }
@@ -317,9 +313,10 @@ float forward_s4(NetS4 *net, const float *input) {
 
 // --- 5. Backpropagation Functions ---
 
-// The delta_out must be provided by the NEXT stage or the final MSE derivative
-// delta_out is the gradient dLoss/d(final_output) * d(final_output)/d(z_out)
-void backward_s4(NetS4 *net, const float *input, float delta_out) {
+// delta_out is dLoss/d(z_out) = dLoss/d(output) * d(output)/d(z_out)
+
+// MODIFIED: Calculates and returns delta_input (size 2) to the previous stage (S3)
+void backward_s4(NetS4 *net, const float *input, float delta_out, float *delta_input) {
     float grad_W_out[N];
     float delta_h2[N];
     for (int i = 0; i < N; i++) {
@@ -335,7 +332,7 @@ void backward_s4(NetS4 *net, const float *input, float delta_out) {
             grad_W_inv[i * N + j] = delta_h2[i] * net->h1[j];
         }
     }
-    float delta_h1[N];
+    float delta_h1[N]; // dLoss/d(h1_pre_tanh)
     for (int i = 0; i < N; i++) {
         delta_h1[i] = 0.0f;
         for (int j = 0; j < N; j++) {
@@ -344,7 +341,7 @@ void backward_s4(NetS4 *net, const float *input, float delta_out) {
     }
     float *grad_b_inv = delta_h2;
 
-    // Backprop L1 (Output is delta_input, which is the gradient passed to the previous stage)
+    // Backprop L1 (dLoss/d(h1_pre_tanh) * tanh')
     for (int i = 0; i < N; i++) {
         delta_h1[i] *= (1.0f - net->h1[i] * net->h1[i]); // Tanh prime
     }
@@ -356,6 +353,16 @@ void backward_s4(NetS4 *net, const float *input, float delta_out) {
     }
     float *grad_b_feat = delta_h1;
 
+    // *** Calculate delta_input (size 2) for the previous stage (S3 outputs) ***
+    // This is the error signal to be passed back to the S3 networks
+    for (int i = 0; i < 2; i++) {
+        delta_input[i] = 0.0f;
+        for (int j = 0; j < N; j++) {
+            // dLoss/d(input_i) = sum_j (dLoss/d(h1_pre_tanh)_j * W_feat[j, i])
+            delta_input[i] += delta_h1[j] * net->W_feat[j * 2 + i];
+        }
+    }
+
     // Update Weights
     for (int i = 0; i < N; i++) net->W_out[i] -= LEARNING_RATE * grad_W_out[i];
     net->b_out -= LEARNING_RATE * grad_b_out;
@@ -363,9 +370,8 @@ void backward_s4(NetS4 *net, const float *input, float delta_out) {
     for (int i = 0; i < N; i++) net->b_inv[i] -= LEARNING_RATE * grad_b_inv[i];
     for (int i = 0; i < N * 2; i++) net->W_feat[i] -= LEARNING_RATE * grad_W_feat[i];
     for (int i = 0; i < N; i++) net->b_feat[i] -= LEARNING_RATE * grad_b_feat[i];
-    
-    // NOTE: The delta_input of S4 (size 2) is not returned here but would be necessary if S4 was a recurrent stage.
 }
+
 
 // Generates the delta for the INPUT of this stage, to be passed back to the previous stage (NetS3 input size = 3)
 void backward_s3(NetS3 *net, const float *input, float delta_out, float *delta_input) {
@@ -452,6 +458,7 @@ void backward_s2(NetS2 *net, const float *input, float delta_out, float *delta_i
     for (int i = 0; i < N; i++) net->b_feat[i] -= LEARNING_RATE * grad_b_feat[i];
 }
 
+// S1 is the first stage, so it doesn't need to return a delta_input.
 void backward_s1(NetS1 *net, const float *input, float delta_out) {
     float grad_W_out[N], delta_h2[N];
     for (int i = 0; i < N; i++) { grad_W_out[i] = delta_out * net->h2[i]; delta_h2[i] = delta_out * net->W_out[i]; }
@@ -469,8 +476,6 @@ void backward_s1(NetS1 *net, const float *input, float delta_out) {
     float grad_W_feat[N * INPUT_DIM];
     for (int i = 0; i < N; i++) { for (int j = 0; j < INPUT_DIM; j++) grad_W_feat[i * INPUT_DIM + j] = delta_h1[i] * input[j]; }
     float *grad_b_feat = delta_h1;
-
-    // delta_input for S1 (size 100) is the final backprop output, but not needed for weight updates.
 
     for (int i = 0; i < N; i++) net->W_out[i] -= LEARNING_RATE * grad_W_out[i];
     net->b_out -= LEARNING_RATE * grad_b_out;
@@ -531,7 +536,9 @@ int main() {
 
     // Buffers for cascading data flow
     float output_s1[5], output_s2[3], output_s3[2];
-    float delta_s3_in[3], delta_s2_in[5]; // Buffers for backward pass
+    float delta_out_s3[2]; // dLoss/d(OutputS3), calculated by backward_s4
+    float delta_s3_in[3]; // dLoss/d(OutputS2), accumulated from S3 nets
+    float delta_s2_in[5]; // dLoss/d(OutputS1), accumulated from S2 nets
 
     float W_inv_copy[N * N];
     float W_inverse[N * N];
@@ -545,61 +552,49 @@ int main() {
         make_rectangle(input_image, is_present);
 
         // --- 2. Cascading Forward Pass ---
-
-        // Stage 1 (5 Nets): Input 100 -> Output 5
         for (int i = 0; i < 5; i++) output_s1[i] = forward_s1(&nets1[i], input_image);
-
-        // Stage 2 (3 Nets): Input 5 -> Output 3
         for (int i = 0; i < 3; i++) output_s2[i] = forward_s2(&nets2[i], output_s1);
-
-        // Stage 3 (2 Nets): Input 3 -> Output 2
         for (int i = 0; i < 2; i++) output_s3[i] = forward_s3(&nets3[i], output_s2);
-
-        // Stage 4 (1 Net): Input 2 -> Final Output
         float final_output = forward_s4(&net_final, output_s3);
 
         // --- 3. Compute Loss
         float loss = (target - final_output) * (target - final_output);
         avg_loss = avg_loss * 0.99f + loss * 0.01f;
 
-        // --- 4. Cascading Backward Pass (Backpropagate final error through all stages) ---
+        // --- 4. Cascading Backward Pass ---
 
-        // Final Layer Error (MSE derivative)
+        // Final Layer Error (dLoss/d(z_out))
         float delta_final = (final_output - target) * final_output * (1.0f - final_output);
 
-        // Stage 4 Backprop (S4 takes S3 output as input)
-        backward_s4(&net_final, output_s3, delta_final);
-
-        // We calculate the gradient of the final error w.r.t the S3 outputs (size 2)
-        // For simplicity, using a simplified contribution model for the coupled gradient flow.
-        float delta_out_s3[2];
-        delta_out_s3[0] = delta_final * net_final.W_feat[0];
-        delta_out_s3[1] = delta_final * net_final.W_feat[1];
-
-        // Stage 3 Backprop (2 Nets)
+        // *** STAGE 4 BACKPROP (Corrected Flow) ***
+        // S4 updates its weights AND returns the gradient w.r.t its input (delta_out_s3)
+        backward_s4(&net_final, output_s3, delta_final, delta_out_s3); 
+        
+        // --- STAGE 3 BACKPROP (2 Nets) ---
         memset(delta_s3_in, 0, sizeof(delta_s3_in));
         for(int i = 0; i < 2; i++) {
-            float current_delta_input[3];
+            float current_delta_input[3]; // dLoss/d(OutputS2) for this single net
+            // delta_out_s3[i] is the error signal (dLoss/d(OutputS3[i])) for nets3[i]
             backward_s3(&nets3[i], output_s2, delta_out_s3[i], current_delta_input); 
 
             // Accumulate the delta_input (size 3) for S2
             for(int j = 0; j < 3; j++) delta_s3_in[j] += current_delta_input[j];
         }
 
-        // Stage 2 Backprop (3 Nets)
+        // --- STAGE 2 BACKPROP (3 Nets) ---
         memset(delta_s2_in, 0, sizeof(delta_s2_in));
         for(int i = 0; i < 3; i++) {
-            // The delta_out for S2 is the accumulated delta_s3_in at index i
-            float current_delta_input[5];
+            float current_delta_input[5]; // dLoss/d(OutputS1) for this single net
+            // delta_s3_in[i] is the error signal (dLoss/d(OutputS2[i])) for nets2[i]
             backward_s2(&nets2[i], output_s1, delta_s3_in[i], current_delta_input); 
 
             // Accumulate the delta_input (size 5) for S1
             for(int j = 0; j < 5; j++) delta_s2_in[j] += current_delta_input[j];
         }
 
-        // Stage 1 Backprop (5 Nets)
+        // --- STAGE 1 BACKPROP (5 Nets) ---
         for(int i = 0; i < 5; i++) {
-            // The delta_out for S1 is the accumulated delta_s2_in at index i
+            // delta_s2_in[i] is the error signal (dLoss/d(OutputS1[i])) for nets1[i]
             backward_s1(&nets1[i], input_image, delta_s2_in[i]);
         }
 
@@ -614,7 +609,6 @@ int main() {
 
             // A. Inverse and Determinant (Gaussian-Jordan Elimination: O(N^3))
             memcpy(W_inv_copy, net_final.W_inv, N * N * sizeof(float));
-            // Removed redundant N parameter
             float det = inverse_and_determinant(W_inv_copy, W_inverse); 
 
             printf("   [DETERMINANT] Calculated value: %.6f\n", det);
@@ -625,7 +619,6 @@ int main() {
             }
 
             // B. Dominant Eigenvalue (Power Iteration: O(N^2) per iteration)
-            // Removed redundant N parameter
             power_iteration(net_final.W_inv, &dominant_eigenvalue, dominant_eigenvector);
 
             printf("   [EIGENVALUE] Dominant $\\lambda$: %.6f\n", dominant_eigenvalue);
