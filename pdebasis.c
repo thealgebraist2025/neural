@@ -6,60 +6,52 @@
 #include <string.h> 
 
 // --- Configuration ---
-#define N_SAMPLES_MAX 50000 // Increased training size
+#define N_SAMPLES_MAX 50000 // Training size
 #define D_SIZE 256         // 16x16 image size (RAW INPUT DIMENSION)
 #define GRID_SIZE 16       // Image grid size (16x16)
 #define N_INPUT D_SIZE     // NN Input Dimension
 #define N_OUTPUT 5         // NN Output: [Classification, x, y, w, h]
-#define N_HIDDEN 64        // Increased hidden layer size
+#define N_HIDDEN 64        // Hidden layer size
 #define N_TEST_SAMPLES 500 // Standard test set size
-#define N_REGRESSION_TESTS 50 // New regression test size
-
-// Time limit in seconds
-#define MAX_TIME_NN_SEC 120.0
+#define N_REGRESSION_TESTS 50 // Regression test size
 
 // Neural Network Parameters
-#define LEARNING_RATE 0.005 // Further reduced learning rate for complex task
-#define N_EPOCHS_MAX 10000 
+#define LEARNING_RATE 0.005 
+#define N_EPOCHS_TRAIN 100000 // FIXED: Increased training epochs significantly
 #define TARGET_RECTANGLE 1.0
 #define TARGET_LINE_SET 0.0
-#define CLASSIFICATION_WEIGHT 1.0 // Weight for classification loss
-#define REGRESSION_WEIGHT 0.5     // Weight for bounding box loss
+#define CLASSIFICATION_WEIGHT 1.0 
+#define REGRESSION_WEIGHT 2.0     // INCREASED: Prioritizing bounding box loss
 // ---------------------
 
 // --- Dynamic Globals ---
 int N_SAMPLES = 50000; 
-int N_EPOCHS;  
-
+int N_EPOCHS = N_EPOCHS_TRAIN; // Use the fixed large value
+ 
 // Global Data & Matrices
-double dataset[N_SAMPLES_MAX][D_SIZE];  // Raw Image Data (NN input)
-// targets structure: [Classification, x_norm, y_norm, w_norm, h_norm]
+double dataset[N_SAMPLES_MAX][D_SIZE]; 
 double targets[N_SAMPLES_MAX][N_OUTPUT]; 
 
 // Neural Network Weights and Biases 
 double w_ih[N_INPUT][N_HIDDEN]; double b_h[N_HIDDEN]; 
 double w_ho[N_HIDDEN][N_OUTPUT]; double b_o[N_OUTPUT];
 
-// Test Data (Standard Classification Test Set)
+// Test Data 
 double test_data[N_TEST_SAMPLES][D_SIZE];
-double test_targets_cls[N_TEST_SAMPLES]; // Only used for classification test
+double test_targets_cls[N_TEST_SAMPLES]; 
 
-// -----------------------------------------------------------------
-// --- FUNCTION PROTOTYPES ---
-// -----------------------------------------------------------------
 
-// Data Generation
+// --- Helper Macros ---
+#define CLAMP(val, min, max) ((val) < (min) ? (min) : ((val) > (max) ? (max) : (val)))
+
+
+// --- Function Prototypes ---
 void generate_rectangle(double image[D_SIZE], double target_data[N_OUTPUT]);
 void generate_random_lines(double image[D_SIZE], double target_data[N_OUTPUT]);
 void load_data_balanced(int n_samples);
-void load_subset_for_profiling(int n_subset);
 void load_balanced_dataset();
 void generate_test_set();
 
-// Profiling
-void estimate_nn_epochs();
-
-// NN Core Functions
 void initialize_nn();
 void train_nn(const double input_set[N_SAMPLES_MAX][N_INPUT]);
 double test_on_set_cls(int n_set_size, const double input_set[][N_INPUT]);
@@ -67,12 +59,11 @@ double sigmoid(double x);
 void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], double output[N_OUTPUT]);
 void backward_pass_and_update(const double input[N_INPUT], const double hidden_out[N_HIDDEN], const double output[N_OUTPUT], const double target[N_OUTPUT]);
 
-// New Test Functions
 void test_regression();
 void generate_test_rectangle(double image[D_SIZE], double target_data[N_OUTPUT]);
 
 // -----------------------------------------------------------------
-// --- DATA GENERATION FUNCTIONS ---
+// --- DATA GENERATION FUNCTIONS (Unchanged logic) ---
 // -----------------------------------------------------------------
 
 void generate_rectangle(double image[D_SIZE], double target_data[N_OUTPUT]) {
@@ -129,15 +120,6 @@ void load_data_balanced(int n_samples) {
         }
     }
 }
-void load_subset_for_profiling(int n_subset) {
-    for (int k = 0; k < n_subset; ++k) {
-        if (k % 2 == 0) { 
-            generate_rectangle(dataset[k], targets[k]);
-        } else { 
-            generate_random_lines(dataset[k], targets[k]);
-        }
-    }
-}
 void load_balanced_dataset() {
     printf("Generating BALANCED dataset (%d images): 50%% Rectangles, 50%% Random Lines.\n", N_SAMPLES);
     load_data_balanced(N_SAMPLES);
@@ -159,48 +141,20 @@ void generate_test_rectangle(double image[D_SIZE], double target_data[N_OUTPUT])
 }
 
 // -----------------------------------------------------------------
-// --- PROFILING FUNCTIONS ---
+// --- PROFILING FUNCTIONS (Simplified/Removed Time Limit) ---
 // -----------------------------------------------------------------
 
 void estimate_nn_epochs() {
-    clock_t start, end;
-    #define N_EPOCHS_PROFILE 100
-    
-    for (int k = 0; k < N_SAMPLES; k++) {
-        if (k < 50) load_subset_for_profiling(50); 
-    }
-    
-    initialize_nn(); 
-
-    start = clock();
-    for (int epoch = 0; epoch < N_EPOCHS_PROFILE; epoch++) {
-        int sample_index = rand() % 50; 
-        double hidden_out[N_HIDDEN]; 
-        double output[N_OUTPUT];
-
-        forward_pass(dataset[sample_index], hidden_out, output);
-        backward_pass_and_update(dataset[sample_index], hidden_out, output, targets[sample_index]);
-    }
-    end = clock();
-    double time_spent_profile = (double)(end - start) / CLOCKS_PER_SEC;
-
-    if (time_spent_profile < 1e-6) time_spent_profile = 1e-6;
-
-    double epoch_scale_factor = MAX_TIME_NN_SEC / time_spent_profile;
-    N_EPOCHS = (int)(N_EPOCHS_PROFILE * epoch_scale_factor);
-    
-    if (N_EPOCHS > N_EPOCHS_MAX) N_EPOCHS = N_EPOCHS_MAX;
-
-    printf("\n--- NN EPOCHS TIME PROFILING (Input %d, Hidden %d, Output %d) ---\n", N_INPUT, N_HIDDEN, N_OUTPUT);
-    printf("Profile (%d epochs): %.4f sec\n", N_EPOCHS_PROFILE, time_spent_profile);
-    printf("Estimated Epochs for %.1f sec limit: %d (Using N_EPOCHS=%d)\n", MAX_TIME_NN_SEC, (int)(N_EPOCHS_PROFILE * epoch_scale_factor), N_EPOCHS);
+    printf("\n--- NN EPOCHS CONFIGURATION ---\n");
+    printf("Setting fixed epochs to N_EPOCHS=%d for convergence of complex regression task.\n", N_EPOCHS);
 }
 
 // -----------------------------------------------------------------
-// --- NN CORE FUNCTIONS ---
+// --- NN CORE FUNCTIONS (Bug fix maintained, Logic updated) ---
 // -----------------------------------------------------------------
 
 void initialize_nn() {
+    // Input-to-Hidden
     for (int i = 0; i < N_INPUT; i++) {
         for (int j = 0; j < N_HIDDEN; j++) {
             w_ih[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * 0.1;
@@ -208,6 +162,7 @@ void initialize_nn() {
     }
     for (int j = 0; j < N_HIDDEN; j++) {
         b_h[j] = 0.0;
+        // Hidden-to-Output
         for (int k = 0; k < N_OUTPUT; k++) {
             w_ho[j][k] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * 0.1;
         }
@@ -227,6 +182,11 @@ void train_nn(const double input_set[N_SAMPLES_MAX][N_INPUT]) {
         
         forward_pass(input_set[sample_index], hidden_out, output);
         backward_pass_and_update(input_set[sample_index], hidden_out, output, targets[sample_index]);
+
+        // Simple progress indicator for long training
+        if (N_EPOCHS > 1000 && (epoch % (N_EPOCHS / 10) == 0) && epoch != 0) {
+            printf("  Epoch %d/%d completed.\n", epoch, N_EPOCHS);
+        }
     }
 }
 
@@ -235,6 +195,7 @@ double sigmoid(double x) {
 }
 
 void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], double output[N_OUTPUT]) {
+    // Input to Hidden Layer (Sigmoid activation)
     for (int j = 0; j < N_HIDDEN; j++) {
         double h_net = b_h[j];
         for (int i = 0; i < N_INPUT; i++) {
@@ -243,24 +204,26 @@ void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], doub
         hidden_out[j] = sigmoid(h_net);
     }
     
+    // Hidden to Output Layer
     for (int k = 0; k < N_OUTPUT; k++) {
         double o_net = b_o[k]; 
         for (int j = 0; j < N_HIDDEN; j++) { 
             o_net += hidden_out[j] * w_ho[j][k]; 
         } 
         
+        // Output[0] (Classification) uses Sigmoid
         if (k == 0) {
             output[k] = sigmoid(o_net);
         } else {
+            // Outputs [1..4] (Regression) use identity (linear)
             output[k] = o_net;
         }
     }
 }
 
-// BUG FIXED: Replaced accidental reuse of delta_o for hidden layer with delta_h
 void backward_pass_and_update(const double input[N_INPUT], const double hidden_out[N_HIDDEN], const double output[N_OUTPUT], const double target[N_OUTPUT]) {
     double delta_o[N_OUTPUT];
-    double delta_h[N_HIDDEN]; // CORRECT: Delta for the hidden layer
+    double delta_h[N_HIDDEN]; 
     double error_h[N_HIDDEN] = {0.0};
     
     // 1. Output Layer Deltas (delta_o calculated)
@@ -271,22 +234,21 @@ void backward_pass_and_update(const double input[N_INPUT], const double hidden_o
         if (k == 0) { 
             delta_o[k] = error * output[k] * (1.0 - output[k]) * weight;
         } else {
+            // Apply regression loss ONLY if the image is a rectangle (target[0] is 1.0)
             if (fabs(target[0] - TARGET_RECTANGLE) < DBL_EPSILON) {
-                weight = REGRESSION_WEIGHT;
+                weight = REGRESSION_WEIGHT; // Use increased regression weight
             } else {
-                weight = 0.0;
+                weight = 0.0; 
             }
-            delta_o[k] = error * weight;
+            delta_o[k] = error * weight; 
         }
     }
     
     // 2. Hidden Layer Deltas (delta_h calculated)
     for (int j = 0; j < N_HIDDEN; j++) { 
-        // Calculate error_h[j] (total weighted error from output layer)
         for (int k = 0; k < N_OUTPUT; k++) {
             error_h[j] += delta_o[k] * w_ho[j][k];
         }
-        // Calculate delta_h[j]
         delta_h[j] = error_h[j] * hidden_out[j] * (1.0 - hidden_out[j]); // Sigmoid derivative
     }
     
@@ -301,12 +263,10 @@ void backward_pass_and_update(const double input[N_INPUT], const double hidden_o
     // 4. Update Weights and Biases (Input-to-Hidden)
     for (int i = 0; i < N_INPUT; i++) { 
         for (int j = 0; j < N_HIDDEN; j++) { 
-            // Correctly use delta_h for this update
             w_ih[i][j] -= LEARNING_RATE * delta_h[j] * input[i]; 
         } 
     }
     for (int j = 0; j < N_HIDDEN; j++) { 
-        // Correctly use delta_h for this update
         b_h[j] -= LEARNING_RATE * delta_h[j]; 
     }
 }
@@ -330,12 +290,12 @@ double test_on_set_cls(int n_set_size, const double input_set[][N_INPUT]) {
 }
 
 // -----------------------------------------------------------------
-// --- REGRESSION TESTING ---
+// --- REGRESSION TESTING (Updated to clamp output) ---
 // -----------------------------------------------------------------
 
 void test_regression() {
     printf("\n--- STEP 3: REGRESSION TEST (%d Random Rectangles) ---\n", N_REGRESSION_TESTS);
-    printf("Image dimensions are 16x16 pixels.\n");
+    printf("Image dimensions are %dx%d pixels.\n", GRID_SIZE, GRID_SIZE);
     printf("--------------------------------------------------------------------------------------\n");
     printf("| # | Cls Score | Est. X, Y, W, H (Norm) | Est. X, Y, W, H (Pixels) | Known X, Y, W, H |\n");
     printf("|---|-----------|------------------------|--------------------------|------------------|\n");
@@ -351,21 +311,27 @@ void test_regression() {
         
         forward_pass(test_image, hidden_out, output);
         
+        // --- Clamping estimated normalized outputs to [0.0, 1.0] for validity ---
+        double est_x_norm = CLAMP(output[1], 0.0, 1.0);
+        double est_y_norm = CLAMP(output[2], 0.0, 1.0);
+        double est_w_norm = CLAMP(output[3], 0.0, 1.0);
+        double est_h_norm = CLAMP(output[4], 0.0, 1.0);
+        
         // Denormalize known and estimated dimensions (round to nearest integer)
         int known_x = (int)(known_target[1] * GRID_SIZE + 0.5);
         int known_y = (int)(known_target[2] * GRID_SIZE + 0.5);
         int known_w = (int)(known_target[3] * GRID_SIZE + 0.5);
         int known_h = (int)(known_target[4] * GRID_SIZE + 0.5);
 
-        int est_x = (int)(output[1] * GRID_SIZE + 0.5);
-        int est_y = (int)(output[2] * GRID_SIZE + 0.5);
-        int est_w = (int)(output[3] * GRID_SIZE + 0.5);
-        int est_h = (int)(output[4] * GRID_SIZE + 0.5);
+        int est_x = (int)(est_x_norm * GRID_SIZE + 0.5);
+        int est_y = (int)(est_y_norm * GRID_SIZE + 0.5);
+        int est_w = (int)(est_w_norm * GRID_SIZE + 0.5);
+        int est_h = (int)(est_h_norm * GRID_SIZE + 0.5);
         
         printf("| %1d | %9.4f | %0.2f, %0.2f, %0.2f, %0.2f | %2d, %2d, %2d, %2d | %2d, %2d, %2d, %2d |\n",
                i + 1,
                output[0],
-               output[1], output[2], output[3], output[4],
+               est_x_norm, est_y_norm, est_w_norm, est_h_norm, // Print clamped normalized values
                est_x, est_y, est_w, est_h,
                known_x, known_y, known_w, known_h);
     }
@@ -382,11 +348,12 @@ int main() {
 
     load_balanced_dataset(); 
     generate_test_set();
-    estimate_nn_epochs();
+    estimate_nn_epochs(); // Simply prints the new epoch config
 
     printf("\n--- GLOBAL CONFIGURATION ---\n");
     printf("Model: Classification + Regression NN\n");
     printf("Train Samples: %d | Input Dim: %d | Hidden Dim: %d | Output Dim: %d\n", N_SAMPLES, N_INPUT, N_HIDDEN, N_OUTPUT);
+    printf("Learning Rate: %.4f | Classification Weight: %.1f | Regression Weight: %.1f\n", LEARNING_RATE, CLASSIFICATION_WEIGHT, REGRESSION_WEIGHT);
 
     // --- STEP 1: NN Training ---
     printf("\n--- STEP 1: NN Training ---\n");
@@ -406,7 +373,7 @@ int main() {
     test_regression();
     
     end_total = clock();
-    printf("\nTotal execution time (including profiling): %.4f seconds.\n", (double)(end_total - start_total) / CLOCKS_PER_SEC);
+    printf("\nTotal execution time: %.4f seconds.\n", (double)(end_total - start_total) / CLOCKS_PER_SEC);
 
     return 0;
 }
