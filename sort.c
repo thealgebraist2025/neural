@@ -11,7 +11,7 @@
 #define LEARNING_RATE 0.01
 #define IMAGE_SIZE 10
 
-// --- 1. Linear Algebra Utilities ---
+// --- 1. Linear Algebra Utilities & Core Analysis ---
 
 float rand_float() {
     return ((float)rand() / RAND_MAX) - 0.5f;
@@ -54,14 +54,12 @@ float vec_normalize(float *vec, int D) {
     return norm;
 }
 
-// --- 2. O(N^3) Complex Matrix Analysis: Inverse and Determinant ---
-// (Functions are kept the same as they operate only on the N x N W_inv matrix)
-
 /**
  * Calculates the inverse of the N x N matrix W and its determinant using
  * Gaussian-Jordan elimination on an augmented matrix [W | I]. (O(N^3))
+ * NOTE: The size N is provided by the global macro N (10) and is no longer a parameter.
  */
-float inverse_and_determinant(const float *W_in, float *W_inv, int N) {
+float inverse_and_determinant(const float *W_in, float *W_inv) {
     float W_aug[N * 2 * N];
     for (int i = 0; i < N; i++) {
         for (int j = 0; j < N; j++) {
@@ -123,8 +121,9 @@ float inverse_and_determinant(const float *W_in, float *W_inv, int N) {
 /**
  * Finds the dominant eigenvalue (largest magnitude) and its eigenvector
  * using the Power Iteration method. (O(N^2) per iteration)
+ * NOTE: The size N is provided by the global macro N (10) and is no longer a parameter.
  */
-void power_iteration(const float *A, int N, float *eigenvalue, float *eigenvector) {
+void power_iteration(const float *A, float *eigenvalue, float *eigenvector) {
     const int max_iterations = 50;
     const float tolerance = 1e-6f;
 
@@ -159,7 +158,7 @@ void power_iteration(const float *A, int N, float *eigenvalue, float *eigenvecto
 }
 
 
-// --- 3. Cascading Network Structures (N=10 is the constant Hidden/Invertible size) ---
+// --- 2. Cascading Network Structures (N=10 is the constant Hidden/Invertible size) ---
 
 // Stage 1: Input 100 -> Hidden 10 -> Output 1 (5 Networks)
 typedef struct {
@@ -218,7 +217,7 @@ typedef struct {
 } NetS4;
 
 
-// --- 4. Initialization ---
+// --- 3. Initialization ---
 
 void init_weights(float *W, int M, int K) {
     for (int i = 0; i < M * K; i++) W[i] = rand_float() / sqrtf((float)K);
@@ -248,7 +247,7 @@ void init_net_s3(NetS3 *net) { init_weights(net->W_feat, N, 3); init_bias(net->b
 void init_net_s4(NetS4 *net) { init_weights(net->W_feat, N, 2); init_bias(net->b_feat, N); init_invertible_layer(net->W_inv, net->b_inv); init_weights(net->W_out, 1, N); init_bias(&net->b_out, 1); }
 
 
-// --- 5. Forward Pass Functions ---
+// --- 4. Forward Pass Functions ---
 
 // Returns the network's output (1x1 float)
 float forward_s1(NetS1 *net, const float *input) {
@@ -316,7 +315,7 @@ float forward_s4(NetS4 *net, const float *input) {
 }
 
 
-// --- 6. Backpropagation Functions ---
+// --- 5. Backpropagation Functions ---
 
 // The delta_out must be provided by the NEXT stage or the final MSE derivative
 // delta_out is the gradient dLoss/d(final_output) * d(final_output)/d(z_out)
@@ -482,7 +481,7 @@ void backward_s1(NetS1 *net, const float *input, float delta_out) {
 }
 
 
-// --- 7. Data Generation ---
+// --- 6. Data Generation ---
 
 void make_rectangle(float *img, int is_present) {
     for (int i = 0; i < INPUT_DIM; i++) img[i] = 0.0f;
@@ -508,7 +507,7 @@ void make_rectangle(float *img, int is_present) {
 }
 
 
-// --- 8. Main Program ---
+// --- 7. Main Program ---
 
 int main() {
     srand(time(NULL));
@@ -523,7 +522,7 @@ int main() {
     for (int i = 0; i < 2; i++) init_net_s3(&nets3[i]);
     init_net_s4(&net_final);
 
-    printf("Starting Cascaded Deep Ensemble Training (5->3->2->1 structure)...\n");
+    printf("Starting Cascaded Deep Ensemble Training (5->3->2->1 structure).)\n");
     printf("Total Networks: 11. Core Invertible Matrix size: %d x %d.\n", N, N);
 
     float input_image[INPUT_DIM];
@@ -569,26 +568,18 @@ int main() {
         float delta_final = (final_output - target) * final_output * (1.0f - final_output);
 
         // Stage 4 Backprop (S4 takes S3 output as input)
-        // Note: S4 delta_input (size 2) is not explicitly calculated as it's the final gradient needed.
         backward_s4(&net_final, output_s3, delta_final);
 
-        // Stage 3 Backprop (S3 takes S2 output as input)
-        // The gradient W_feat^T * delta_h1 from S4 is the final delta_out for S3.
-        // Since S4 has only one output, the overall gradient is delta_final * W_out_S4 * tanh_prime...
-        // For simplicity in this deep structure, we use the error signal from S4's output:
-        // delta_out_s3_1 = delta_final * W_out_S4_i * sigmoid_prime(z_out_S4)
-        
         // We calculate the gradient of the final error w.r.t the S3 outputs (size 2)
-        // The delta_out for the S3 networks is now coupled. Let's use the final delta_out (delta_final) for simplicity.
+        // For simplicity, using a simplified contribution model for the coupled gradient flow.
         float delta_out_s3[2];
-        delta_out_s3[0] = delta_final * net_final.W_feat[0]; // Simplified contribution
+        delta_out_s3[0] = delta_final * net_final.W_feat[0];
         delta_out_s3[1] = delta_final * net_final.W_feat[1];
 
         // Stage 3 Backprop (2 Nets)
+        memset(delta_s3_in, 0, sizeof(delta_s3_in));
         for(int i = 0; i < 2; i++) {
-            // Get the delta_input (size 3) for S2 from this S3 network
             float current_delta_input[3];
-            // Backward pass computes weight updates AND returns delta_input (size 3)
             backward_s3(&nets3[i], output_s2, delta_out_s3[i], current_delta_input); 
 
             // Accumulate the delta_input (size 3) for S2
@@ -596,6 +587,7 @@ int main() {
         }
 
         // Stage 2 Backprop (3 Nets)
+        memset(delta_s2_in, 0, sizeof(delta_s2_in));
         for(int i = 0; i < 3; i++) {
             // The delta_out for S2 is the accumulated delta_s3_in at index i
             float current_delta_input[5];
@@ -622,7 +614,8 @@ int main() {
 
             // A. Inverse and Determinant (Gaussian-Jordan Elimination: O(N^3))
             memcpy(W_inv_copy, net_final.W_inv, N * N * sizeof(float));
-            float det = inverse_and_determinant(W_inv_copy, W_inverse, N);
+            // Removed redundant N parameter
+            float det = inverse_and_determinant(W_inv_copy, W_inverse); 
 
             printf("   [DETERMINANT] Calculated value: %.6f\n", det);
             if (fabs(det) < 1e-6) {
@@ -632,7 +625,8 @@ int main() {
             }
 
             // B. Dominant Eigenvalue (Power Iteration: O(N^2) per iteration)
-            power_iteration(net_final.W_inv, N, &dominant_eigenvalue, dominant_eigenvector);
+            // Removed redundant N parameter
+            power_iteration(net_final.W_inv, &dominant_eigenvalue, dominant_eigenvector);
 
             printf("   [EIGENVALUE] Dominant $\\lambda$: %.6f\n", dominant_eigenvalue);
             printf("   [EIGENVECTOR] Dominant vector $v$ ($v_1$ to $v_3$): (%.4f, %.4f, %.4f) ...\n",
