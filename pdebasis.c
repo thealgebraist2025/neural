@@ -6,18 +6,18 @@
 #include <string.h> 
 
 // --- Configuration ---
-#define N_SAMPLES_MAX 50000 // Training size
+#define N_SAMPLES_MAX 150000 // Training size
 #define D_SIZE 256         // 16x16 image size (RAW INPUT DIMENSION)
 #define GRID_SIZE 16       // Image grid size (16x16)
 #define N_INPUT D_SIZE     // NN Input Dimension
 #define N_OUTPUT 5         // NN Output: [Classification, x, y, w, h]
-#define N_HIDDEN 64        // Hidden layer size
-#define N_TEST_SAMPLES 500 // Standard test set size
-#define N_REGRESSION_TESTS 50 // Regression test size
+#define N_HIDDEN 128        // Hidden layer size
+#define N_TEST_SAMPLES 15000 // Standard test set size
+#define N_REGRESSION_TESTS 500 // Regression test size
 
 // Neural Network Parameters
 #define LEARNING_RATE 0.005 
-#define N_EPOCHS_TRAIN 100000 // FIXED: Increased training epochs significantly
+#define N_EPOCHS_TRAIN 400000 // FIXED: Increased training epochs significantly
 #define TARGET_RECTANGLE 1.0
 #define TARGET_LINE_SET 0.0
 #define CLASSIFICATION_WEIGHT 1.0 
@@ -25,7 +25,7 @@
 // ---------------------
 
 // --- Dynamic Globals ---
-int N_SAMPLES = 50000; 
+int N_SAMPLES = 500000; 
 int N_EPOCHS = N_EPOCHS_TRAIN; // Use the fixed large value
  
 // Global Data & Matrices
