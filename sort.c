@@ -5,14 +5,14 @@
 #include <string.h>
 
 #define INPUT_DIM 100       // 10x10 image input
-#define N_VISUALIZE 4       // Hardcode N=4 for this specific run
+#define N_VISUALIZE 4       // Use N=4 for the analysis
 #define MAX_HIDDEN_DIM N_VISUALIZE
 #define EPOCHS 150000       
 #define IMAGE_SIZE 10
 #define GRADIENT_CLIP_MAX 0.1f 
 #define PI 3.14159265358979323846f
 #define LEARNING_RATE 0.03f 
-#define L2_REG_LAMBDA 0.0001f // L2 regularization strength
+#define L2_REG_LAMBDA 0.0001f // L2 regularization strength for the constrained network
 
 // --- 1. Network Structure ---
 
@@ -24,7 +24,7 @@ typedef struct {
     float h1_pre[MAX_HIDDEN_DIM]; 
 } NetConstrained;
 
-// --- 2. Utilities and Initialization ---
+// --- 2. Utilities and Initialization (Common) ---
 
 float ReLU(float x) { return (x) > 0.0f ? (x) : 0.0f; }
 float rand_uniform(float min, float max) { return (max - min) * ((float)rand() / RAND_MAX) + min; }
@@ -34,6 +34,8 @@ float clip_gradient(float grad) {
     return grad;
 }
 float sigmoid(float x) { return 1.0f / (1.0f + expf(-x)); }
+
+// Matrix-Vector Multiplication: y = A * x (A is M x N_A, x is N_A)
 void mat_vec_mul(const float *A, int M, int N_A, const float *x, float *y) {
     for (int i = 0; i < M; i++) {
         float sum = 0.0f;
@@ -41,11 +43,13 @@ void mat_vec_mul(const float *A, int M, int N_A, const float *x, float *y) {
         y[i] = sum;
     }
 }
+
 void init_weights_he(float *W, int M, int K) {
     float scale = sqrtf(2.0f / (float)K); 
     for (int i = 0; i < M * K; i++) W[i] = rand_uniform(-scale, scale);
 }
 void init_bias(float *b, int M) { for (int i = 0; i < M; i++) b[i] = 0.0f; }
+
 void init_net(NetConstrained *net, int N_eff) { 
     init_weights_he(net->W1, N_eff, INPUT_DIM); 
     init_bias(net->b1, N_eff); 
@@ -53,12 +57,14 @@ void init_net(NetConstrained *net, int N_eff) {
     init_bias(&net->b2, 1); 
 }
 
-// --- 3. Forward Pass (Common) ---
+// --- 3. Forward and Constrained Backward Passes ---
 
 float forward_network(NetConstrained *net, const float *input, int N_eff) {
+    // h1_pre = W1 * input + b1
     mat_vec_mul(net->W1, N_eff, INPUT_DIM, input, net->h1_pre); 
     for(int i=0; i<N_eff; i++) net->h1_pre[i] += net->b1[i];
 
+    // output = sigmoid(W2 * ReLU(h1_pre) + b2)
     float z_out = 0.0f; 
     for (int i = 0; i < N_eff; i++) {
         z_out += net->W2[i] * ReLU(net->h1_pre[i]); 
@@ -67,56 +73,37 @@ float forward_network(NetConstrained *net, const float *input, int N_eff) {
     return sigmoid(z_out);
 }
 
-// --- 4. Constrained Backpropagation (L2 Regularization Penalty) ---
-
 void backward_constrained(NetConstrained *net, const float *input, float delta_out, float lr, int N_eff) {
-    float grad_W2[N_eff]; 
-    float delta_h1_act[N_eff];
+    // Gradients computation is identical to previous Constrained code
+    float grad_W2[N_eff], delta_h1_act[N_eff], delta_h1_pre[N_eff], grad_W1[N_eff * INPUT_DIM];
 
     for (int i = 0; i < N_eff; i++) { 
         float h1_act = ReLU(net->h1_pre[i]);
         grad_W2[i] = delta_out * h1_act; 
         delta_h1_act[i] = delta_out * net->W2[i]; 
-    }
-    float grad_b2 = delta_out;
-
-    float delta_h1_pre[N_eff];
-    for (int i = 0; i < N_eff; i++) { 
         delta_h1_pre[i] = delta_h1_act[i] * (net->h1_pre[i] > 0.0f ? 1.0f : 0.0f); 
-    }
-
-    float grad_W1[N_eff * INPUT_DIM];
-    for (int i = 0; i < N_eff; i++) { 
         for (int j = 0; j < INPUT_DIM; j++) { 
             grad_W1[i * INPUT_DIM + j] = delta_h1_pre[i] * input[j]; 
         } 
     }
-    float *grad_b1 = delta_h1_pre; 
 
-    // --- Parameter Updates (WITH L2 regularization term) ---
-    
-    // W2 (Add L2 penalty)
+    // Parameter Updates (WITH L2 regularization term)
     for (int i = 0; i < N_eff; i++) {
         float total_grad_W2 = grad_W2[i] + L2_REG_LAMBDA * net->W2[i];
         net->W2[i] -= lr * clip_gradient(total_grad_W2);
     }
-    // b2 (Bias is NOT regularized)
-    net->b2 -= lr * clip_gradient(grad_b2);
-    
-    // W1 (Add L2 penalty)
+    net->b2 -= lr * clip_gradient(delta_out);
     for (int i = 0; i < N_eff * INPUT_DIM; i++) {
         float total_grad_W1 = grad_W1[i] + L2_REG_LAMBDA * net->W1[i];
         net->W1[i] -= lr * clip_gradient(total_grad_W1);
     }
-    
-    // b1 (Bias is NOT regularized)
-    for (int i = 0; i < N_eff; i++) net->b1[i] -= lr * clip_gradient(grad_b1[i]);
+    for (int i = 0; i < N_eff; i++) net->b1[i] -= lr * clip_gradient(delta_h1_pre[i]);
 }
 
 
-// --- 5. Data Generation (Identical to previous run) ---
+// --- 4. Data Generation for Training ---
 
-void generate_image(float *img, int is_present, int is_rotated) {
+void generate_training_image(float *img, int is_present, int is_rotated) {
     for (int i = 0; i < INPUT_DIM; i++) img[i] = 0.0f;
 
     if (is_present) {
@@ -146,7 +133,7 @@ void generate_image(float *img, int is_present, int is_rotated) {
                 if (r_prime >= -half_h && r_prime <= half_h && 
                     c_prime >= -half_w && c_prime <= half_w) 
                 {
-                    img[r * IMAGE_SIZE + c] = (((int)roundf(r_prime * 2.0f) + (int)roundf(c_prime * 2.0f)) % 2 == 0) ? 1.0f : 0.5f;
+                    img[r * IMAGE_SIZE + c] = 1.0f; // Simplified solid rectangle for speed
                 }
             }
         }
@@ -180,13 +167,64 @@ void generate_image(float *img, int is_present, int is_rotated) {
     }
 }
 
+// --- 5. Deterministic Test Image Generation for Visualization ---
+
+void generate_test_rect_3x3(float *img) {
+    for (int i = 0; i < INPUT_DIM; i++) img[i] = 0.0f;
+    int center = IMAGE_SIZE / 2;
+    for (int r = center - 1; r <= center + 1; r++) {
+        for (int c = center - 1; c <= center + 1; c++) {
+            img[r * IMAGE_SIZE + c] = 1.0f;
+        }
+    }
+}
+
+void generate_test_noisy_blank(float *img) {
+    for (int i = 0; i < INPUT_DIM; i++) img[i] = 0.0f;
+    
+    // Add 20% consistent noise
+    for (int i = 0; i < INPUT_DIM * 0.2; i++) {
+        img[i * 5] = 0.2f; // Deterministic scattered noise pattern
+    }
+}
+
+void generate_test_rotated(float *img) {
+    for (int i = 0; i < INPUT_DIM; i++) img[i] = 0.0f;
+    
+    float center_r = 4.5f; // Center of 10x10 grid
+    float center_c = 4.5f;
+    int width = 4;
+    int height = 2;
+    float angle = 20.0f * PI / 180.0f; // 20 degrees rotation
+    float cos_a = cosf(angle);
+    float sin_a = sinf(angle);
+
+    for (int r = 0; r < IMAGE_SIZE; r++) {
+        for (int c = 0; c < IMAGE_SIZE; c++) {
+            float tr = r - center_r;
+            float tc = c - center_c;
+            
+            float r_prime = tr * cos_a + tc * sin_a;
+            float c_prime = -tr * sin_a + tc * cos_a;
+            
+            float half_w = width / 2.0f;
+            float half_h = height / 2.0f;
+
+            if (r_prime >= -half_h && r_prime <= half_h && 
+                c_prime >= -half_w && c_prime <= half_w) 
+            {
+                img[r * IMAGE_SIZE + c] = 1.0f;
+            }
+        }
+    }
+}
+
 
 // --- 6. Visualization Utilities ---
 
-void print_ascii_image(const float *data, float min_val, float max_val, const char *title) {
-    printf("\n%s (10x10 Feature Map):\n", title);
+void print_ascii_image(const float *data, float min_val, float max_val, const char *title, int feature_index, float b1_val, float w2_val) {
+    printf("\n%s (Feature %d / Bias: %.4f / Output Weight: %.4f):\n", title, feature_index, b1_val, w2_val);
     
-    // Scale the floating point value to an integer from 0 to 9 for ASCII visualization
     float range = max_val - min_val;
     if (range < 1e-6) range = 1.0f; 
 
@@ -194,6 +232,7 @@ void print_ascii_image(const float *data, float min_val, float max_val, const ch
         for (int c = 0; c < IMAGE_SIZE; c++) {
             float val = data[r * IMAGE_SIZE + c];
             
+            // Normalize value to 0-1, then scale to 0-9
             int scaled_val = (int)roundf(((val - min_val) / range) * 9.0f);
             
             if (scaled_val < 0) scaled_val = 0;
@@ -208,7 +247,6 @@ void print_ascii_image(const float *data, float min_val, float max_val, const ch
 void visualize_features(const NetConstrained *net) {
     int N_eff = N_VISUALIZE; 
 
-    // Find the min/max overall weight to normalize all features to the same global scale
     float global_min = net->W1[0];
     float global_max = net->W1[0];
 
@@ -218,67 +256,59 @@ void visualize_features(const NetConstrained *net) {
     }
     
     printf("\n\n---------------------------------------------------------------------------\n");
-    printf("FEATURE MAP VISUALIZATION (CONSTRAINED/L2 N=%d)\n", N_eff);
+    printf("CONSTRAINED/L2 FEATURE MAPS (N=%d)\n", N_eff);
     printf("Weights normalized from global_min=%.4f to global_max=%.4f\n", global_min, global_max);
     printf("---------------------------------------------------------------------------\n");
 
-    // Display the first two learned features (W1 rows 0 and 1)
-    
-    // Feature 1
-    print_ascii_image(&net->W1[0], global_min, global_max, "Feature 1 (Input Weights of Neuron 1)");
-    printf("W2 Output Weight: %.4f\n", net->W2[0]);
-
-    // Feature 2
-    print_ascii_image(&net->W1[INPUT_DIM], global_min, global_max, "Feature 2 (Input Weights of Neuron 2)");
-    printf("W2 Output Weight: %.4f\n", net->W2[1]);
+    for (int i = 0; i < N_eff; i++) {
+        char title[50];
+        snprintf(title, sizeof(title), "Feature %d (Input Weights of Neuron %d)", i + 1, i + 1);
+        print_ascii_image(&net->W1[i * INPUT_DIM], global_min, global_max, title, i + 1, net->b1[i], net->W2[i]);
+    }
 }
 
 
-// --- 7. Main Benchmark Function (Only runs N=4 Constrained) ---
+void analyze_activation_patterns(const NetConstrained *net) {
+    float rect_img[INPUT_DIM];
+    float noisy_img[INPUT_DIM];
+    float rotated_img[INPUT_DIM];
+    float h_pre[N_VISUALIZE];
 
-void run_constrained_benchmark_and_visualize(NetConstrained *net_out) {
-    int N_eff = N_VISUALIZE;
-    float input_image[INPUT_DIM];
-    float target;
-    float avg_loss = 0.0f;
+    generate_test_rect_3x3(rect_img);
+    generate_test_noisy_blank(noisy_img);
+    generate_test_rotated(rotated_img);
 
-    init_net(net_out, N_eff); 
+    printf("\n\n---------------------------------------------------------------------------\n");
+    printf("FEATURE ACTIVATION ANALYSIS (h_pre = W1 * x + b1)\n");
+    printf("---------------------------------------------------------------------------\n");
 
-    // --- Training Loop ---
-    clock_t start_time = clock();
+    printf("Neuron (W2 Weight) | Activation for 3x3 Rect | Activation for Noisy Blank | Activation for Rotated Rect |\n");
+    printf("-------------------|-------------------------|----------------------------|-----------------------------|\n");
 
-    for (int epoch = 1; epoch <= EPOCHS; epoch++) {
-        int is_present = rand() % 2;
-        int do_rotate = is_present && (rand() % 2); 
-        target = (float)is_present;
-        
-        generate_image(input_image, is_present, do_rotate);
-
-        float final_output = forward_network(net_out, input_image, N_eff);
-        float mse_loss = (target - final_output) * (target - final_output);
-        avg_loss = avg_loss * 0.99f + mse_loss * 0.01f;
-
-        // Backward Pass & Update (CONSTRAINED/L2)
-        float delta_final = (final_output - target) * final_output * (1.0f - final_output);
-        backward_constrained(net_out, input_image, delta_final, LEARNING_RATE, N_eff);
-    }
-
-    clock_t end_time = clock();
-    float training_time_sec = (float)(end_time - start_time) / CLOCKS_PER_SEC;
-
-    // --- Final Testing ---
+    // 1. 3x3 Rectangle Activation
+    mat_vec_mul(net->W1, N_VISUALIZE, INPUT_DIM, rect_img, h_pre); 
+    for(int i=0; i<N_VISUALIZE; i++) h_pre[i] += net->b1[i];
     
-    generate_image(input_image, 1, 0); 
-    float test_present = forward_network(net_out, input_image, N_eff);
+    printf("3x3 Rect Input:");
+    for(int i=0; i<N_VISUALIZE; i++) printf(" (F%d) %.4f ", i+1, h_pre[i]);
+    printf("\n");
 
-    generate_image(input_image, 0, 0); 
-    float test_absent = forward_network(net_out, input_image, N_eff);
+    // 2. Noisy Blank Activation
+    mat_vec_mul(net->W1, N_VISUALIZE, INPUT_DIM, noisy_img, h_pre); 
+    for(int i=0; i<N_VISUALIZE; i++) h_pre[i] += net->b1[i];
+    
+    printf("Noisy Blank Input:");
+    for(int i=0; i<N_VISUALIZE; i++) printf(" (F%d) %.4f ", i+1, h_pre[i]);
+    printf("\n");
 
-    generate_image(input_image, 1, 1); 
-    float test_rotated = forward_network(net_out, input_image, N_eff);
-
-    printf("[Constrained Benchmark N=%-3d] Time: %.2fs | Loss: %.6f | Present: %.4f, Absent (Distractor): %.4f, Rotated: %.4f\n", 
-           N_eff, training_time_sec, avg_loss, test_present, test_absent, test_rotated);
+    // 3. Rotated Rectangle Activation
+    mat_vec_mul(net->W1, N_VISUALIZE, INPUT_DIM, rotated_img, h_pre); 
+    for(int i=0; i<N_VISUALIZE; i++) h_pre[i] += net->b1[i];
+    
+    printf("Rotated Rect Input:");
+    for(int i=0; i<N_VISUALIZE; i++) printf(" (F%d) %.4f ", i+1, h_pre[i]);
+    printf("\n");
+    printf("---------------------------------------------------------------------------\n");
 }
 
 
@@ -288,14 +318,50 @@ int main() {
     
     NetConstrained constrained_net;
 
-    printf("Starting Constrained (L2-Regularized) Network Benchmark (N=4 only) for Feature Visualization.\n");
+    printf("Starting Constrained (L2-Regularized) Network Benchmark (N=4 only) for Feature Analysis.\n");
     printf("Training data includes complex linear distractors and 20%% random noise.\n\n");
 
-    // Run the benchmark and save the trained network structure
-    run_constrained_benchmark_and_visualize(&constrained_net);
+    // --- Training ---
+    int N_eff = N_VISUALIZE;
+    float input_image[INPUT_DIM];
+    float target;
+    float avg_loss = 0.0f;
 
-    // Visualize the feature maps of the trained network
+    init_net(&constrained_net, N_eff); 
+    clock_t start_time = clock();
+
+    for (int epoch = 1; epoch <= EPOCHS; epoch++) {
+        int is_present = rand() % 2;
+        int do_rotate = is_present && (rand() % 2); 
+        target = (float)is_present;
+        
+        generate_training_image(input_image, is_present, do_rotate);
+
+        float final_output = forward_network(&constrained_net, input_image, N_eff);
+        float mse_loss = (target - final_output) * (target - final_output);
+        avg_loss = avg_loss * 0.99f + mse_loss * 0.01f;
+
+        float delta_final = (final_output - target) * final_output * (1.0f - final_output);
+        backward_constrained(&constrained_net, input_image, delta_final, LEARNING_RATE, N_eff);
+    }
+
+    clock_t end_time = clock();
+    float training_time_sec = (float)(end_time - start_time) / CLOCKS_PER_SEC;
+
+    // --- Testing ---
+    generate_training_image(input_image, 1, 0); 
+    float test_present = forward_network(&constrained_net, input_image, N_eff);
+    generate_training_image(input_image, 0, 0); 
+    float test_absent = forward_network(&constrained_net, input_image, N_eff);
+    generate_training_image(input_image, 1, 1); 
+    float test_rotated = forward_network(&constrained_net, input_image, N_eff);
+
+    printf("[Constrained Benchmark N=%-3d] Time: %.2fs | Loss: %.6f | Present: %.4f, Absent (Distractor): %.4f, Rotated: %.4f\n", 
+           N_eff, training_time_sec, avg_loss, test_present, test_absent, test_rotated);
+
+    // --- Visualization ---
     visualize_features(&constrained_net);
+    analyze_activation_patterns(&constrained_net);
 
     return 0;
 }
