@@ -12,7 +12,7 @@
 #define GRADIENT_CLIP_MAX 0.1f 
 #define PI 3.14159265358979323846f
 #define LEARNING_RATE 0.03f 
-#define L2_REG_LAMBDA 0.0001f 
+#define L2_REG_LAMBDA 0.0001f // L2 regularization strength
 
 // --- 1. Network Structure ---
 
@@ -22,19 +22,9 @@ typedef struct {
     float W2[MAX_HIDDEN_DIM]; 
     float b2; 
     float h1_pre[MAX_HIDDEN_DIM]; 
-} Net;
+} NetConstrained;
 
-typedef struct {
-    int size;
-    float smooth_loss;
-    float training_time_sec;
-    float test_present;
-    float test_absent;
-    float test_rotated;
-} BenchmarkResult;
-
-
-// --- 2. Utilities and Initialization (Truncated for brevity) ---
+// --- 2. Utilities and Initialization ---
 
 float ReLU(float x) { return (x) > 0.0f ? (x) : 0.0f; }
 float rand_uniform(float min, float max) { return (max - min) * ((float)rand() / RAND_MAX) + min; }
@@ -51,23 +41,21 @@ void mat_vec_mul(const float *A, int M, int N_A, const float *x, float *y) {
         y[i] = sum;
     }
 }
-
 void init_weights_he(float *W, int M, int K) {
     float scale = sqrtf(2.0f / (float)K); 
     for (int i = 0; i < M * K; i++) W[i] = rand_uniform(-scale, scale);
 }
 void init_bias(float *b, int M) { for (int i = 0; i < M; i++) b[i] = 0.0f; }
-
-void init_net(Net *net, int N_eff) { 
+void init_net(NetConstrained *net, int N_eff) { 
     init_weights_he(net->W1, N_eff, INPUT_DIM); 
     init_bias(net->b1, N_eff); 
     init_weights_he(net->W2, 1, N_eff); 
     init_bias(&net->b2, 1); 
 }
 
-// --- 3. Forward and Backward Passes (Simplified Naive, no L2 penalty) ---
+// --- 3. Forward Pass (Common) ---
 
-float forward_network(Net *net, const float *input, int N_eff) {
+float forward_network(NetConstrained *net, const float *input, int N_eff) {
     mat_vec_mul(net->W1, N_eff, INPUT_DIM, input, net->h1_pre); 
     for(int i=0; i<N_eff; i++) net->h1_pre[i] += net->b1[i];
 
@@ -79,42 +67,58 @@ float forward_network(Net *net, const float *input, int N_eff) {
     return sigmoid(z_out);
 }
 
-void backward_naive(Net *net, const float *input, float delta_out, float lr, int N_eff) {
-    // Standard backpropagation (details omitted for focus, identical to previous Naive code)
-    float grad_W2[N_eff], delta_h1_act[N_eff], delta_h1_pre[N_eff], grad_W1[N_eff * INPUT_DIM];
+// --- 4. Constrained Backpropagation (L2 Regularization Penalty) ---
+
+void backward_constrained(NetConstrained *net, const float *input, float delta_out, float lr, int N_eff) {
+    float grad_W2[N_eff]; 
+    float delta_h1_act[N_eff];
 
     for (int i = 0; i < N_eff; i++) { 
         float h1_act = ReLU(net->h1_pre[i]);
         grad_W2[i] = delta_out * h1_act; 
         delta_h1_act[i] = delta_out * net->W2[i]; 
+    }
+    float grad_b2 = delta_out;
+
+    float delta_h1_pre[N_eff];
+    for (int i = 0; i < N_eff; i++) { 
         delta_h1_pre[i] = delta_h1_act[i] * (net->h1_pre[i] > 0.0f ? 1.0f : 0.0f); 
+    }
+
+    float grad_W1[N_eff * INPUT_DIM];
+    for (int i = 0; i < N_eff; i++) { 
         for (int j = 0; j < INPUT_DIM; j++) { 
             grad_W1[i * INPUT_DIM + j] = delta_h1_pre[i] * input[j]; 
         } 
     }
+    float *grad_b1 = delta_h1_pre; 
+
+    // --- Parameter Updates (WITH L2 regularization term) ---
     
-    // Updates
-    for (int i = 0; i < N_eff; i++) net->W2[i] -= lr * clip_gradient(grad_W2[i]);
-    net->b2 -= lr * clip_gradient(delta_out);
-    for (int i = 0; i < N_eff * INPUT_DIM; i++) net->W1[i] -= lr * clip_gradient(grad_W1[i]);
-    for (int i = 0; i < N_eff; i++) net->b1[i] -= lr * clip_gradient(delta_h1_pre[i]);
+    // W2 (Add L2 penalty)
+    for (int i = 0; i < N_eff; i++) {
+        float total_grad_W2 = grad_W2[i] + L2_REG_LAMBDA * net->W2[i];
+        net->W2[i] -= lr * clip_gradient(total_grad_W2);
+    }
+    // b2 (Bias is NOT regularized)
+    net->b2 -= lr * clip_gradient(grad_b2);
+    
+    // W1 (Add L2 penalty)
+    for (int i = 0; i < N_eff * INPUT_DIM; i++) {
+        float total_grad_W1 = grad_W1[i] + L2_REG_LAMBDA * net->W1[i];
+        net->W1[i] -= lr * clip_gradient(total_grad_W1);
+    }
+    
+    // b1 (Bias is NOT regularized)
+    for (int i = 0; i < N_eff; i++) net->b1[i] -= lr * clip_gradient(grad_b1[i]);
 }
 
 
-// --- 4. Data Generation (Identical to previous run) ---
+// --- 5. Data Generation (Identical to previous run) ---
 
 void generate_image(float *img, int is_present, int is_rotated) {
-    // (Content for rectangle generation, distractors, and noise is omitted here 
-    // for brevity but is included in the full file logic)
-
-    // ... (omitted) ...
-    // Full logic for generating rectangles, distractors, and 20% noise remains the same.
-    // ... (omitted) ...
-
-    // 1. Clear Image
     for (int i = 0; i < INPUT_DIM; i++) img[i] = 0.0f;
 
-    // 2. Draw Positive Rectangle (if present)
     if (is_present) {
         int start_row = rand() % (IMAGE_SIZE - 4);
         int start_col = rand() % (IMAGE_SIZE - 4);
@@ -148,7 +152,6 @@ void generate_image(float *img, int is_present, int is_rotated) {
         }
     }
     
-    // 3. Draw Negative Distractors (if NOT present)
     if (!is_present) {
         int size = (rand() % 3) + 2; 
         int max_start = IMAGE_SIZE - size;
@@ -168,7 +171,6 @@ void generate_image(float *img, int is_present, int is_rotated) {
         }
     }
     
-    // 4. Add 20% Random Noise (Always present)
     int noise_pixels = (int)(INPUT_DIM * 0.20f);
     for (int i = 0; i < noise_pixels; i++) {
         int idx = rand() % INPUT_DIM;
@@ -179,12 +181,12 @@ void generate_image(float *img, int is_present, int is_rotated) {
 }
 
 
-// --- 5. New Visualization Utilities ---
+// --- 6. Visualization Utilities ---
 
 void print_ascii_image(const float *data, float min_val, float max_val, const char *title) {
     printf("\n%s (10x10 Feature Map):\n", title);
     
-    // Calculate range for scaling (avoid division by zero if max_val == min_val)
+    // Scale the floating point value to an integer from 0 to 9 for ASCII visualization
     float range = max_val - min_val;
     if (range < 1e-6) range = 1.0f; 
 
@@ -192,7 +194,6 @@ void print_ascii_image(const float *data, float min_val, float max_val, const ch
         for (int c = 0; c < IMAGE_SIZE; c++) {
             float val = data[r * IMAGE_SIZE + c];
             
-            // Normalize value to 0-1, then scale to 0-9
             int scaled_val = (int)roundf(((val - min_val) / range) * 9.0f);
             
             if (scaled_val < 0) scaled_val = 0;
@@ -204,10 +205,10 @@ void print_ascii_image(const float *data, float min_val, float max_val, const ch
     }
 }
 
-void visualize_features(const Net *net) {
-    int N_eff = N_VISUALIZE; // 4
+void visualize_features(const NetConstrained *net) {
+    int N_eff = N_VISUALIZE; 
 
-    // Find the min/max overall weight to normalize both features to the same scale
+    // Find the min/max overall weight to normalize all features to the same global scale
     float global_min = net->W1[0];
     float global_max = net->W1[0];
 
@@ -217,31 +218,31 @@ void visualize_features(const Net *net) {
     }
     
     printf("\n\n---------------------------------------------------------------------------\n");
-    printf("FEATURE MAP VISUALIZATION (NAIVE N=%d)\n", N_eff);
+    printf("FEATURE MAP VISUALIZATION (CONSTRAINED/L2 N=%d)\n", N_eff);
     printf("Weights normalized from global_min=%.4f to global_max=%.4f\n", global_min, global_max);
     printf("---------------------------------------------------------------------------\n");
 
     // Display the first two learned features (W1 rows 0 and 1)
     
-    // Feature 1: The input weights of the first hidden neuron
+    // Feature 1
     print_ascii_image(&net->W1[0], global_min, global_max, "Feature 1 (Input Weights of Neuron 1)");
     printf("W2 Output Weight: %.4f\n", net->W2[0]);
 
-    // Feature 2: The input weights of the second hidden neuron
+    // Feature 2
     print_ascii_image(&net->W1[INPUT_DIM], global_min, global_max, "Feature 2 (Input Weights of Neuron 2)");
     printf("W2 Output Weight: %.4f\n", net->W2[1]);
 }
 
 
-// --- 6. Main Benchmark Function (Only runs N=4 Naive) ---
+// --- 7. Main Benchmark Function (Only runs N=4 Constrained) ---
 
-BenchmarkResult run_benchmark_and_visualize(Net *net_out) {
+void run_constrained_benchmark_and_visualize(NetConstrained *net_out) {
     int N_eff = N_VISUALIZE;
     float input_image[INPUT_DIM];
     float target;
     float avg_loss = 0.0f;
 
-    init_net(net_out, N_eff); // Initialize the network struct to be returned
+    init_net(net_out, N_eff); 
 
     // --- Training Loop ---
     clock_t start_time = clock();
@@ -253,15 +254,13 @@ BenchmarkResult run_benchmark_and_visualize(Net *net_out) {
         
         generate_image(input_image, is_present, do_rotate);
 
-        // Forward Pass
         float final_output = forward_network(net_out, input_image, N_eff);
-
         float mse_loss = (target - final_output) * (target - final_output);
         avg_loss = avg_loss * 0.99f + mse_loss * 0.01f;
 
-        // Backward Pass & Update (Naive, unconstrained)
+        // Backward Pass & Update (CONSTRAINED/L2)
         float delta_final = (final_output - target) * final_output * (1.0f - final_output);
-        backward_naive(net_out, input_image, delta_final, LEARNING_RATE, N_eff);
+        backward_constrained(net_out, input_image, delta_final, LEARNING_RATE, N_eff);
     }
 
     clock_t end_time = clock();
@@ -278,17 +277,8 @@ BenchmarkResult run_benchmark_and_visualize(Net *net_out) {
     generate_image(input_image, 1, 1); 
     float test_rotated = forward_network(net_out, input_image, N_eff);
 
-    printf("[Benchmark N=%-3d] Time: %.2fs | Loss: %.6f | Present: %.4f, Absent (Distractor): %.4f, Rotated: %.4f\n", 
+    printf("[Constrained Benchmark N=%-3d] Time: %.2fs | Loss: %.6f | Present: %.4f, Absent (Distractor): %.4f, Rotated: %.4f\n", 
            N_eff, training_time_sec, avg_loss, test_present, test_absent, test_rotated);
-
-    return (BenchmarkResult){
-        .size = N_eff,
-        .smooth_loss = avg_loss,
-        .training_time_sec = training_time_sec,
-        .test_present = test_present,
-        .test_absent = test_absent,
-        .test_rotated = test_rotated
-    };
 }
 
 
@@ -296,16 +286,16 @@ int main() {
     setbuf(stdout, NULL); 
     srand(time(NULL));
     
-    Net naive_net;
+    NetConstrained constrained_net;
 
-    printf("Starting Naive Network Benchmark (N=4 only) for Feature Visualization.\n");
+    printf("Starting Constrained (L2-Regularized) Network Benchmark (N=4 only) for Feature Visualization.\n");
     printf("Training data includes complex linear distractors and 20%% random noise.\n\n");
 
     // Run the benchmark and save the trained network structure
-    run_benchmark_and_visualize(&naive_net);
+    run_constrained_benchmark_and_visualize(&constrained_net);
 
     // Visualize the feature maps of the trained network
-    visualize_features(&naive_net);
+    visualize_features(&constrained_net);
 
     return 0;
 }
