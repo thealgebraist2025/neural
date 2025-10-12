@@ -8,7 +8,7 @@
 #define N_SAMPLES_MAX 1000 // Maximum target size
 #define N_PROFILE 50       // Small subset size for profiling
 #define D_SIZE 256
-#define N_BASIS 16
+#define N_BASIS 16         // Basis vectors (NN input size)
 #define N_HIDDEN 8
 #define N_TEST_SAMPLES 500
 
@@ -16,9 +16,9 @@
 #define MAX_TIME_BASIS_SEC 120.0
 #define MAX_TIME_NN_SEC 120.0
 
-// Graph Parameters
-#define EPSILON 2500.0
-#define SIGMA 500.0
+// Graph Parameters (TUNED TO FIX COLLAPSE)
+#define EPSILON 1500.0   // Reduced to force sparser connectivity
+#define SIGMA 250.0      // Reduced to make weights drop off faster with distance
 
 // Optimization Parameters
 #define MAX_POWER_ITER 5000 
@@ -31,11 +31,11 @@
 #define TARGET_NO_RECTANGLE 0.0
 // ---------------------
 
-// --- Dynamic Globals (Sized by N_SAMPLES) ---
+// --- Dynamic Globals (Sized by MAX N for dynamic allocation proxy) ---
 int N_SAMPLES; // Will be set dynamically by profiling
 int N_EPOCHS;  // Will be set dynamically by profiling
 
-// Global Data & Matrices (Sized by MAX N for dynamic allocation proxy)
+// Global Data & Matrices 
 double dataset[N_SAMPLES_MAX][D_SIZE];  
 double A[N_SAMPLES_MAX][N_SAMPLES_MAX]; 
 double M[N_SAMPLES_MAX][N_SAMPLES_MAX];
@@ -53,17 +53,12 @@ double b_o[1];
 double test_data[N_TEST_SAMPLES][D_SIZE];
 double test_targets[N_TEST_SAMPLES];
 
-// Function prototypes (definitions placed at the end)
-// ... (omitted prototypes for space, all defined below)
-
-
 // -----------------------------------------------------------------
 // --- PROFILING AND SCALING FUNCTIONS ---
 // -----------------------------------------------------------------
 
 // Helper function to load only a subset of data
 void load_subset(int n_subset) {
-    // Uses the same logic as load_mock_dataset, but only for n_subset
     for (int k = 0; k < n_subset; ++k) {
         int rect_w = 4 + (rand() % 8);
         int rect_h = 4 + (rand() % 8);
@@ -87,22 +82,25 @@ void load_subset(int n_subset) {
     }
 }
 
-// Function to estimate N_SAMPLES for MAX_TIME_BASIS_SEC
+// Function declaration for dependency
+double euclidean_distance_sq(int idx1, int idx2); 
+void initialize_nn();
+double forward_pass(const double input[N_BASIS], double hidden_out[N_HIDDEN], double* output);
+void backward_pass_and_update(const double input[N_BASIS], const double hidden_out[N_HIDDEN], double output, double target);
+
+
 void estimate_basis_samples() {
     clock_t start, end;
     double time_spent_profile;
     
-    // 1. Load and Profile the Small Subset
     load_subset(N_PROFILE);
     start = clock();
     
-    // --- Basis Generation Profile ---
-    // Calculate Adjacency Matrix (O(N^2 * D))
+    // --- Basis Generation Profile (O(N^2 * D)) ---
     int i, j;
     double dist_sq, epsilon_sq = EPSILON * EPSILON, sigma_sq = SIGMA * SIGMA;
     for (i = 0; i < N_PROFILE; i++) {
         for (j = i + 1; j < N_PROFILE; j++) {
-            // Mock euclidean_distance_sq call
             dist_sq = euclidean_distance_sq(i, j); 
             if (dist_sq < epsilon_sq) {
                 double weight = exp(-dist_sq / sigma_sq);
@@ -111,28 +109,19 @@ void estimate_basis_samples() {
             }
         }
     }
-    // Calculate M (O(N^2))
     for (i = 0; i < N_PROFILE; i++) {
         double degree = 0.0;
         for (j = 0; j < N_PROFILE; j++) degree += A[i][j];
     }
-    // Run Power Iteration for one basis vector (O(N_BASIS * N^2 * PI_ITER))
-    // This is the least dominant part, but we include one iteration.
-    // For simplicity, we just profile the O(N^2) component.
 
     end = clock();
     time_spent_profile = (double)(end - start) / CLOCKS_PER_SEC;
     
-    if (time_spent_profile < 1e-6) time_spent_profile = 1e-6; // Prevent division by zero
+    if (time_spent_profile < 1e-6) time_spent_profile = 1e-6; 
 
-    // 2. Scale N using O(N^2) model
-    // Time_total / Time_profile = (N_total / N_profile)^2
-    // N_total = N_profile * sqrt(Time_total / Time_profile)
-    
     double scale_factor = MAX_TIME_BASIS_SEC / time_spent_profile;
     double N_scaled = (double)N_PROFILE * sqrt(scale_factor);
     
-    // 3. Set Final N_SAMPLES
     N_SAMPLES = (int)N_scaled;
     if (N_SAMPLES > N_SAMPLES_MAX) N_SAMPLES = N_SAMPLES_MAX;
     if (N_SAMPLES < N_PROFILE) N_SAMPLES = N_PROFILE;
@@ -142,29 +131,25 @@ void estimate_basis_samples() {
     printf("Estimated N for %.1f sec limit: %d (Using N=%d)\n", MAX_TIME_BASIS_SEC, (int)N_scaled, N_SAMPLES);
 }
 
-// Function to estimate N_EPOCHS for MAX_TIME_NN_SEC
 void estimate_nn_epochs() {
     clock_t start, end;
     double time_spent_profile;
     
-    // Profile a small number of epochs
     #define N_EPOCHS_PROFILE 100
     
-    // Ensure NN is initialized with random weights
     initialize_nn(); 
 
     start = clock();
-    // --- NN Training Profile ---
+    // --- NN Training Profile (O(N_EPOCHS)) ---
     for (int epoch = 0; epoch < N_EPOCHS_PROFILE; epoch++) {
-        int sample_index = rand() % N_SAMPLES;
+        int sample_index = rand() % N_PROFILE;
         double input[N_BASIS];
         for (int i = 0; i < N_BASIS; i++) {
-            input[i] = ((double)rand() / RAND_MAX); // Use dummy input
+            input[i] = ((double)rand() / RAND_MAX); 
         }
         double hidden_out[N_HIDDEN];
         double output;
         forward_pass(input, hidden_out, &output);
-        // Use a fixed target of 1.0 for profiling
         backward_pass_and_update(input, hidden_out, output, 1.0);
     }
     end = clock();
@@ -172,10 +157,6 @@ void estimate_nn_epochs() {
 
     if (time_spent_profile < 1e-6) time_spent_profile = 1e-6;
 
-    // 2. Scale Epochs (O(N_EPOCHS) model)
-    // Epochs_total / Epochs_profile = Time_total / Time_profile
-    // Epochs_total = Epochs_profile * (Time_total / Time_profile)
-    
     double epoch_scale_factor = MAX_TIME_NN_SEC / time_spent_profile;
     N_EPOCHS = (int)(N_EPOCHS_PROFILE * epoch_scale_factor);
     
@@ -192,7 +173,6 @@ void estimate_nn_epochs() {
 // -----------------------------------------------------------------
 
 void load_mock_dataset() {
-    // This now loads the full N_SAMPLES set determined by profiling
     printf("Generating TRAINING dataset (%d images). All have rectangles.\n", N_SAMPLES);
     for (int k = 0; k < N_SAMPLES; ++k) {
         int rect_w = 4 + (rand() % 8);
@@ -251,7 +231,6 @@ void generate_test_set() {
 
 double euclidean_distance_sq(int idx1, int idx2) { 
     double dist_sq = 0.0; 
-    // Use the dataset array which is globally defined
     for (int i = 0; i < D_SIZE; i++) { 
         double diff = dataset[idx1][i] - dataset[idx2][i]; 
         dist_sq += diff * diff; 
@@ -260,7 +239,6 @@ double euclidean_distance_sq(int idx1, int idx2) {
 }
 
 void construct_adjacency_matrix() {
-    // Uses the calculated N_SAMPLES
     int i, j;
     double dist_sq;
     double epsilon_sq = EPSILON * EPSILON;
@@ -284,7 +262,6 @@ void construct_adjacency_matrix() {
 }
 
 void calculate_random_walk_matrix() {
-    // Uses the calculated N_SAMPLES
     int i, j;
     printf("Calculating Random Walk Matrix M (N=%d)...\n", N_SAMPLES);
 
@@ -308,7 +285,7 @@ void calculate_random_walk_matrix() {
 }
 
 // -----------------------------------------------------------------
-// --- EIGENVECTOR GENERATION & NN CORE (Sized by N_SAMPLES) ---
+// --- EIGENVECTOR GENERATION & NN CORE (DEFINITIONS) ---
 // -----------------------------------------------------------------
 
 void matrix_vector_multiply(const double mat[N_SAMPLES_MAX][N_SAMPLES_MAX], const double vec_in[N_SAMPLES_MAX], double vec_out[N_SAMPLES_MAX]) {
@@ -369,8 +346,6 @@ double power_iteration(int basis_index, double M_current[N_SAMPLES_MAX][N_SAMPLE
     normalize_vector(f_old);
     orthogonalize_vector(f_old, basis_index);
     normalize_vector(f_old);
-
-    // No print here to save time
     
     for (iter = 0; iter < MAX_POWER_ITER; iter++) {
         matrix_vector_multiply(M_current, f_old, f_new);
@@ -401,7 +376,7 @@ void project_samples_to_basis() {
     }
 }
 
-// --- NN CORE FUNCTIONS (Sized by N_BASIS and N_HIDDEN) ---
+// --- NN CORE FUNCTIONS ---
 
 double sigmoid(double x) { return 1.0 / (1.0 + exp(-x)); }
 void initialize_nn() {
