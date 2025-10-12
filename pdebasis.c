@@ -72,36 +72,31 @@ void test_regression();
 void generate_test_rectangle(double image[D_SIZE], double target_data[N_OUTPUT]);
 
 // -----------------------------------------------------------------
-// --- DATA GENERATION FUNCTIONS (Updated for Regression Targets) ---
+// --- DATA GENERATION FUNCTIONS ---
 // -----------------------------------------------------------------
 
 void generate_rectangle(double image[D_SIZE], double target_data[N_OUTPUT]) {
-    // Determine random rectangle dimensions and position (in pixel counts, 1 to 16)
     int rect_w = 4 + (rand() % 8);
     int rect_h = 4 + (rand() % 8);
     int start_x = rand() % (GRID_SIZE - rect_w);
     int start_y = rand() % (GRID_SIZE - rect_h);
     
-    // Initialize image to black
     for (int i = 0; i < D_SIZE; i++) { image[i] = 0.0; } 
     
-    // Draw rectangle
     for (int y = start_y; y < start_y + rect_h; ++y) {
         for (int x = start_x; x < start_x + rect_w; ++x) {
             image[GRID_SIZE * y + x] = 200.0 + (double)(rand() % 50);
         }
     }
 
-    // Set Targets (Normalized to 0.0 - 1.0)
-    target_data[0] = TARGET_RECTANGLE; // Classification
-    target_data[1] = (double)start_x / GRID_SIZE; // x_norm
-    target_data[2] = (double)start_y / GRID_SIZE; // y_norm
-    target_data[3] = (double)rect_w / GRID_SIZE;  // w_norm
-    target_data[4] = (double)rect_h / GRID_SIZE;  // h_norm
+    target_data[0] = TARGET_RECTANGLE; 
+    target_data[1] = (double)start_x / GRID_SIZE; 
+    target_data[2] = (double)start_y / GRID_SIZE; 
+    target_data[3] = (double)rect_w / GRID_SIZE;  
+    target_data[4] = (double)rect_h / GRID_SIZE;  
 }
 
 void generate_random_lines(double image[D_SIZE], double target_data[N_OUTPUT]) {
-    // Draw lines (similar to previous version)
     for (int i = 0; i < D_SIZE; i++) { image[i] = 0.0; } 
     int num_lines = 1 + (rand() % 4); 
     for (int l = 0; l < num_lines; l++) {
@@ -121,8 +116,7 @@ void generate_random_lines(double image[D_SIZE], double target_data[N_OUTPUT]) {
         }
     }
     
-    // Set Targets for Non-Rectangle (Classification + placeholder regression values)
-    target_data[0] = TARGET_LINE_SET; // Classification
+    target_data[0] = TARGET_LINE_SET; 
     target_data[1] = target_data[2] = target_data[3] = target_data[4] = 0.0; 
 }
 
@@ -136,7 +130,6 @@ void load_data_balanced(int n_samples) {
     }
 }
 void load_subset_for_profiling(int n_subset) {
-    // Profiling uses only a small subset of the training set
     for (int k = 0; k < n_subset; ++k) {
         if (k % 2 == 0) { 
             generate_rectangle(dataset[k], targets[k]);
@@ -158,11 +151,10 @@ void generate_test_set() {
         } else { 
             generate_random_lines(test_data[k], temp_target);
         }
-        test_targets_cls[k] = temp_target[0]; // Only store classification target
+        test_targets_cls[k] = temp_target[0]; 
     }
 }
 void generate_test_rectangle(double image[D_SIZE], double target_data[N_OUTPUT]) {
-    // A wrapper to generate a rectangle for the regression test
     generate_rectangle(image, target_data);
 }
 
@@ -174,7 +166,6 @@ void estimate_nn_epochs() {
     clock_t start, end;
     #define N_EPOCHS_PROFILE 100
     
-    // Only profile training time, not the heavy data loading
     for (int k = 0; k < N_SAMPLES; k++) {
         if (k < 50) load_subset_for_profiling(50); 
     }
@@ -206,11 +197,10 @@ void estimate_nn_epochs() {
 }
 
 // -----------------------------------------------------------------
-// --- NN CORE FUNCTIONS (Updated for 5-Output Regression) ---
+// --- NN CORE FUNCTIONS ---
 // -----------------------------------------------------------------
 
 void initialize_nn() {
-    // Input-to-Hidden
     for (int i = 0; i < N_INPUT; i++) {
         for (int j = 0; j < N_HIDDEN; j++) {
             w_ih[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * 0.1;
@@ -218,7 +208,6 @@ void initialize_nn() {
     }
     for (int j = 0; j < N_HIDDEN; j++) {
         b_h[j] = 0.0;
-        // Hidden-to-Output
         for (int k = 0; k < N_OUTPUT; k++) {
             w_ho[j][k] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * 0.1;
         }
@@ -246,7 +235,6 @@ double sigmoid(double x) {
 }
 
 void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], double output[N_OUTPUT]) {
-    // Input to Hidden Layer (Sigmoid activation)
     for (int j = 0; j < N_HIDDEN; j++) {
         double h_net = b_h[j];
         for (int i = 0; i < N_INPUT; i++) {
@@ -255,53 +243,51 @@ void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], doub
         hidden_out[j] = sigmoid(h_net);
     }
     
-    // Hidden to Output Layer
     for (int k = 0; k < N_OUTPUT; k++) {
         double o_net = b_o[k]; 
         for (int j = 0; j < N_HIDDEN; j++) { 
             o_net += hidden_out[j] * w_ho[j][k]; 
         } 
         
-        // Output[0] (Classification) uses Sigmoid
         if (k == 0) {
             output[k] = sigmoid(o_net);
         } else {
-            // Outputs [1..4] (Regression) use identity (no activation)
             output[k] = o_net;
         }
     }
 }
 
+// BUG FIXED: Replaced accidental reuse of delta_o for hidden layer with delta_h
 void backward_pass_and_update(const double input[N_INPUT], const double hidden_out[N_HIDDEN], const double output[N_OUTPUT], const double target[N_OUTPUT]) {
     double delta_o[N_OUTPUT];
+    double delta_h[N_HIDDEN]; // CORRECT: Delta for the hidden layer
     double error_h[N_HIDDEN] = {0.0};
     
-    // 1. Output Layer Deltas
+    // 1. Output Layer Deltas (delta_o calculated)
     for (int k = 0; k < N_OUTPUT; k++) {
         double error = output[k] - target[k];
         double weight = CLASSIFICATION_WEIGHT;
         
         if (k == 0) { 
-            // Classification loss (Cross-Entropy/Sigmoid approximation)
             delta_o[k] = error * output[k] * (1.0 - output[k]) * weight;
         } else {
-            // Regression loss (MSE)
-            // Apply regression loss ONLY if the image is a rectangle (target[0] is 1.0)
             if (fabs(target[0] - TARGET_RECTANGLE) < DBL_EPSILON) {
                 weight = REGRESSION_WEIGHT;
             } else {
-                weight = 0.0; // Skip regression loss for line images
+                weight = 0.0;
             }
-            delta_o[k] = error * weight; // For identity activation, d(L)/d(net) is just error * weight
+            delta_o[k] = error * weight;
         }
     }
     
-    // 2. Hidden Layer Deltas
+    // 2. Hidden Layer Deltas (delta_h calculated)
     for (int j = 0; j < N_HIDDEN; j++) { 
+        // Calculate error_h[j] (total weighted error from output layer)
         for (int k = 0; k < N_OUTPUT; k++) {
             error_h[j] += delta_o[k] * w_ho[j][k];
         }
-        delta_o[j] = error_h[j] * hidden_out[j] * (1.0 - hidden_out[j]); // Sigmoid derivative
+        // Calculate delta_h[j]
+        delta_h[j] = error_h[j] * hidden_out[j] * (1.0 - hidden_out[j]); // Sigmoid derivative
     }
     
     // 3. Update Weights and Biases (Hidden-to-Output)
@@ -315,11 +301,13 @@ void backward_pass_and_update(const double input[N_INPUT], const double hidden_o
     // 4. Update Weights and Biases (Input-to-Hidden)
     for (int i = 0; i < N_INPUT; i++) { 
         for (int j = 0; j < N_HIDDEN; j++) { 
-            w_ih[i][j] -= LEARNING_RATE * delta_o[j] * input[i]; 
+            // Correctly use delta_h for this update
+            w_ih[i][j] -= LEARNING_RATE * delta_h[j] * input[i]; 
         } 
     }
     for (int j = 0; j < N_HIDDEN; j++) { 
-        b_h[j] -= LEARNING_RATE * delta_o[j]; 
+        // Correctly use delta_h for this update
+        b_h[j] -= LEARNING_RATE * delta_h[j]; 
     }
 }
 
@@ -331,7 +319,6 @@ double test_on_set_cls(int n_set_size, const double input_set[][N_INPUT]) {
     for (int i = 0; i < n_set_size; i++) {
         forward_pass(input_set[i], hidden_out, output);
         
-        // Only check classification (output[0]) against the stored classification target
         double prediction = (output[0] >= 0.5) ? TARGET_RECTANGLE : TARGET_LINE_SET;
         double actual = test_targets_cls[i];
 
@@ -347,7 +334,7 @@ double test_on_set_cls(int n_set_size, const double input_set[][N_INPUT]) {
 // -----------------------------------------------------------------
 
 void test_regression() {
-    printf("\n--- STEP 3: REGRESSION TEST (50 Random Rectangles) ---\n");
+    printf("\n--- STEP 3: REGRESSION TEST (%d Random Rectangles) ---\n", N_REGRESSION_TESTS);
     printf("Image dimensions are 16x16 pixels.\n");
     printf("--------------------------------------------------------------------------------------\n");
     printf("| # | Cls Score | Est. X, Y, W, H (Norm) | Est. X, Y, W, H (Pixels) | Known X, Y, W, H |\n");
@@ -360,12 +347,11 @@ void test_regression() {
         double test_image[D_SIZE];
         double known_target[N_OUTPUT];
         
-        // Generate a new rectangle image and get its true normalized dimensions
         generate_test_rectangle(test_image, known_target);
         
         forward_pass(test_image, hidden_out, output);
         
-        // Denormalize known and estimated dimensions
+        // Denormalize known and estimated dimensions (round to nearest integer)
         int known_x = (int)(known_target[1] * GRID_SIZE + 0.5);
         int known_y = (int)(known_target[2] * GRID_SIZE + 0.5);
         int known_w = (int)(known_target[3] * GRID_SIZE + 0.5);
@@ -413,7 +399,6 @@ int main() {
     // --- STEP 2: Standard Classification Testing ---
     printf("\n--- STEP 2: Standard Classification Testing Results ---\n");
     
-    // Test on Unseen Classification Test Set
     double acc_test = test_on_set_cls(N_TEST_SAMPLES, test_data);
     printf("NN Testing Accuracy (Rect/Line): %.2f%%\n", acc_test * 100.0);
     
