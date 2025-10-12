@@ -56,7 +56,6 @@ double test_targets[N_TEST_SAMPLES];
 
 
 // --- Function Prototypes ---
-
 // Data Generation
 void generate_rectangle(double image[D_SIZE]);
 void generate_random_lines(double image[D_SIZE]);
@@ -144,7 +143,7 @@ void load_data_balanced(int n_samples, int start_index) {
     }
 }
 void load_balanced_dataset() {
-    // printf("Generating BALANCED dataset (%d images): 50%% Rectangles, 50%% Random Lines.\n", N_SAMPLES);
+    printf("Generating BALANCED dataset (%d images): 50%% Rectangles, 50%% Random Lines.\n", N_SAMPLES);
     load_data_balanced(N_SAMPLES, 0);
 }
 void load_subset_for_profiling(int n_subset) {
@@ -159,7 +158,7 @@ void load_subset_for_profiling(int n_subset) {
     }
 }
 void generate_test_set() {
-    // printf("Generating TEST dataset (%d images): 50/50 mix of Rectangles/Random Lines.\n", N_TEST_SAMPLES);
+    printf("Generating TEST dataset (%d images): 50/50 mix of Rectangles/Random Lines.\n", N_TEST_SAMPLES);
     for (int k = 0; k < N_TEST_SAMPLES; ++k) {
         if (k % 2 == 0) { 
             generate_rectangle(test_data[k]);
@@ -303,9 +302,9 @@ void estimate_basis_samples() {
     double scale_factor = MAX_TIME_BASIS_SEC / time_spent_profile;
     double N_scaled = (double)N_PROFILE * sqrt(scale_factor);
     
-    // printf("\n--- BASIS TIME PROFILING ---\n");
-    // printf("Profile (N=%d): %.4f sec\n", N_PROFILE, time_spent_profile);
-    // printf("Estimated N for %.1f sec limit: %d (Using N=%d as practical limit)\n", MAX_TIME_BASIS_SEC, (int)N_scaled, N_SAMPLES);
+    printf("\n--- BASIS TIME PROFILING ---\n");
+    printf("Profile (N=%d): %.4f sec\n", N_PROFILE, time_spent_profile);
+    printf("Estimated N for %.1f sec limit: %d (Using N=%d as practical limit)\n", MAX_TIME_BASIS_SEC, (int)N_scaled, N_SAMPLES);
 }
 
 void estimate_nn_epochs() {
@@ -335,9 +334,9 @@ void estimate_nn_epochs() {
     if (N_EPOCHS > N_EPOCHS_MAX) N_EPOCHS = N_EPOCHS_MAX;
     if (N_EPOCHS < N_EPOCHS_PROFILE) N_EPOCHS = N_EPOCHS_PROFILE;
 
-    // printf("\n--- NN EPOCHS TIME PROFILING ---\n");
-    // printf("Profile (%d epochs): %.4f sec\n", N_EPOCHS_PROFILE, time_spent_profile);
-    // printf("Estimated Epochs for %.1f sec limit: %d (Using N_EPOCHS=%d as practical limit)\n", MAX_TIME_NN_SEC, (int)(N_EPOCHS_PROFILE * epoch_scale_factor), N_EPOCHS);
+    printf("\n--- NN EPOCHS TIME PROFILING ---\n");
+    printf("Profile (%d epochs): %.4f sec\n", N_EPOCHS_PROFILE, time_spent_profile);
+    printf("Estimated Epochs for %.1f sec limit: %d (Using N_EPOCHS=%d as practical limit)\n", MAX_TIME_NN_SEC, (int)(N_EPOCHS_PROFILE * epoch_scale_factor), N_EPOCHS);
 }
 
 // -----------------------------------------------------------------
