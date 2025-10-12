@@ -9,8 +9,8 @@
 #define N_SAMPLES_MAX 50000 // Maximum target size
 #define D_SIZE 256         // 16x16 image size (RAW INPUT DIMENSION)
 #define N_INPUT D_SIZE     // NN Input Dimension is now the raw image size
-#define N_HIDDEN 24        // Increased hidden layer size for more complex input
-#define N_TEST_SAMPLES 15000 // Test set size
+#define N_HIDDEN 64        // Increased hidden layer size for more complex input
+#define N_TEST_SAMPLES 50000 // Test set size
 
 // Time limit in seconds
 #define MAX_TIME_NN_SEC 320.0
