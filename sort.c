@@ -10,7 +10,13 @@
 #define EPOCHS 150000       
 #define IMAGE_SIZE 10
 #define GRADIENT_CLIP_MAX 0.1f 
-#define PROGRESS_CHECK_INTERVAL 100 // New: Sanity check every 100 epochs
+#define PROGRESS_CHECK_INTERVAL 100 
+
+// --- New Regularization Constants ---
+#define REGULARIZATION_LAMBDA_DET 1e-5f      // Strength of the determinant penalty
+#define REGULARIZATION_LAMBDA_SPARSE 1e-6f   // Strength of the L1 sparsity penalty (NEW)
+#define DETERMINANT_EPSILON 1e-12f           // Small value for numerical stability near 0
+// ------------------------------------
 
 // --- 1. Utilities and Analysis ---
 
@@ -33,8 +39,8 @@ void vec_add(const float *x, const float *b, int D, float *y) {
     for (int i = 0; i < D; i++) { y[i] = x[i] + b[i]; }
 }
 
+// Function to calculate Inverse and Determinant using Gaussian-Jordan elimination
 float inverse_and_determinant(const float *W_in, float *W_inv) {
-    // O(N^3) Gaussian-Jordan elimination (implementation omitted for brevity, assumes correct)
     float W_aug[N * 2 * N];
     for (int i = 0; i < N; i++) {
         for (int j = 0; j < N; j++) { W_aug[i * (2 * N) + j] = W_in[i * N + j]; W_aug[i * (2 * N) + j + N] = (i == j) ? 1.0f : 0.0f; }
@@ -43,12 +49,12 @@ float inverse_and_determinant(const float *W_in, float *W_inv) {
     for (int i = 0; i < N; i++) {
         int pivot = i;
         for (int k = i + 1; k < N; k++) { if (fabs(W_aug[k * (2 * N) + i]) > fabs(W_aug[pivot * (2 * N) + i])) { pivot = k; } }
+        if (fabs(W_aug[pivot * (2 * N) + i]) < 1e-9) { return 0.0f; } // Singular
         if (pivot != i) {
             for (int j = 0; j < 2 * N; j++) { float temp = W_aug[i * (2 * N) + j]; W_aug[i * (2 * N) + j] = W_aug[pivot * (2 * N) + j]; W_aug[pivot * (2 * N) + j] = temp; }
             det *= -1.0f;
         }
         float pivot_val = W_aug[i * (2 * N) + i];
-        if (fabs(pivot_val) < 1e-9) { return 0.0f; }
         det *= pivot_val;
         for (int j = i; j < 2 * N; j++) { W_aug[i * (2 * N) + j] /= pivot_val; }
         for (int k = 0; k < N; k++) {
@@ -62,7 +68,6 @@ float inverse_and_determinant(const float *W_in, float *W_inv) {
 }
 
 void power_iteration(const float *A, float *eigenvalue, float *eigenvector) {
-    // O(N^2) Power Iteration (implementation omitted for brevity, assumes correct)
     const int max_iterations = 50;
     const float tolerance = 1e-6f;
     for (int i = 0; i < N; i++) { eigenvector[i] = rand_uniform(-0.5f, 0.5f); }
@@ -87,7 +92,6 @@ void power_iteration(const float *A, float *eigenvalue, float *eigenvector) {
     *eigenvalue = lambda_prev;
 }
 
-
 // --- 2. Network Structures and Result Storage ---
 
 // Advanced Method: Cascading Ensemble with Invertible Core (W_inv)
@@ -111,7 +115,7 @@ typedef struct {
 } TrainingResults;
 
 
-// --- 3. Initialization ---
+// --- 3. Initialization (Unchanged) ---
 
 void init_weights_he(float *W, int M, int K) {
     float scale = sqrtf(2.0f / (float)K); 
@@ -131,9 +135,8 @@ void init_net_s4(NetS4 *net) { init_weights_he(net->W_feat, N, 2); init_bias(net
 void init_net_naive(NetNaive *net) { init_weights_he(net->W1, N, INPUT_DIM); init_bias(net->b1, N); init_weights_he(net->W2, 1, N); init_bias(&net->b2, 1); }
 
 
-// --- 4. Forward Pass Functions ---
+// --- 4. Forward Pass Functions (Unchanged) ---
 
-// The forward passes remain unchanged, as they are not affected by optimization choice.
 float forward_s1(NetS1 *net, const float *input) {
     float h1_pre[N]; mat_vec_mul(net->W_feat, N, INPUT_DIM, input, h1_pre); vec_add(h1_pre, net->b_feat, N, h1_pre); 
     for (int i = 0; i < N; i++) net->h1[i] = ReLU(h1_pre[i]); 
@@ -170,17 +173,21 @@ float forward_naive(NetNaive *net, const float *input) {
 }
 
 
-// --- 5. Backpropagation Functions (Now accepting LR dynamically) ---
+// --- 5. Backpropagation Functions (Modified S4) ---
 
-#define ADVANCED_BACKWARD_UPDATES(LR) \
+// Macro for generic updates (used by S1-S4)
+// REG_GRAD_W_INV now combines both Det and Sparsity gradients in run_training
+#define ADVANCED_BACKWARD_UPDATES(LR, REG_GRAD_W_INV) \
     for (int i = 0; i < N; i++) net->W_out[i] -= LR * clip_gradient(grad_W_out[i]); \
     net->b_out -= LR * clip_gradient(grad_b_out); \
-    for (int i = 0; i < N * N; i++) net->W_inv[i] -= LR * clip_gradient(grad_W_inv[i]); \
+    /* W_inv update includes the new regularization gradient */ \
+    for (int i = 0; i < N * N; i++) net->W_inv[i] -= LR * clip_gradient(grad_W_inv[i] + REG_GRAD_W_INV[i]); \
     for (int i = 0; i < N; i++) net->b_inv[i] -= LR * clip_gradient(grad_b_inv[i]); \
     for (int i = 0; i < N * IN_DIM; i++) net->W_feat[i] -= LR * clip_gradient(grad_W_feat[i]); \
     for (int i = 0; i < N; i++) net->b_feat[i] -= LR * clip_gradient(grad_b_feat[i]);
 
-void backward_s4(NetS4 *net, const float *input, float delta_out, float *delta_input, float lr) {
+// New: S4 now accepts the pre-calculated combined regularization gradient for W_inv
+void backward_s4(NetS4 *net, const float *input, float delta_out, float *delta_input, float lr, const float *reg_grad_W_inv) {
     float grad_W_out[N], delta_h2[N]; for (int i = 0; i < N; i++) { grad_W_out[i] = delta_out * net->h2[i]; delta_h2[i] = delta_out * net->W_out[i]; } float grad_b_out = delta_out;
     float grad_W_inv[N * N]; for (int i = 0; i < N * N; i++) grad_W_inv[i] = delta_h2[i / N] * net->h1[i % N];
     float delta_h1[N]; for (int i = 0; i < N; i++) { delta_h1[i] = 0.0f; for (int j = 0; j < N; j++) delta_h1[i] += delta_h2[j] * net->W_inv[j * N + i]; }
@@ -188,10 +195,11 @@ void backward_s4(NetS4 *net, const float *input, float delta_out, float *delta_i
     float grad_W_feat[N * 2]; for (int i = 0; i < N; i++) { for (int j = 0; j < 2; j++) grad_W_feat[i * 2 + j] = delta_h1[i] * input[j]; }
     float *grad_b_feat = delta_h1; for (int i = 0; i < 2; i++) { delta_input[i] = 0.0f; for (int j = 0; j < N; j++) delta_input[i] += delta_h1[j] * net->W_feat[j * 2 + i]; }
     #define IN_DIM 2
-    ADVANCED_BACKWARD_UPDATES(lr)
+    ADVANCED_BACKWARD_UPDATES(lr, reg_grad_W_inv)
     #undef IN_DIM
 }
-void backward_s3(NetS3 *net, const float *input, float delta_out, float *delta_input, float lr) {
+// S3, S2, S1 do not use determinant/sparsity regularization, so they use a zero array
+void backward_s3(NetS3 *net, const float *input, float delta_out, float *delta_input, float lr, const float *reg_grad_W_inv) {
     float grad_W_out[N], delta_h2[N]; for (int i = 0; i < N; i++) { grad_W_out[i] = delta_out * net->h2[i]; delta_h2[i] = delta_out * net->W_out[i]; } float grad_b_out = delta_out;
     float grad_W_inv[N * N]; for (int i = 0; i < N * N; i++) grad_W_inv[i] = delta_h2[i / N] * net->h1[i % N];
     float delta_h1[N]; for (int i = 0; i < N; i++) { delta_h1[i] = 0.0f; for (int j = 0; j < N; j++) delta_h1[i] += delta_h2[j] * net->W_inv[j * N + i]; }
@@ -199,10 +207,10 @@ void backward_s3(NetS3 *net, const float *input, float delta_out, float *delta_i
     float grad_W_feat[N * 3]; for (int i = 0; i < N; i++) { for (int j = 0; j < 3; j++) grad_W_feat[i * 3 + j] = delta_h1[i] * input[j]; }
     float *grad_b_feat = delta_h1; for (int i = 0; i < 3; i++) { delta_input[i] = 0.0f; for (int j = 0; j < N; j++) delta_input[i] += delta_h1[j] * net->W_feat[j * 3 + i]; }
     #define IN_DIM 3
-    ADVANCED_BACKWARD_UPDATES(lr)
+    ADVANCED_BACKWARD_UPDATES(lr, reg_grad_W_inv)
     #undef IN_DIM
 }
-void backward_s2(NetS2 *net, const float *input, float delta_out, float *delta_input, float lr) {
+void backward_s2(NetS2 *net, const float *input, float delta_out, float *delta_input, float lr, const float *reg_grad_W_inv) {
     float grad_W_out[N], delta_h2[N]; for (int i = 0; i < N; i++) { grad_W_out[i] = delta_out * net->h2[i]; delta_h2[i] = delta_out * net->W_out[i]; } float grad_b_out = delta_out;
     float grad_W_inv[N * N]; for (int i = 0; i < N * N; i++) grad_W_inv[i] = delta_h2[i / N] * net->h1[i % N];
     float delta_h1[N]; for (int i = 0; i < N; i++) { delta_h1[i] = 0.0f; for (int j = 0; j < N; j++) delta_h1[i] += delta_h2[j] * net->W_inv[j * N + i]; }
@@ -210,10 +218,10 @@ void backward_s2(NetS2 *net, const float *input, float delta_out, float *delta_i
     float grad_W_feat[N * 5]; for (int i = 0; i < N; i++) { for (int j = 0; j < 5; j++) grad_W_feat[i * 5 + j] = delta_h1[i] * input[j]; }
     float *grad_b_feat = delta_h1; for (int i = 0; i < 5; i++) { delta_input[i] = 0.0f; for (int j = 0; j < N; j++) delta_input[i] += delta_h1[j] * net->W_feat[j * 5 + i]; }
     #define IN_DIM 5
-    ADVANCED_BACKWARD_UPDATES(lr)
+    ADVANCED_BACKWARD_UPDATES(lr, reg_grad_W_inv)
     #undef IN_DIM
 }
-void backward_s1(NetS1 *net, const float *input, float delta_out, float lr) {
+void backward_s1(NetS1 *net, const float *input, float delta_out, float lr, const float *reg_grad_W_inv) {
     float grad_W_out[N], delta_h2[N]; for (int i = 0; i < N; i++) { grad_W_out[i] = delta_out * net->h2[i]; delta_h2[i] = delta_out * net->W_out[i]; } float grad_b_out = delta_out;
     float grad_W_inv[N * N]; for (int i = 0; i < N * N; i++) grad_W_inv[i] = delta_h2[i / N] * net->h1[i % N];
     float delta_h1[N]; for (int i = 0; i < N; i++) { delta_h1[i] = 0.0f; for (int j = 0; j < N; j++) delta_h1[i] += delta_h2[j] * net->W_inv[j * N + i]; }
@@ -221,7 +229,7 @@ void backward_s1(NetS1 *net, const float *input, float delta_out, float lr) {
     float grad_W_feat[N * INPUT_DIM]; for (int i = 0; i < N; i++) { for (int j = 0; j < INPUT_DIM; j++) grad_W_feat[i * INPUT_DIM + j] = delta_h1[i] * input[j]; }
     float *grad_b_feat = delta_h1;
     #define IN_DIM INPUT_DIM
-    ADVANCED_BACKWARD_UPDATES(lr)
+    ADVANCED_BACKWARD_UPDATES(lr, reg_grad_W_inv)
     #undef IN_DIM
 }
 
@@ -243,7 +251,7 @@ void backward_naive(NetNaive *net, const float *input, float delta_out, float lr
 }
 
 
-// --- 6. Data Generation ---
+// --- 6. Data Generation (Unchanged) ---
 
 void make_rectangle(float *img, int is_present) {
     for (int i = 0; i < INPUT_DIM; i++) img[i] = 0.0f;
@@ -263,15 +271,16 @@ void make_rectangle(float *img, int is_present) {
 }
 
 
-// --- 7. Modular Training Function ---
+// --- 7. Modular Training Function (Added Sparsity Logic) ---
 
-TrainingResults run_training(int is_advanced, float lr, const char *method_name, const char *optimizer_name) {
+TrainingResults run_training(int is_advanced, float lr, const char *method_name, const char *optimizer_name, int use_sparsity) {
     
     float input_image[INPUT_DIM];
     float target;
     float avg_loss = 0.0f;
     float prev_avg_loss = 1000.0f;
     float final_output = 0.0f;
+    float final_loss = 0.0f;
 
     // Advanced Network components
     NetS1 nets1[5]; NetS2 nets2[3]; NetS3 nets3[2]; NetS4 net_final;
@@ -281,6 +290,8 @@ TrainingResults run_training(int is_advanced, float lr, const char *method_name,
     float dominant_eigenvalue = 0.0f;
     float dominant_eigenvector[N];
     float det = 0.0f;
+    float reg_grad_W_inv[N * N]; // Combined regularization gradient storage
+    float zero_reg_grad[N*N] = {0.0f}; // Placeholder for non-final stages or Naive
 
     // Naive Network component
     NetNaive net_naive;
@@ -296,7 +307,7 @@ TrainingResults run_training(int is_advanced, float lr, const char *method_name,
 
     printf("\n\n#####################################################\n");
     printf("--- RUN: %s (%s Optimizer) ---\n", method_name, optimizer_name);
-    printf("Learning Rate: %.4f | Hidden Dim (N): %d\n", lr, N);
+    printf("Learning Rate: %.4f | Hidden Dim (N): %d | Sparsity: %s\n", lr, N, use_sparsity ? "ON" : "OFF");
     printf("#####################################################\n");
 
     for (int epoch = 1; epoch <= EPOCHS; epoch++) {
@@ -314,19 +325,72 @@ TrainingResults run_training(int is_advanced, float lr, const char *method_name,
             final_output = forward_naive(&net_naive, input_image);
         }
 
-        // --- Loss ---
-        float loss = (target - final_output) * (target - final_output);
-        avg_loss = avg_loss * 0.99f + loss * 0.01f;
+        // --- MSE Loss ---
+        float mse_loss = (target - final_output) * (target - final_output);
+        final_loss = mse_loss;
+        
+        // --- Regularization (Advanced Only) ---
+        float reg_loss_det = 0.0f;
+        float reg_loss_sparse = 0.0f;
+        
+        // Reset combined regularization gradient for W_inv
+        memset(reg_grad_W_inv, 0, N * N * sizeof(float)); 
+        
+        if (is_advanced) {
+            // 1. Calculate Determinant and Inverse (O(N^3))
+            memcpy(W_inv_copy, net_final.W_inv, N * N * sizeof(float));
+            det = inverse_and_determinant(W_inv_copy, W_inverse);
+
+            // 2. Calculate Determinant Regularization Loss
+            float det_sq_safe = det * det + DETERMINANT_EPSILON;
+            reg_loss_det = REGULARIZATION_LAMBDA_DET / det_sq_safe;
+            final_loss += reg_loss_det;
+            
+            // 3. Calculate Determinant Regularization Gradient: dL_reg_det/dW
+            float dL_reg_d_det = -REGULARIZATION_LAMBDA_DET * 2.0f * det / (det_sq_safe * det_sq_safe);
+            for (int i = 0; i < N; i++) {
+                for (int j = 0; j < N; j++) {
+                    reg_grad_W_inv[i * N + j] = dL_reg_d_det * det * W_inverse[j * N + i]; 
+                }
+            }
+
+            // --- L1 Sparsity Regularization (NEW) ---
+            if (use_sparsity) {
+                float l1_norm = 0.0f;
+                for (int i = 0; i < N * N; i++) {
+                    l1_norm += fabs(net_final.W_inv[i]);
+                }
+                reg_loss_sparse = l1_norm * REGULARIZATION_LAMBDA_SPARSE;
+                final_loss += reg_loss_sparse;
+                
+                // 4. Calculate Sparsity Regularization Gradient: dL_reg_sparse/dW = lambda * sign(W)
+                for (int i = 0; i < N * N; i++) {
+                    float sign_w = 0.0f;
+                    if (net_final.W_inv[i] > 1e-6) { sign_w = 1.0f; }
+                    else if (net_final.W_inv[i] < -1e-6) { sign_w = -1.0f; }
+                    
+                    // Additive sparsity gradient
+                    reg_grad_W_inv[i] += REGULARIZATION_LAMBDA_SPARSE * sign_w; 
+                }
+            }
+        }
+
+        // --- Update Smooth Loss ---
+        avg_loss = avg_loss * 0.99f + final_loss * 0.01f;
 
         // --- Backward Pass & Update ---
         float delta_final = (final_output - target) * final_output * (1.0f - final_output);
+        
         if (is_advanced) {
-            backward_s4(&net_final, output_s3, delta_final, delta_out_s3, lr); 
+            // S4 uses the combined gradient in reg_grad_W_inv
+            backward_s4(&net_final, output_s3, delta_final, delta_out_s3, lr, reg_grad_W_inv); 
+            
+            // Inner stages use a zero gradient for regularization
             memset(delta_s3_in, 0, sizeof(delta_s3_in));
-            for(int i = 0; i < 2; i++) { float current_delta_input[3]; backward_s3(&nets3[i], output_s2, delta_out_s3[i], current_delta_input, lr); for(int j = 0; j < 3; j++) delta_s3_in[j] += current_delta_input[j]; }
+            for(int i = 0; i < 2; i++) { float current_delta_input[3]; backward_s3(&nets3[i], output_s2, delta_out_s3[i], current_delta_input, lr, zero_reg_grad); for(int j = 0; j < 3; j++) delta_s3_in[j] += current_delta_input[j]; }
             memset(delta_s2_in, 0, sizeof(delta_s2_in));
-            for(int i = 0; i < 3; i++) { float current_delta_input[5]; backward_s2(&nets2[i], output_s1, delta_s3_in[i], current_delta_input, lr); for(int j = 0; j < 5; j++) delta_s2_in[j] += current_delta_input[j]; }
-            for(int i = 0; i < 5; i++) { backward_s1(&nets1[i], input_image, delta_s2_in[i], lr); }
+            for(int i = 0; i < 3; i++) { float current_delta_input[5]; backward_s2(&nets2[i], output_s1, delta_s3_in[i], current_delta_input, lr, zero_reg_grad); for(int j = 0; j < 5; j++) delta_s2_in[j] += current_delta_input[j]; }
+            for(int i = 0; i < 5; i++) { backward_s1(&nets1[i], input_image, delta_s2_in[i], lr, zero_reg_grad); }
         } else {
             backward_naive(&net_naive, input_image, delta_final, lr);
         }
@@ -334,7 +398,7 @@ TrainingResults run_training(int is_advanced, float lr, const char *method_name,
         // --- Sanity Check & Analysis ---
         if (epoch % PROGRESS_CHECK_INTERVAL == 0) {
             
-            // 1. Loss Progress Check
+            // Loss Progress Check
             const char *progress_status = "STAGNANT (Loss not improving)";
             if (avg_loss < prev_avg_loss - 1e-4) {
                  progress_status = "IMPROVING";
@@ -347,23 +411,26 @@ TrainingResults run_training(int is_advanced, float lr, const char *method_name,
 
             printf("[Epoch %d] Loss: %.6f | Progress: %s\n", epoch, avg_loss, progress_status);
             
-            // 2. Advanced Network Analysis (Only for Advanced runs)
+            // Advanced Network Analysis (Only for Advanced runs)
             if (is_advanced && epoch % (EPOCHS / 10) == 0) {
                 printf("--- High-Demand Matrix Analysis (Net S4, O(N^3) on %d x %d) ---\n", N, N);
+                // Recalculate det/eigenvalue for reporting after updates
                 memcpy(W_inv_copy, net_final.W_inv, N * N * sizeof(float));
-                det = inverse_and_determinant(W_inv_copy, W_inverse); 
-                printf("   [DETERMINANT] Calculated value: %.6f\n", det);
-                if (fabs(det) < 1e-6) { printf("   [CRITICAL] Matrix is SINGULAR (Det $\\approx 0$).\n"); }
-                else { printf("   [INVERSE] W_inv is invertible. (Top-Left Element: %.4f)\n", W_inverse[0]); }
+                float det_report = inverse_and_determinant(W_inv_copy, W_inverse); 
                 power_iteration(net_final.W_inv, &dominant_eigenvalue, dominant_eigenvector);
+                
+                printf("   [DETERMINANT] Calculated value: %.6f (Penalty: %.6f)\n", det_report, reg_loss_det);
+                if (use_sparsity) { printf("   [SPARSITY] L1 Loss: %.6f\n", reg_loss_sparse); }
+
+                if (fabs(det_report) < 1e-6) { printf("   [CRITICAL] Matrix is SINGULAR (Det $\\approx 0$).\n"); }
+                else { printf("   [STABLE] Matrix is invertible.\n"); }
                 printf("   [EIGENVALUE] Dominant $\\lambda$: %.6f\n", dominant_eigenvalue);
-                printf("   [INTERPRET] Largest eigenvalue is $\\|\\lambda\\| > 1$ (expansion) or $\\|\\lambda\\| \\approx 1$ (stability).\n");
             }
         }
     }
-    printf("\nTraining complete. Final smooth loss: %.6f\n", avg_loss);
+    printf("\nTraining complete. Final smooth total loss: %.6f\n", avg_loss);
 
-    // --- Final Testing ---
+    // --- Final Testing (Unchanged) ---
     float final_output_present, final_output_absent;
     
     make_rectangle(input_image, 1);
@@ -389,6 +456,13 @@ TrainingResults run_training(int is_advanced, float lr, const char *method_name,
     printf("TEST (Rectangle Present): Final Output = %.4f (Expected near 1.0)\n", final_output_present);
     printf("TEST (No Rectangle): Final Output = %.4f (Expected near 0.0)\n", final_output_absent);
 
+    // Final determinant value is set for the report
+    if (is_advanced) {
+        memcpy(W_inv_copy, net_final.W_inv, N * N * sizeof(float));
+        det = inverse_and_determinant(W_inv_copy, W_inverse);
+        power_iteration(net_final.W_inv, &dominant_eigenvalue, dominant_eigenvector);
+    }
+    
     return (TrainingResults){
         .smooth_loss = avg_loss,
         .test_present = final_output_present,
@@ -402,26 +476,27 @@ TrainingResults run_training(int is_advanced, float lr, const char *method_name,
 }
 
 void print_final_summary(const TrainingResults *results[4]) {
-    printf("\n\n=================================================================================\n");
-    printf("                         COMPREHENSIVE TRAINING COMPARISON REPORT\n");
-    printf("=================================================================================\n");
-    printf("| Architecture | Optimizer | LR    | Smooth Loss | Test (Present) | Test (Absent) | Det (W_inv) | Lambda (Dom) |\n");
-    printf("|--------------|-----------|-------|-------------|----------------|---------------|-------------|--------------|\n");
+    printf("\n\n=================================================================================================================\n");
+    printf("                         COMPREHENSIVE TRAINING COMPARISON REPORT (Determinant & Sparsity Regularization)\n");
+    printf("=================================================================================================================\n");
+    printf("| Architecture | Optimizer | LR    | Penalty Type | Smooth Loss | Test (Present) | Test (Absent) | Det (W_inv) | Lambda (Dom) |\n");
+    printf("|--------------|-----------|-------|--------------|-------------|----------------|---------------|-------------|--------------|\n");
     
     for(int i = 0; i < 4; i++) {
         const TrainingResults *res = results[i];
-        printf("| %-12s | %-9s | %-5.2f | %-11.6f | %-14.4f | %-13.4f | %-11.6f | %-12.6f |\n",
+        printf("| %-12s | %-9s | %-5.2f | %-12s | %-11.6f | %-14.4f | %-13.4f | %-11.6f | %-12.6f |\n",
                res->method_name,
                res->optimizer_name,
                res->learning_rate,
+               i == 3 ? "Det + L1" : "Det Only", // Simple way to label the new run
                res->smooth_loss,
                res->test_present,
                res->test_absent,
                res->det_final,
                res->lambda_final);
     }
-    printf("=================================================================================\n");
-    printf("NOTE: Determinant and Eigenvalue analysis are only applicable to the Advanced Network.\n");
+    printf("=================================================================================================================\n");
+    printf("NOTE: Advanced Networks use Det Reg to enforce stability. Run 4 adds the L1 Sparsity penalty.\n");
 }
 
 
@@ -431,21 +506,22 @@ int main() {
     // Define the 4 scenarios
     TrainingResults *results[4];
 
-    // SCENARIO 1: Advanced Network, Aggressive Optimizer
+    // SCENARIO 1: Advanced Network, Aggressive Optimizer (Det Only - Expected Fail)
     results[0] = (TrainingResults*)malloc(sizeof(TrainingResults));
-    *results[0] = run_training(1, 0.07f, "Advanced", "Aggressive");
+    *results[0] = run_training(1, 0.07f, "Advanced", "Aggressive", 0);
 
-    // SCENARIO 2: Naive Network, Standard Optimizer
+    // SCENARIO 2: Naive Network, Standard Optimizer (Baseline - Expected Det = 0)
     results[1] = (TrainingResults*)malloc(sizeof(TrainingResults));
-    *results[1] = run_training(0, 0.03f, "Naive", "Standard");
+    *results[1] = run_training(0, 0.03f, "Naive", "Standard", 0);
     
-    // SCENARIO 3: Advanced Network, Stable Optimizer (The new, slow method)
+    // SCENARIO 3: Advanced Network, Stable Optimizer (Det Only - SUCCESS BASELINE)
     results[2] = (TrainingResults*)malloc(sizeof(TrainingResults));
-    *results[2] = run_training(1, 0.01f, "Advanced", "Stable");
+    *results[2] = run_training(1, 0.01f, "Advanced", "Stable", 0);
 
-    // SCENARIO 4: Naive Network, Stable Optimizer (The new, slow method)
+    // SCENARIO 4: Advanced Network, Stable Optimizer (Det + L1 Sparsity - NEW TEST)
+    // We are running this to see the effect on final loss and structural properties (Det/Lambda)
     results[3] = (TrainingResults*)malloc(sizeof(TrainingResults));
-    *results[3] = run_training(0, 0.01f, "Naive", "Stable");
+    *results[3] = run_training(1, 0.01f, "Advanced", "Stable (L1)", 1);
 
     // Print the final summary table
     print_final_summary(results);
