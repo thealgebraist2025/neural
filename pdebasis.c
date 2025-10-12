@@ -6,24 +6,24 @@
 #include <string.h> 
 
 // --- Configuration ---
-#define N_SAMPLES_MAX 1000 // Maximum target size
+#define N_SAMPLES_MAX 50000 // Maximum target size
 #define D_SIZE 256         // 16x16 image size (RAW INPUT DIMENSION)
 #define N_INPUT D_SIZE     // NN Input Dimension is now the raw image size
-#define N_HIDDEN 12        // Increased hidden layer size for more complex input
-#define N_TEST_SAMPLES 500 // Test set size
+#define N_HIDDEN 24        // Increased hidden layer size for more complex input
+#define N_TEST_SAMPLES 15000 // Test set size
 
 // Time limit in seconds
-#define MAX_TIME_NN_SEC 120.0
+#define MAX_TIME_NN_SEC 320.0
 
 // Neural Network Parameters
 #define LEARNING_RATE 0.01 // Reduced learning rate for stability with large input
-#define N_EPOCHS_MAX 10000 
+#define N_EPOCHS_MAX 100000 
 #define TARGET_RECTANGLE 1.0
 #define TARGET_LINE_SET 0.0
 // ---------------------
 
 // --- Dynamic Globals ---
-int N_SAMPLES = 1000; 
+int N_SAMPLES = 10000; 
 int N_EPOCHS;  
 
 // Global Data & Matrices (Sized by MAX N)
