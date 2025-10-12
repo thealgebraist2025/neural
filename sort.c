@@ -25,7 +25,6 @@ float sigmoid(float x) { return 1.0f / (1.0f + expf(-x)); }
 void mat_vec_mul(const float *A, int M, int N_A, const float *x, float *y) {
     for (int i = 0; i < M; i++) {
         float sum = 0.0f;
-        // N_A is the size of the input vector x (or columns in A)
         for (int j = 0; j < N_A; j++) { sum += A[i * N_A + j] * x[j]; }
         y[i] = sum;
     }
@@ -36,13 +35,12 @@ void vec_add(const float *x, const float *b, int D, float *y) {
 
 // --- 2. Network Structure and Result Storage ---
 
-// Using MAX_HIDDEN_DIM for fixed structure size, actual size is passed to functions.
 typedef struct { 
     float W1[MAX_HIDDEN_DIM * INPUT_DIM]; 
     float b1[MAX_HIDDEN_DIM]; 
     float W2[MAX_HIDDEN_DIM]; 
     float b2; 
-    float h1_pre[MAX_HIDDEN_DIM]; // Pre-activation values for backprop
+    float h1_pre[MAX_HIDDEN_DIM]; 
 } NetNaive;
 
 typedef struct {
@@ -64,7 +62,6 @@ void init_weights_he(float *W, int M, int K) {
 void init_bias(float *b, int M) { for (int i = 0; i < M; i++) b[i] = 0.0f; }
 
 void init_net_naive(NetNaive *net, int N_eff) { 
-    // Initialize only the necessary parts of the arrays
     init_weights_he(net->W1, N_eff, INPUT_DIM); 
     init_bias(net->b1, N_eff); 
     init_weights_he(net->W2, 1, N_eff); 
@@ -76,7 +73,6 @@ void init_net_naive(NetNaive *net, int N_eff) {
 
 float forward_naive(NetNaive *net, const float *input, int N_eff) {
     // Hidden Layer 1 (W1: N_eff x INPUT_DIM)
-    // h1_pre stores the pre-activation values for the current N_eff size
     mat_vec_mul(net->W1, N_eff, INPUT_DIM, input, net->h1_pre); 
     vec_add(net->h1_pre, net->b1, N_eff, net->h1_pre);
 
@@ -132,11 +128,13 @@ void backward_naive(NetNaive *net, const float *input, float delta_out, float lr
 }
 
 
-// --- 6. Data Generation (Same as before) ---
+// --- 6. Data Generation (Updated to include distractors and noise) ---
 
-void make_rectangle(float *img, int is_present, int is_rotated) {
+void generate_image(float *img, int is_present, int is_rotated) {
+    // 1. Clear Image
     for (int i = 0; i < INPUT_DIM; i++) img[i] = 0.0f;
 
+    // 2. Draw Positive Rectangle (if present)
     if (is_present) {
         int start_row = rand() % (IMAGE_SIZE - 4);
         int start_col = rand() % (IMAGE_SIZE - 4);
@@ -152,7 +150,6 @@ void make_rectangle(float *img, int is_present, int is_rotated) {
 
         for (int r = 0; r < IMAGE_SIZE; r++) {
             for (int c = 0; c < IMAGE_SIZE; c++) {
-                
                 float tr = r - center_r;
                 float tc = c - center_c;
                 
@@ -165,19 +162,51 @@ void make_rectangle(float *img, int is_present, int is_rotated) {
                 if (r_prime >= -half_h && r_prime <= half_h && 
                     c_prime >= -half_w && c_prime <= half_w) 
                 {
-                    if (((int)roundf(r_prime * 2.0f) + (int)roundf(c_prime * 2.0f)) % 2 == 0) {
-                        img[r * IMAGE_SIZE + c] = 1.0f;
-                    } else {
-                        img[r * IMAGE_SIZE + c] = 0.5f;
-                    }
+                    // Use a checkerboard pattern for texture (1.0 or 0.5)
+                    img[r * IMAGE_SIZE + c] = (((int)roundf(r_prime * 2.0f) + (int)roundf(c_prime * 2.0f)) % 2 == 0) ? 1.0f : 0.5f;
                 }
             }
+        }
+    }
+    
+    // 3. Draw Negative Distractors (if NOT present)
+    if (!is_present) {
+        // Add a line segment (2, 3, or 4 pixels)
+        int size = (rand() % 3) + 2; // Cluster size: 2, 3, or 4
+        
+        // Ensure starting position allows the cluster to fit
+        int max_start = IMAGE_SIZE - size;
+        int start_r = rand() % (max_start > 0 ? max_start : 1);
+        int start_c = rand() % (max_start > 0 ? max_start : 1);
+        
+        int orientation = rand() % 3; // 0=Horizontal, 1=Vertical, 2=Diagonal
+
+        for (int i = 0; i < size; i++) {
+            int r = start_r, c = start_c;
+            if (orientation == 0) c += i;          // Horizontal (adjacent pixels in same row)
+            else if (orientation == 1) r += i;     // Vertical (adjacent pixels in same col)
+            else r += i, c += i;                   // Diagonal (adjacent pixels diagonally)
+
+            if (r >= 0 && r < IMAGE_SIZE && c >= 0 && c < IMAGE_SIZE) {
+                // Use a high value (0.8) to distinguish distractors from noise, but not max 1.0
+                img[r * IMAGE_SIZE + c] = 0.8f; 
+            }
+        }
+    }
+    
+    // 4. Add 20% Random Noise (Always present)
+    int noise_pixels = (int)(INPUT_DIM * 0.20f);
+    for (int i = 0; i < noise_pixels; i++) {
+        int idx = rand() % INPUT_DIM;
+        // Only add noise to blank pixels (0.0), setting them to a low 0.2 value
+        if (img[idx] == 0.0f) {
+            img[idx] = 0.2f; 
         }
     }
 }
 
 
-// --- 7. Naive Network Benchmarking Function ---
+// --- 7. Naive Network Benchmarking Function (Uses generate_image) ---
 
 BenchmarkResult run_naive_benchmark(int N_eff) {
     
@@ -195,9 +224,11 @@ BenchmarkResult run_naive_benchmark(int N_eff) {
 
     for (int epoch = 1; epoch <= EPOCHS; epoch++) {
         int is_present = rand() % 2;
-        int do_rotate = is_present && (rand() % 2); // 50% chance of rotation if present
+        int do_rotate = is_present && (rand() % 2); 
         target = (float)is_present;
-        make_rectangle(input_image, is_present, do_rotate);
+        
+        // Generate image with rectangle OR complex non-rectangle distractor + noise
+        generate_image(input_image, is_present, do_rotate);
 
         // Forward Pass
         final_output = forward_naive(&net, input_image, N_eff);
@@ -221,18 +252,18 @@ BenchmarkResult run_naive_benchmark(int N_eff) {
     float final_output_present, final_output_absent, final_output_rotated;
     
     // 1. Test - Standard Rectangle
-    make_rectangle(input_image, 1, 0); // is_present=1, is_rotated=0
+    generate_image(input_image, 1, 0); // is_present=1, is_rotated=0
     final_output_present = forward_naive(&net, input_image, N_eff);
 
-    // 2. Test - Absent Rectangle
-    make_rectangle(input_image, 0, 0); // is_present=0, is_rotated=0
+    // 2. Test - Absent Distractors (Complex Negative Case)
+    generate_image(input_image, 0, 0); // is_present=0, force non-rectangle distractors + noise
     final_output_absent = forward_naive(&net, input_image, N_eff);
 
     // 3. Test - Rotated Rectangle
-    make_rectangle(input_image, 1, 1); // is_present=1, is_rotated=1
+    generate_image(input_image, 1, 1); // is_present=1, is_rotated=1
     final_output_rotated = forward_naive(&net, input_image, N_eff);
 
-    printf("[Benchmark N=%-3d] Time: %.2fs | Loss: %.6f | Present: %.4f, Absent: %.4f, Rotated: %.4f\n", 
+    printf("[Benchmark N=%-3d] Time: %.2fs | Loss: %.6f | Present: %.4f, Absent (Distractor): %.4f, Rotated: %.4f\n", 
            N_eff, training_time_sec, avg_loss, final_output_present, final_output_absent, final_output_rotated);
 
     return (BenchmarkResult){
@@ -246,16 +277,17 @@ BenchmarkResult run_naive_benchmark(int N_eff) {
 }
 
 void print_final_summary(const BenchmarkResult *results, int count) {
-    printf("\n\n===========================================================================================\n");
+    printf("\n\n=======================================================================================================\n");
     printf("                  NAIVE NETWORK SCALING BENCHMARK (Hidden Layer Size vs. Performance)\n");
-    printf("===========================================================================================\n");
-    printf("| Hidden Neurons | Time (s) | Smooth Loss | Test (Present) | Test (Absent) | Test (Rotated) |\n");
-    printf("|----------------|----------|-------------|----------------|---------------|----------------|\n");
+    printf("                  (NEW: Training includes complex linear distractors and 20%% noise)\n");
+    printf("=======================================================================================================\n");
+    printf("| Hidden Neurons | Time (s) | Smooth Loss | Test (Present) | Test (Absent Distractor) | Test (Rotated) |\n");
+    printf("|----------------|----------|-------------|----------------|--------------------------|----------------|\n");
     
     for(int i = 0; i < count; i++) {
         const BenchmarkResult *res = &results[i];
         
-        printf("| %-14d | %-8.2f | %-11.6f | %-14.4f | %-13.4f | %-14.4f |\n",
+        printf("| %-14d | %-8.2f | %-11.6f | %-14.4f | %-24.4f | %-14.4f |\n",
                res->size,
                res->training_time_sec,
                res->smooth_loss,
@@ -263,14 +295,12 @@ void print_final_summary(const BenchmarkResult *results, int count) {
                res->test_absent,
                res->test_rotated);
     }
-    printf("===========================================================================================\n");
-    printf("NOTE: The Naive Architecture (simple 2-layer MLP) shows classic diminishing returns in loss\n");
-    printf("but increasing time complexity as the hidden layer size increases.\n");
+    printf("=======================================================================================================\n");
+    printf("NOTE: The 'Absent Distractor' column measures how well the network rejects non-rectangle shapes.\n");
 }
 
 
 int main() {
-    // Disable stdout buffering for real-time log (useful for long runs)
     setbuf(stdout, NULL); 
     srand(time(NULL));
 
@@ -279,7 +309,7 @@ int main() {
     BenchmarkResult results[num_runs];
 
     printf("Starting Naive Network Benchmark across %d hidden layer sizes (N=2 to N=256).\n", num_runs);
-    printf("Each run trains for %d epochs with LR=%.2f.\n\n", EPOCHS, LEARNING_RATE);
+    printf("Training data now includes complex linear distractors and 20%% random noise.\n\n");
 
     for (int i = 0; i < num_runs; i++) {
         results[i] = run_naive_benchmark(sizes[i]);
