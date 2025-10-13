@@ -18,15 +18,15 @@
 
 // **Training Parameters**
 #define NUM_IMAGES 3000        
-#define TRAINING_TIME_LIMIT 60.0 // Stop training after 60 seconds
+#define TRAINING_TIME_LIMIT 160.0 // Stop training after 60 seconds
 #define BATCH_SIZE 32          
 #define REPORT_FREQ 500             
 #define INITIAL_LEARNING_RATE 0.0001 
 #define CLASSIFICATION_WEIGHT 1.0  
 #define REGRESSION_WEIGHT 1.0      // **FIX 1: Increased from 0.1 to 1.0**
 #define MIN_RADIUS 3           
-#define MAX_RADIUS 10.0    
-#define MAX_RECT_SIZE (GRID_SIZE - 2) 
+#define MAX_RADIUS 8.0    
+#define MAX_RECT_SIZE (GRID_SIZE - 4) 
 
 // **Adam Optimizer Parameters**
 #define BETA1 0.9
