@@ -59,7 +59,8 @@ double test_targets[N_SAMPLES_TEST][N_OUTPUT];
 // --- Function Prototypes ---
 void draw_line(double image[D_SIZE], int x1, int y1, int x2, int y2, double val);
 void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]);
-void load_data(int n_samples, double set[N_SAMPLES_MAX][D_SIZE], double target_set[N_SAMPLES_MAX][N_OUTPUT]);
+// CORRECTED: Array dimensions in the prototype are made flexible (or removed)
+void load_data(int n_samples, double set[][D_SIZE], double target_set[][N_OUTPUT]);
 void load_train_set();
 void load_test_set();
 
@@ -70,7 +71,7 @@ void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], doub
 void backward_pass_and_update(const double input[N_INPUT], const double hidden_out[N_HIDDEN], const double output[N_OUTPUT], const double target[N_OUTPUT]);
 
 void decode_instruction(double dir_norm, double steps_norm, char *dir_char, int *steps);
-void draw_path(char map[GRID_SIZE][GRID_SIZE], int start_x, int start_y, int exit_x, int exit_y, const double output_vec[N_OUTPUT]); // NEW PROTOTYPE
+void draw_path(char map[GRID_SIZE][GRID_SIZE], int start_x, int start_y, int exit_x, int exit_y, const double output_vec[N_OUTPUT]); 
 void test_labyrinth_path(int n_set_size, const double input_set[][N_INPUT], const double target_set[][N_OUTPUT]);
 void print_labyrinth_and_path(const double input_image[D_SIZE], const double target_output[N_OUTPUT], const double estimated_output[N_OUTPUT]);
 
@@ -203,12 +204,13 @@ void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]) {
     // 4. Post-processing: Add walls/noise around the path (optional, current 0.0 serves as wall)
 }
 
-
-void load_data(int n_samples, double set[N_SAMPLES_MAX][D_SIZE], double target_set[N_SAMPLES_MAX][N_OUTPUT]) {
+// CORRECTED: Array dimensions are made flexible
+void load_data(int n_samples, double set[][D_SIZE], double target_set[][N_OUTPUT]) {
     for (int k = 0; k < n_samples; ++k) {
         generate_labyrinth(set[k], target_set[k]);
     }
 }
+
 void load_train_set() {
     printf("Generating TRAINING dataset (%d labyrinths). N_OUTPUT=%d.\n", N_SAMPLES_TRAIN, N_OUTPUT);
     load_data(N_SAMPLES_TRAIN, dataset, targets);
@@ -338,7 +340,7 @@ void decode_instruction(double dir_norm, double steps_norm, char *dir_char, int 
     *steps = DENORMALIZE_STEPS(steps_norm);
 }
 
-// Helper to draw the path on the ASCII map (MOVED OUTSIDE)
+// Helper to draw the path on the ASCII map
 void draw_path(char map[GRID_SIZE][GRID_SIZE], int start_x, int start_y, int exit_x, int exit_y, const double output_vec[N_OUTPUT]) {
     int current_x = start_x;
     int current_y = start_y;
