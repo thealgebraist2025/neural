@@ -13,11 +13,11 @@
 
 // **Network Configuration**
 #define N_INPUT D_SIZE         
-#define N_HIDDEN 128           
+#define N_HIDDEN 64           
 #define N_OUTPUT 10            
 
 // **Training Parameters**
-#define NUM_IMAGES 3000        
+#define NUM_IMAGES 500        
 #define TRAINING_TIME_LIMIT 120.0 // **INCREASED TIME LIMIT for Full-Batch**
 #define REPORT_FREQ 5             // **Reduced Report Freq (fewer epochs)**
 #define LEARNING_RATE 0.00001     // **Reduced LR for Full-Batch Stability**
