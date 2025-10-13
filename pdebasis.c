@@ -456,7 +456,8 @@ void test_nn(int n_test_total) {
     forward_pass(input, output_net, output_prob);
     
     char predicted_sentence[SENTENCE_LENGTH + 1];
-    convert_binary_to_ascii(output_prob, predicted_prob);
+    // FIX APPLIED HERE: corrected 'predicted_prob' to 'predicted_sentence'
+    convert_binary_to_ascii(output_prob, predicted_sentence); 
 
     printf("  Input Index: %d\n", sample_index);
     printf("  Target Sentence:   '%s'\n", sentences[sample_index]);
