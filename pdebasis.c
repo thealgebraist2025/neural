@@ -59,8 +59,7 @@ double test_targets[N_SAMPLES_TEST][N_OUTPUT];
 // --- Function Prototypes ---
 void draw_line(double image[D_SIZE], int x1, int y1, int x2, int y2, double val);
 void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]);
-// CORRECTED: Array dimensions in the prototype are made flexible (or removed)
-void load_data(int n_samples, double set[][D_SIZE], double target_set[][N_OUTPUT]);
+void load_data(int n_samples, double set[][D_SIZE], double target_set[][N_OUTPUT]); // Corrected signature
 void load_train_set();
 void load_test_set();
 
@@ -142,6 +141,7 @@ void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]) {
     
     // Store instructions for the target array
     int instruction_idx = 2; // Start after Start X/Y
+    int max_instruction_idx = 2 + (NUM_SEGMENTS * 2); // 16 (index 15 is the last instruction value)
     
     for (int i = 0; i < NUM_SEGMENTS; i++) {
         int next_x = target_points[i+1][0];
@@ -155,6 +155,12 @@ void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]) {
         int start_segment_y = current_y;
 
         for (int m = 0; m < 2; m++) {
+            
+            // 🛑 CRITICAL FIX: Ensure we do not write past the allocated instruction space
+            if (instruction_idx >= max_instruction_idx) {
+                goto end_instruction_generation;
+            }
+
             if (move_order[m] == 0) { // Horizontal move
                 int dx = next_x - current_x;
                 if (dx != 0) {
@@ -182,7 +188,9 @@ void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]) {
             }
         }
     }
-    
+
+end_instruction_generation: // Label for the goto
+
     // 3. Set Target Data
     
     // Start X/Y
@@ -191,7 +199,7 @@ void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]) {
     
     // Instructions (already set above)
     // Pad the remaining instruction slots with a 'no-op' instruction (UP, 0 steps).
-    while (instruction_idx < 2 + NUM_SEGMENTS * 2) {
+    while (instruction_idx < max_instruction_idx) {
         target_data[instruction_idx] = DIR_UP; 
         target_data[instruction_idx+1] = 0.0; // 0 steps
         instruction_idx += 2;
@@ -204,13 +212,13 @@ void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]) {
     // 4. Post-processing: Add walls/noise around the path (optional, current 0.0 serves as wall)
 }
 
-// CORRECTED: Array dimensions are made flexible
+
+// Corrected function signature to avoid array size mismatch errors
 void load_data(int n_samples, double set[][D_SIZE], double target_set[][N_OUTPUT]) {
     for (int k = 0; k < n_samples; ++k) {
         generate_labyrinth(set[k], target_set[k]);
     }
 }
-
 void load_train_set() {
     printf("Generating TRAINING dataset (%d labyrinths). N_OUTPUT=%d.\n", N_SAMPLES_TRAIN, N_OUTPUT);
     load_data(N_SAMPLES_TRAIN, dataset, targets);
