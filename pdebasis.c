@@ -8,29 +8,29 @@
 #include <string.h> 
 
 // --- Configuration ---
-#define N_SAMPLES_MAX 12000 
+#define N_SAMPLES_MAX 52000 
 #define GRID_SIZE 32       
 #define D_SIZE (GRID_SIZE * GRID_SIZE) 
 #define N_INPUT D_SIZE     
 #define N_OUTPUT 14        // [Cls, x, y, w, h, rotation, P1x, P1y, P2x, P2y, P3x, P3y, P4x, P4y]
-#define N_HIDDEN 256       
+#define N_HIDDEN 128       
 #define N_TEST_SAMPLES 600 
 #define N_REGRESSION_TESTS 30 
 #define N_VISUAL_TESTS 20  // 10 Rectangles, 10 Splines
 
 // Neural Network Parameters
-#define LEARNING_RATE 0.0005 
-#define N_EPOCHS_TRAIN 100000 
+#define LEARNING_RATE 0.0002 
+#define N_EPOCHS_TRAIN 800000 
 #define TARGET_LINE_SET 0.0
 #define TARGET_RECTANGLE 1.0
 #define TARGET_SPLINE 2.0 
 #define CLASSIFICATION_WEIGHT 1.0 
 #define REGRESSION_WEIGHT 5.0     
-#define MAX_ROTATION_DEGREE 180.0 
+#define MAX_ROTATION_DEGREE 90.0 
 #define MAX_PIXEL_VALUE 250.0 // Max pixel value for normalization to 0..9
 
 // --- Dynamic Globals ---
-int N_SAMPLES = 12000; 
+int N_SAMPLES = 32000; 
 int N_EPOCHS = N_EPOCHS_TRAIN; 
  
 // Global Data & Matrices 
