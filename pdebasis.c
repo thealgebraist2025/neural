@@ -66,10 +66,12 @@ void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], doub
 void backward_pass_and_update(const double input[N_INPUT], const double hidden_out[N_HIDDEN], const double output[N_OUTPUT], const double target[N_OUTPUT]);
 
 void test_regression();
+// FIX: ADDED MISSING PROTOTYPE
+void estimate_nn_epochs();
 
 
 // -----------------------------------------------------------------
-// --- DATA GENERATION FUNCTIONS (UPDATED for SPLINE) ---
+// --- DATA GENERATION FUNCTIONS ---
 // -----------------------------------------------------------------
 
 // Helper function to draw a line for the spline rendering
@@ -332,9 +334,7 @@ void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], doub
             o_net += hidden_out[j] * w_ho[j][k]; 
         } 
         
-        // Output[0] (Classification) uses linear output for multi-target regression.
-        // The interpretation of this score determines the class.
-        // Regression outputs [1..13] use identity (linear)
+        // Output[0] (Classification) and Regression outputs [1..13] use identity (linear)
         output[k] = o_net; 
     }
 }
@@ -427,7 +427,16 @@ double test_on_set_cls(int n_set_size, const double input_set[][N_INPUT]) {
 }
 
 // -----------------------------------------------------------------
-// --- REGRESSION TESTING (UPDATED for Splines) ---
+// --- PROFILING FUNCTIONS ---
+// -----------------------------------------------------------------
+
+void estimate_nn_epochs() {
+    printf("\n--- NN EPOCHS CONFIGURATION ---\n");
+    printf("Setting fixed epochs to N_EPOCHS=%d for convergence of complex regression task.\n", N_EPOCHS);
+}
+
+// -----------------------------------------------------------------
+// --- REGRESSION TESTING ---
 // -----------------------------------------------------------------
 
 // Helper function to print a known class name based on its target value
@@ -438,7 +447,7 @@ const char* get_class_name(double target_cls) {
 }
 
 void test_regression() {
-    printf("\n--- STEP 3: REGRESSION TEST (%d Samples: Rects/Splines) ---\n", N_REGRESSION_TESTS);
+    printf("\n--- STEP 3: REGRESSION TEST (%d Samples: Lines/Rects/Splines) ---\n", N_REGRESSION_TESTS);
     printf("Image dimensions: %dx%d pixels. Cls Targets: 0.0=Line, 1.0=Rect, 2.0=Spline.\n", GRID_SIZE, GRID_SIZE);
     printf("--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\n");
     printf("| # | Cls | Est. Cls | Est. X, Y, W, H (Px) | Known X, Y, W, H | Est. Rot (Deg) | Known Rot (Deg) | Estimated Spline Points (Px) | Known Spline Points (Px) |\n");
@@ -447,18 +456,24 @@ void test_regression() {
     double hidden_out[N_HIDDEN];
     double output[N_OUTPUT];
     
-    // Test 10 lines, 10 rectangles, 10 splines
+    // Test 10 lines, 10 rectangles, 10 splines (since N_REGRESSION_TESTS=30)
     for (int i = 0; i < N_REGRESSION_TESTS; i++) {
         double test_image[D_SIZE];
         double known_target[N_OUTPUT];
         
-        // Generate test data for 3 classes (0=Line, 1=Rect, 2=Spline)
+        // Generate test data for 3 classes
         if (i < N_REGRESSION_TESTS/3) {
              generate_random_lines(test_image, known_target); // Lines
         } else if (i < 2 * N_REGRESSION_TESTS/3) {
-            generate_rectangle(test_image, known_target); // Rectangles
+            // Note: generate_rectangle takes a target_data[N_OUTPUT] 
+            double temp_target[N_OUTPUT];
+            generate_rectangle(test_image, temp_target); 
+            memcpy(known_target, temp_target, N_OUTPUT * sizeof(double));
         } else {
-            generate_4_point_spline(test_image, known_target); // Splines
+            // Note: generate_4_point_spline takes a target_data[N_OUTPUT]
+            double temp_target[N_OUTPUT];
+            generate_4_point_spline(test_image, temp_target);
+            memcpy(known_target, temp_target, N_OUTPUT * sizeof(double));
         }
         
         forward_pass(test_image, hidden_out, output);
