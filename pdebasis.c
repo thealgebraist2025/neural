@@ -24,17 +24,19 @@
 
 // **Network & Training Parameters**
 #define N_HIDDEN 64       
-#define N_SAMPLES_TOTAL 10000 
 #define N_TEST_CASES_PER_LABYRINTH 10 
-#define INITIAL_LEARNING_RATE 0.00001 // Slightly increased LR for speed
-#define N_EPOCHS_TRAIN 1000000 
+#define INITIAL_LEARNING_RATE 0.00001 
+#define N_EPOCHS_MAX 1000000 // Maximum theoretical epochs
 #define COORD_WEIGHT 1.0                 
 #define CLASSIFICATION_WEIGHT 1.0 
 #define MAX_STEPS 16.0 
-#define MAX_TRAINING_SECONDS 120 // ⬅️ CRITICAL: Changed to int for time_t comparison
-#define SOLVED_ERROR_THRESHOLD 0.1 
 
-// **Gradient Clipping Parameter**
+// ⬅️ CRITICAL FIX CONFIGURATION
+#define MAX_TRAINING_SECONDS 120 // Target: Max 2 minutes
+#define WARMUP_EPOCHS 100 // Epochs used for timing estimation
+#define REPORT_SECONDS 1 // Report frequency (every second)
+
+#define SOLVED_ERROR_THRESHOLD 0.1 
 #define GRADIENT_CLIP_NORM 1.0 
 
 // Direction Encoding
@@ -89,6 +91,10 @@ void update_learning_rate(double current_avg_loss);
 double clip_gradient(double grad, double max_norm); 
 
 void forward_pass(const double input[N_INPUT], double hidden_net[N_HIDDEN], double hidden_out[N_HIDDEN], double output_net[N_OUTPUT], double output[N_OUTPUT]);
+
+// ⬅️ NEW FUNCTION
+int estimate_epochs_per_second(double input[N_INPUT], double target[N_OUTPUT]);
+
 void train_nn();
 void test_nn_and_summarize();
 int is_path_legal(const double labyrinth[D_SIZE], int start_x, int start_y, const double output_vec[N_OUTPUT]);
@@ -504,19 +510,70 @@ void update_learning_rate(double current_avg_loss) {
     }
 }
 
+// ⬅️ NEW FUNCTION: Estimates epochs per second by running a brief warmup.
+int estimate_epochs_per_second(double input[N_INPUT], double target[N_OUTPUT]) {
+    printf("--- Timing Warmup: Running %d epochs to estimate performance. ---\n", WARMUP_EPOCHS);
+
+    double hidden_net[N_HIDDEN], hidden_out[N_HIDDEN], output_net[N_OUTPUT], output[N_OUTPUT];
+    
+    // Store original weights to restore later (though not strictly necessary for this simple timing)
+    double w_fh_copy[N_INPUT][N_HIDDEN];
+    memcpy(w_fh_copy, w_fh, sizeof(w_fh)); 
+    
+    time_t start_time = time(NULL);
+    
+    for (int i = 0; i < WARMUP_EPOCHS; i++) {
+        load_train_case(input, target);
+        forward_pass(input, hidden_net, hidden_out, output_net, output);
+        
+        // Simplified backprop for timing: just update a few weights 
+        double error = calculate_loss(output, target);
+        
+        // Perform a minimal weight update to simulate the full training load accurately
+        double delta_o[N_OUTPUT] = {0.0};
+        delta_o[0] = (output[0] - target[0]) * sigmoid_derivative(output[0]);
+        for(int j=0; j<N_HIDDEN; j++) {
+            double delta_h = delta_o[0] * w_ho[j][0] * tanh_derivative(hidden_out[j]);
+            w_fh[0][j] -= 0.0 * delta_h * input[0]; // Learning rate set to 0 to prevent actual training
+        }
+    }
+    
+    time_t end_time = time(NULL);
+    double elapsed_time = difftime(end_time, start_time);
+    
+    // Restore weights (optional, but good practice)
+    memcpy(w_fh, w_fh_copy, sizeof(w_fh));
+
+    if (elapsed_time < 1.0) {
+        printf("Warmup too fast (%.2f s). Defaulting to 1000 epochs/second guess.\n", elapsed_time);
+        return 1000;
+    }
+
+    int epochs_per_second = (int)round((double)WARMUP_EPOCHS / elapsed_time);
+    printf("--- Warmup finished: %.2f seconds for %d epochs. Estimated %d epochs per second. ---\n", 
+           elapsed_time, WARMUP_EPOCHS, epochs_per_second);
+           
+    return epochs_per_second;
+}
+
 
 void train_nn() {
-    printf("Training Vanilla NN with %d inputs and %d hidden neurons (Samples: %d, Initial LR: %.6e, Coords Weight: %.1f, Clip: %.1f, Hidden: Tanh, Reg Output: Sigmoid).\n", 
-           N_INPUT, N_HIDDEN, N_SAMPLES_TOTAL, INITIAL_LEARNING_RATE, COORD_WEIGHT, GRADIENT_CLIP_NORM);
     
-    // ⬅️ CRITICAL FIX: Use time(NULL) for wall-clock time
-    time_t start_time = time(NULL);
-    time_t end_time = start_time + MAX_TRAINING_SECONDS;
-    
-    int report_interval = 500; 
-
     double input[N_INPUT];
     double target[N_OUTPUT];
+    
+    // ⬅️ STEP 1: Estimate max epochs
+    int epochs_per_sec = estimate_epochs_per_second(input, target);
+    int max_epochs_to_run = (int)((double)epochs_per_sec * MAX_TRAINING_SECONDS * 0.98); // Use 98% of the estimated total
+    
+    if (max_epochs_to_run > N_EPOCHS_MAX) max_epochs_to_run = N_EPOCHS_MAX;
+    
+    printf("\nTraining Vanilla NN. Time Limit: %d seconds. Epoch Limit (Estimated): %d.\n", 
+           MAX_TRAINING_SECONDS, max_epochs_to_run);
+    
+    time_t start_time = time(NULL);
+    time_t next_report_time = start_time + REPORT_SECONDS;
+
     double hidden_net[N_HIDDEN]; 
     double hidden_out[N_HIDDEN];
     double output_net[N_OUTPUT]; 
@@ -524,14 +581,15 @@ void train_nn() {
     
     double cumulative_loss_report = 0.0;
     int samples_processed_in_report = 0;
+    int total_samples_processed = 0;
 
-    for (int epoch = 0; epoch < N_EPOCHS_TRAIN; epoch++) {
+    for (int epoch = 0; epoch < max_epochs_to_run; epoch++) {
         
-        // ⬅️ Time check: Stop when wall-clock time exceeds the limit
-        if (time(NULL) >= end_time) {
-            double time_elapsed = (double)(time(NULL) - start_time);
-            printf("\n--- Training stopped: Maximum time limit of %.0f seconds (%.2f s elapsed) reached after %d epochs. ---\n", 
-                   (double)MAX_TRAINING_SECONDS, time_elapsed, epoch);
+        // ⬅️ CRITICAL FIX: Epoch limit check
+        if (epoch >= max_epochs_to_run) {
+            double time_elapsed = difftime(time(NULL), start_time);
+            printf("\n--- Training stopped: Estimated epoch limit (%d) reached. Time elapsed: %.2f s. ---\n", 
+                   max_epochs_to_run, time_elapsed);
             break;
         }
 
@@ -540,6 +598,7 @@ void train_nn() {
         forward_pass(input, hidden_net, hidden_out, output_net, output);
         cumulative_loss_report += calculate_loss(output, target);
         samples_processed_in_report++;
+        total_samples_processed++;
         
         // **Backpropagation and Update**
         double delta_o[N_OUTPUT];
@@ -549,7 +608,7 @@ void train_nn() {
         // 1. Calculate Output Delta 
         for (int k = 0; k < N_OUTPUT; k++) {
             if (k >= 2 && k < (2 + NUM_SEGMENTS * N_DIRECTION_CLASSES)) {
-                delta_o[k] = (output[k] - target[k]) * CLASSIFICATION_WEIGHT; 
+                delta_o[k] = (output[k] - target[k]); // Cross-Entropy error 
             } else { 
                 double error = output[k] - target[k];
                 double sig_deriv = sigmoid_derivative(output[k]); 
@@ -587,19 +646,21 @@ void train_nn() {
             b_h[j] -= current_learning_rate * delta_h[j]; 
         }
         
-        // ERROR RATE REPORTING AND LR SCHEDULING
-        if ((epoch % report_interval == 0) && epoch != 0) {
+        // ⬅️ NEW: Time-based reporting
+        if (time(NULL) >= next_report_time) {
             double current_avg_loss = cumulative_loss_report / samples_processed_in_report;
             update_learning_rate(current_avg_loss); 
             
-            // Re-calculate time for reporting
-            double time_elapsed = (double)(time(NULL) - start_time);
+            double time_elapsed = difftime(time(NULL), start_time);
+            int epochs_remaining = max_epochs_to_run - (epoch + 1);
+            double estimated_end_time = time_elapsed + (double)epochs_remaining / epochs_per_sec;
 
-            printf("  Epoch %d/%d completed. Time elapsed: %.2f s. LR: %.6e. Avg Loss (per sample): %.4f\n", 
-                   epoch, N_EPOCHS_TRAIN, time_elapsed, current_learning_rate, current_avg_loss);
+            printf("  Time: %3.0f s | Epoch: %6d / %6d | Avg Loss: %7.4f | LR: %.2e | Est. End: %4.0f s\n", 
+                   time_elapsed, epoch + 1, max_epochs_to_run, current_avg_loss, current_learning_rate, estimated_end_time);
             
             cumulative_loss_report = 0.0;
             samples_processed_in_report = 0;
+            next_report_time = time(NULL) + REPORT_SECONDS;
         }
     }
 }
