@@ -19,17 +19,16 @@
 // **Training Parameters**
 #define NUM_IMAGES 100         
 #define BATCH_SIZE 10          
-#define N_TRAINING_EPOCHS 50000      
+#define TRAIN_TIME_SECONDS 30
 #define REPORT_FREQ 5000             
 #define INITIAL_LEARNING_RATE 0.00001 
 #define COORD_WEIGHT 1.0           
 #define MIN_RADIUS 3           
 #define MAX_RADIUS 10.0    
-#define SVD_REGULARIZATION_LAMBDA 1e-5 // Lambda for Condition Number Regularization
 
-// **Algebraic Parameters**
-#define MAX_ITER_SVD 100           // Max iterations for Power Iteration
-#define SVD_TOLERANCE 1e-6         // Convergence tolerance
+// **Testing Parameters**
+#define N_TEST_CIRCLES 1000
+#define N_TEST_RECTANGLES 1000
 
 // Global Data & Matrices 
 double w_fh[N_INPUT][N_HIDDEN];    
@@ -40,210 +39,38 @@ double b_o[N_OUTPUT];
 double single_images[NUM_IMAGES][D_SIZE]; 
 int target_properties[NUM_IMAGES][N_OUTPUT]; 
 
+// --- Profiling Setup ---
+enum FuncName {
+    PROFILE_DRAW_CIRCLE,
+    PROFILE_DRAW_RECTANGLE, // New function for testing
+    PROFILE_GENERATE_CIRCLE,
+    PROFILE_LOAD_TRAIN_CASE,
+    PROFILE_FORWARD_PASS,
+    PROFILE_BACKPROP_UPDATE, // Training-related update step
+    PROFILE_TRAIN_NN,
+    PROFILE_TEST_NN_CIRCLES,
+    PROFILE_TEST_NN_RECTS,
+    NUM_FUNCTIONS 
+};
+const char *func_names[NUM_FUNCTIONS] = {
+    "draw_filled_circle", "draw_rectangle", "generate_circle_image", "load_train_case", 
+    "forward_pass", "backprop_update", "train_nn", "test_nn_circles", "test_nn_rects"
+};
+clock_t func_times[NUM_FUNCTIONS] = {0}; 
+
+#define START_PROFILE(func) clock_t start_##func = clock();
+#define END_PROFILE(func) func_times[func] += (clock() - start_##func);
+
 // --- Helper Macros and Functions ---
 #define NORMALIZE_COORD(coord) ((double)(coord) / (GRID_SIZE - 1.0))
 #define NORMALIZE_RADIUS(radius) ((double)(radius) / MAX_RADIUS)
 double poly_activation(double z_net) { return z_net * z_net; } 
 double poly_derivative(double z_net) { return 2.0 * z_net; }
 
-// --- Matrix Algebra Implementations ---
-
-// 1. Matrix Multiplication: C = A * B (N_HIDDEN x N_INPUT * N_INPUT x N_HIDDEN) -> (64x64)
-// Computes A = W_fh^T * W_fh (Gram Matrix)
-void matrix_mult_gram(const double W[N_INPUT][N_HIDDEN], double A[N_HIDDEN][N_HIDDEN]) {
-    for (int i = 0; i < N_HIDDEN; i++) { // Row of A (Corresponds to column of W_fh)
-        for (int j = 0; j < N_HIDDEN; j++) { // Column of A (Corresponds to column of W_fh)
-            A[i][j] = 0.0;
-            for (int k = 0; k < N_INPUT; k++) { // Sum over N_INPUT (k)
-                // W_fh^T[i][k] * W_fh[k][j] = W_fh[k][i] * W_fh[k][j]
-                A[i][j] += W[k][i] * W[k][j]; 
-            }
-        }
-    }
-}
-
-// 2. Vector Norm
-double vector_norm(const double v[N_HIDDEN]) {
-    double sum_sq = 0.0;
-    for (int i = 0; i < N_HIDDEN; i++) sum_sq += v[i] * v[i];
-    return sqrt(sum_sq);
-}
-
-// 3. Matrix-Vector Multiplication: y = A * x (64x64 * 64x1)
-void mat_vec_mult(const double A[N_HIDDEN][N_HIDDEN], const double x[N_HIDDEN], double y[N_HIDDEN]) {
-    for (int i = 0; i < N_HIDDEN; i++) {
-        y[i] = 0.0;
-        for (int j = 0; j < N_HIDDEN; j++) {
-            y[i] += A[i][j] * x[j];
-        }
-    }
-}
-
-// 4. POWER ITERATION: Finds the largest eigenvalue of A (lambda_max)
-// This is used for both lambda_max(A) and lambda_max(A^-1)
-double power_iteration(const double A[N_HIDDEN][N_HIDDEN], double initial_vector[N_HIDDEN]) {
-    double v[N_HIDDEN]; 
-    double Av[N_HIDDEN];
-    double lambda = 0.0;
-
-    // Initialize v with the provided vector (or random if needed)
-    if (initial_vector == NULL) {
-        for(int i = 0; i < N_HIDDEN; i++) v[i] = ((double)rand() / RAND_MAX * 2.0 - 1.0);
-    } else {
-        memcpy(v, initial_vector, N_HIDDEN * sizeof(double));
-    }
-
-    double norm = vector_norm(v);
-    for (int i = 0; i < N_HIDDEN; i++) v[i] /= norm; // Normalize v
-
-    for (int iter = 0; iter < MAX_ITER_SVD; iter++) {
-        mat_vec_mult(A, v, Av);
-        
-        double new_lambda = 0.0;
-        for (int i = 0; i < N_HIDDEN; i++) new_lambda += v[i] * Av[i];
-        
-        if (fabs(new_lambda - lambda) < SVD_TOLERANCE) {
-            lambda = new_lambda;
-            break;
-        }
-        
-        lambda = new_lambda;
-        
-        // Normalize Av and set as new v
-        norm = vector_norm(Av);
-        for (int i = 0; i < N_HIDDEN; i++) v[i] = Av[i] / norm;
-    }
-    
-    // Copy final eigenvector for potential reuse
-    if (initial_vector != NULL) {
-        memcpy(initial_vector, v, N_HIDDEN * sizeof(double));
-    }
-    
-    return lambda;
-}
-
-// 5. Gaussian Elimination for Matrix Inversion (Needed for Inverse Power Iteration)
-// Computes A_inv = A^-1
-void invert_matrix(const double A[N_HIDDEN][N_HIDDEN], double A_inv[N_HIDDEN][N_HIDDEN]) {
-    double M[N_HIDDEN][2 * N_HIDDEN];
-    
-    // Setup augmented matrix [A | I]
-    for (int i = 0; i < N_HIDDEN; i++) {
-        for (int j = 0; j < N_HIDDEN; j++) {
-            M[i][j] = A[i][j];
-            M[i][j + N_HIDDEN] = (i == j) ? 1.0 : 0.0;
-        }
-    }
-
-    // Gaussian Elimination (Forward phase)
-    for (int i = 0; i < N_HIDDEN; i++) {
-        // Pivot selection (partial pivoting)
-        int max_row = i;
-        for (int k = i + 1; k < N_HIDDEN; k++) {
-            if (fabs(M[k][i]) > fabs(M[max_row][i])) {
-                max_row = k;
-            }
-        }
-        if (max_row != i) {
-            for (int k = i; k < 2 * N_HIDDEN; k++) {
-                double temp = M[i][k];
-                M[i][k] = M[max_row][k];
-                M[max_row][k] = temp;
-            }
-        }
-
-        // Check for singularity (determinant is near zero)
-        if (fabs(M[i][i]) < 1e-9) { 
-             // Inverting near-singular matrix; return identity as a failsafe
-             for (int r = 0; r < N_HIDDEN; r++) {
-                 for (int c = 0; c < N_HIDDEN; c++) {
-                     A_inv[r][c] = (r == c) ? 1.0 : 0.0;
-                 }
-             }
-             return; 
-        }
-
-        // Normalize the pivot row
-        double pivot = M[i][i];
-        for (int j = i; j < 2 * N_HIDDEN; j++) {
-            M[i][j] /= pivot;
-        }
-
-        // Eliminate other rows
-        for (int k = 0; k < N_HIDDEN; k++) {
-            if (k != i) {
-                double factor = M[k][i];
-                for (int j = i; j < 2 * N_HIDDEN; j++) {
-                    M[k][j] -= factor * M[i][j];
-                }
-            }
-        }
-    }
-
-    // Extract the inverse matrix
-    for (int i = 0; i < N_HIDDEN; i++) {
-        for (int j = 0; j < N_HIDDEN; j++) {
-            A_inv[i][j] = M[i][j + N_HIDDEN];
-        }
-    }
-}
-
-
-// 6. Primary Algebraic Function: Singular Value Calculation
-void calculate_singular_values(const double W[N_INPUT][N_HIDDEN], double *sigma_max, double *sigma_min) {
-    double A[N_HIDDEN][N_HIDDEN];
-    double A_inv[N_HIDDEN][N_HIDDEN];
-    double v_init[N_HIDDEN];
-
-    // Compute Gram Matrix A = W^T * W
-    matrix_mult_gram(W, A);
-
-    // --- 1. Find Largest Singular Value (sigma_max) ---
-    // sigma_max = sqrt(lambda_max(A))
-    double lambda_max = power_iteration(A, v_init);
-    *sigma_max = sqrt(lambda_max);
-
-    // --- 2. Find Smallest Singular Value (sigma_min) ---
-    // sigma_min = 1 / sqrt(lambda_max(A^-1))
-    
-    // We compute A_inv
-    invert_matrix(A, A_inv);
-    
-    // We compute lambda_max(A_inv) using Power Iteration
-    double lambda_max_inv = power_iteration(A_inv, v_init);
-    
-    if (lambda_max_inv < 1e-9) {
-        *sigma_min = 0.0; // Near-singular matrix
-    } else {
-        *sigma_min = 1.0 / sqrt(lambda_max_inv);
-    }
-}
-
-// 7. Calculates the Condition Number
-double calculate_condition_number(double sigma_max, double sigma_min) {
-    if (sigma_min < 1e-8) return DBL_MAX; 
-    return sigma_max / sigma_min;
-}
-
-// 8. Algebraic Regularization Update (Applied to W_fh)
-// This applies a gradient-based update to penalize high condition numbers.
-void apply_algebraic_regularization_update(double W[N_INPUT][N_HIDDEN], double condition_number, double update_rate) {
-    if (condition_number == DBL_MAX || condition_number > 1000.0) {
-        // If ill-conditioned, apply an L2-like penalty to stabilize the matrix.
-        // This is a proxy for the complex gradient of the condition number.
-        double penalty_scale = SVD_REGULARIZATION_LAMBDA * log(condition_number);
-        for (int i = 0; i < N_INPUT; i++) {
-            for (int j = 0; j < N_HIDDEN; j++) {
-                W[i][j] -= update_rate * penalty_scale * W[i][j]; 
-            }
-        }
-    }
-}
-
-
-// --- NN Core Functions (Unchanged, included for compilation) ---
+// --- Drawing Functions ---
 
 void draw_filled_circle(double image[D_SIZE], int cx, int cy, int r) {
+    START_PROFILE(PROFILE_DRAW_CIRCLE)
     for (int i = 0; i < D_SIZE; i++) image[i] = 0.0; 
     for (int y = 0; y < GRID_SIZE; y++) {
         for (int x = 0; x < GRID_SIZE; x++) {
@@ -252,9 +79,33 @@ void draw_filled_circle(double image[D_SIZE], int cx, int cy, int r) {
             }
         }
     }
+    END_PROFILE(PROFILE_DRAW_CIRCLE)
+}
+
+// NEW: Draw filled rectangle
+void draw_rectangle(double image[D_SIZE], int x1, int y1, int x2, int y2) {
+    START_PROFILE(PROFILE_DRAW_RECTANGLE)
+    for (int i = 0; i < D_SIZE; i++) image[i] = 0.0; 
+    int min_x = (x1 < x2) ? x1 : x2;
+    int max_x = (x1 > x2) ? x1 : x2;
+    int min_y = (y1 < y2) ? y1 : y2;
+    int max_y = (y1 > y2) ? y1 : y2;
+    
+    // Clamp to grid
+    if (min_x < 0) min_x = 0; if (min_y < 0) min_y = 0;
+    if (max_x >= GRID_SIZE) max_x = GRID_SIZE - 1;
+    if (max_y >= GRID_SIZE) max_y = GRID_SIZE - 1;
+
+    for (int y = min_y; y <= max_y; y++) {
+        for (int x = min_x; x <= max_x; x++) {
+            image[GRID_SIZE * y + x] = 1.0; 
+        }
+    }
+    END_PROFILE(PROFILE_DRAW_RECTANGLE)
 }
 
 void generate_circle_image(int index) {
+    START_PROFILE(PROFILE_GENERATE_CIRCLE)
     int min_center = MAX_RADIUS;
     int max_center = GRID_SIZE - MAX_RADIUS - 1;
     srand((unsigned int)time(NULL) + index * 100); 
@@ -264,13 +115,16 @@ void generate_circle_image(int index) {
     int r = (int)MIN_RADIUS + (rand() % ((int)MAX_RADIUS - (int)MIN_RADIUS + 1));
     draw_filled_circle(single_images[index], cx, cy, r);
     properties[0] = cx; properties[1] = cy; properties[2] = r;
+    END_PROFILE(PROFILE_GENERATE_CIRCLE)
 }
 
 void load_train_case(double input[N_INPUT], double target[N_OUTPUT]) {
+    START_PROFILE(PROFILE_LOAD_TRAIN_CASE)
     int img_idx = rand() % NUM_IMAGES;
     memcpy(input, single_images[img_idx], D_SIZE * sizeof(double));
     const int *p = target_properties[img_idx];
     target[0] = NORMALIZE_COORD(p[0]); target[1] = NORMALIZE_COORD(p[1]); target[2] = NORMALIZE_RADIUS(p[2]); 
+    END_PROFILE(PROFILE_LOAD_TRAIN_CASE)
 }
 
 void initialize_nn() {
@@ -287,6 +141,7 @@ void initialize_nn() {
 }
 
 void forward_pass(const double input[N_INPUT], double hidden_net[N_HIDDEN], double hidden_out[N_HIDDEN], double output[N_OUTPUT]) {
+    START_PROFILE(PROFILE_FORWARD_PASS)
     for (int j = 0; j < N_HIDDEN; j++) {
         double h_net = b_h[j];
         for (int i = 0; i < N_INPUT; i++) h_net += input[i] * w_fh[i][j]; 
@@ -298,13 +153,13 @@ void forward_pass(const double input[N_INPUT], double hidden_net[N_HIDDEN], doub
         for (int j = 0; j < N_HIDDEN; j++) o_net += hidden_out[j] * w_ho[j][k]; 
         output[k] = o_net;
     }
+    END_PROFILE(PROFILE_FORWARD_PASS)
 }
 
-
-// --- Training Function with Real Algebraic Update ---
+// --- Training Function with Time Limit ---
 
 void train_nn() {
-    // ... (All local variables and gradient accumulators from previous response)
+    START_PROFILE(PROFILE_TRAIN_NN)
     double input[N_INPUT], target[N_OUTPUT];
     double hidden_net[N_HIDDEN], hidden_out[N_HIDDEN], output[N_OUTPUT];
     
@@ -315,25 +170,27 @@ void train_nn() {
     
     double cumulative_loss_report = 0.0;
     int samples_processed_in_report = 0;
+    int epoch = 0;
     
-    // Algebraic variables
-    double sigma_max, sigma_min;
+    clock_t start_time = clock();
+    double time_limit = (double)TRAIN_TIME_SECONDS * CLOCKS_PER_SEC;
+
+    printf("--- TRAINING PHASE START (Batch SGD for %d seconds) ---\n", TRAIN_TIME_SECONDS);
     
-    printf("--- TRAINING PHASE START (Batch SGD with REAL SVD Regularization) ---\n");
-    
-    for (int epoch = 0; epoch < N_TRAINING_EPOCHS; epoch++) {
+    while ((double)(clock() - start_time) < time_limit) {
         
-        // --- BATCH LOOP (Calculates and accumulates standard gradients) ---
+        // --- BATCH LOOP ---
         for (int batch = 0; batch < BATCH_SIZE; batch++) {
             
             load_train_case(input, target);
             forward_pass(input, hidden_net, hidden_out, output);
             
+            // Backpropagation (Standard SGD)
+            START_PROFILE(PROFILE_BACKPROP_UPDATE)
             double delta_o[N_OUTPUT];
             double delta_h[N_HIDDEN]; 
             double error_h[N_HIDDEN];
 
-            // Backpropagation (Standard SGD)
             for (int k = 0; k < N_OUTPUT; k++) delta_o[k] = (output[k] - target[k]) * COORD_WEIGHT; 
             for (int j = 0; j < N_HIDDEN; j++) {
                 error_h[j] = 0.0;
@@ -350,6 +207,7 @@ void train_nn() {
                 grad_b_h_acc[j] += delta_h[j];
                 for (int i = 0; i < N_INPUT; i++) grad_w_fh_acc[i][j] += delta_h[j] * input[i];
             }
+            END_PROFILE(PROFILE_BACKPROP_UPDATE)
             
             double loss = 0.0; 
             for (int k = 0; k < N_OUTPUT; k++) loss += (output[k] - target[k]) * (output[k] - target[k]) * COORD_WEIGHT;
@@ -357,7 +215,7 @@ void train_nn() {
             samples_processed_in_report++;
         } // END BATCH LOOP
 
-        // --- WEIGHT UPDATE (SGD + Algebraic Regularization) ---
+        // --- WEIGHT UPDATE (Standard SGD) ---
         double inverse_batch_size = 1.0 / BATCH_SIZE;
         double update_rate = INITIAL_LEARNING_RATE * inverse_batch_size;
         
@@ -371,7 +229,7 @@ void train_nn() {
             }
         }
         
-        // 2. Update W_fh and b_h (Standard SGD portion)
+        // 2. Update W_fh and b_h
         for (int j = 0; j < N_HIDDEN; j++) {
             b_h[j] -= update_rate * grad_b_h_acc[j];
             grad_b_h_acc[j] = 0.0; 
@@ -381,79 +239,42 @@ void train_nn() {
             }
         }
         
-        // 3. Algebraic Regularization Update (W_fh)
-        calculate_singular_values(w_fh, &sigma_max, &sigma_min);
-        double condition_number = calculate_condition_number(sigma_max, sigma_min);
-        apply_algebraic_regularization_update(w_fh, condition_number, update_rate);
-        
-        if ((epoch + 1) % REPORT_FREQ == 0) {
-            printf("  Epoch: %6d | Avg Loss: %7.6f | Cond($\\mathbf{W}_{fh}$): %.2e | $\\sigma_{max}$: %.4f\n", 
-                   epoch + 1, cumulative_loss_report / samples_processed_in_report, 
-                   condition_number, sigma_max);
+        epoch++;
+        if (epoch % REPORT_FREQ == 0) {
+            printf("  Epoch: %6d | Avg Loss: %7.6f | Time Elapsed: %.2f s\n", 
+                   epoch, cumulative_loss_report / samples_processed_in_report, 
+                   (double)(clock() - start_time) / CLOCKS_PER_SEC);
             cumulative_loss_report = 0.0; 
             samples_processed_in_report = 0;
         }
     }
-    printf("--- TRAINING PHASE COMPLETE ---\n");
+    printf("--- TRAINING PHASE COMPLETE (Total Epochs: %d) ---\n", epoch);
+    END_PROFILE(PROFILE_TRAIN_NN)
 }
 
+// --- Testing Functions ---
 
-// --- Testing and Main Function (Unchanged, included for compilation) ---
-
-void print_image_and_path(const double input[N_INPUT], const double target[N_OUTPUT], const double output[N_OUTPUT]) {
-    int target_cx = (int)round(target[0] * (GRID_SIZE - 1.0));
-    int target_cy = (int)round(target[1] * (GRID_SIZE - 1.0));
-    int target_r = (int)round(target[2] * MAX_RADIUS);
-
-    int output_cx = (int)round(output[0] * (GRID_SIZE - 1.0));
-    int output_cy = (int)round(output[1] * (GRID_SIZE - 1.0));
-    int output_r = (int)round(output[2] * MAX_RADIUS);
-    
-    printf("  Target: (CX, CY, R) = (%2d, %2d, %2d)\n", target_cx, target_cy, target_r);
-    printf("  Output: (CX, CY, R) = (%2d, %2d, %2d)\n", output_cx, output_cy, output_r);
-    
-    printf("  Image (%dx%d):\n", GRID_SIZE, GRID_SIZE);
-    int print_size = 16;
-    int start_x = (GRID_SIZE - print_size) / 2;
-    int start_y = (GRID_SIZE - print_size) / 2;
-    
-    for (int y = start_y; y < start_y + print_size; y++) {
-        printf("    ");
-        for (int x = start_x; x < start_x + print_size; x++) {
-            int index = GRID_SIZE * y + x;
-            if (x == output_cx && y == output_cy) {
-                 printf("X"); // Predicted Center
-            } else if (x == target_cx && y == target_cy) {
-                 printf("C"); // True Center
-            } else if (input[index] > 0.5) {
-                printf("#");
-            } else {
-                printf(".");
-            }
-        }
-        printf("\n");
-    }
-    printf("    (Partial view: Centers are marked)\n");
-}
-
-void test_nn(int total_test_runs) {
+// Test on circles (same as before)
+void test_nn_circles(int total_test_runs) {
+    START_PROFILE(PROFILE_TEST_NN_CIRCLES)
     double input[N_INPUT], target[N_OUTPUT], hidden_net[N_HIDDEN], hidden_out[N_HIDDEN], output[N_OUTPUT];
     double cumulative_test_loss = 0.0;
     int accurate_count = 0;
     
-    printf("\n--- TESTING PHASE START (%d cases) ---\n", total_test_runs);
+    printf("\n--- TESTING PHASE: CIRCLES (%d cases) ---\n", total_test_runs);
     
     for (int i = 0; i < total_test_runs; i++) {
+        // Generate random circle
         int cx = (int)MAX_RADIUS + (rand() % (GRID_SIZE - 2 * (int)MAX_RADIUS));
         int cy = (int)MAX_RADIUS + (rand() % (GRID_SIZE - 2 * (int)MAX_RADIUS));
         int r = (int)MIN_RADIUS + (rand() % ((int)MAX_RADIUS - (int)MIN_RADIUS + 1));
         
-        draw_filled_circle(input, cx, cy, r);
+        draw_filled_circle(input, cx, cy, r); // Profiling handled inside
         target[0] = NORMALIZE_COORD(cx); 
         target[1] = NORMALIZE_COORD(cy); 
         target[2] = NORMALIZE_RADIUS(r); 
         
-        forward_pass(input, hidden_net, hidden_out, output);
+        forward_pass(input, hidden_net, hidden_out, output); // Profiling handled inside
 
         double loss = 0.0;
         double error_threshold = 0.05; 
@@ -470,44 +291,98 @@ void test_nn(int total_test_runs) {
         if (accurate) accurate_count++;
     }
     
-    printf("\nTEST SUMMARY:\n");
+    printf("CIRCLE TEST SUMMARY:\n");
     printf("Total Test Cases: %d\n", total_test_runs);
     printf("Average Loss per Test Case: %.6f\n", cumulative_test_loss / total_test_runs);
     printf("Accurate Predictions (within 5%% norm. error): %d / %d (%.2f%%)\n", 
            accurate_count, total_test_runs, (double)accurate_count / total_test_runs * 100.0);
     printf("--------------------------------------------------\n");
+    END_PROFILE(PROFILE_TEST_NN_CIRCLES)
+}
 
-    // --- Final Algebraic Metrics ---
-    double sigma_max, sigma_min;
-    calculate_singular_values(w_fh, &sigma_max, &sigma_min);
-    double condition_number = calculate_condition_number(sigma_max, sigma_min);
+// NEW: Test on rectangles
+void test_nn_rectangles(int total_test_runs) {
+    START_PROFILE(PROFILE_TEST_NN_RECTS)
+    double input[N_INPUT], target[N_OUTPUT], hidden_net[N_HIDDEN], hidden_out[N_HIDDEN], output[N_OUTPUT];
+    double cumulative_test_loss = 0.0;
+    
+    printf("\n--- TESTING PHASE: RECTANGLES (%d cases) ---\n", total_test_runs);
 
-    printf("\n--- ALGEBRAIC POST-MORTEM (Final $\\mathbf{W}_{fh}$) ---\n");
-    printf("1. Condition Number: %.4e\n", condition_number);
-    printf("2. Largest $\\sigma_{max}$: %.4f\n", sigma_max);
-    printf("3. Smallest $\\sigma_{min}$: %.4e\n", sigma_min);
-    printf("--------------------------------------------------\n");
-
-    // VISUALIZATION: Show 2 random examples
-    printf("\n--- VISUALIZATION: 2 Random Test Cases ---\n");
-    for (int i = 0; i < 2; i++) {
-        int cx = (int)MAX_RADIUS + (rand() % (GRID_SIZE - 2 * (int)MAX_RADIUS));
-        int cy = (int)MAX_RADIUS + (rand() % (GRID_SIZE - 2 * (int)MAX_RADIUS));
-        int r = (int)MIN_RADIUS + (rand() % ((int)MAX_RADIUS - (int)MIN_RADIUS + 1));
+    // Target properties are meaningless for a rectangle test, but we use the output variables
+    // to see what the network predicts for Center X, Center Y, and Radius.
+    
+    for (int i = 0; i < total_test_runs; i++) {
+        // Generate random rectangle corners
+        int x1 = rand() % GRID_SIZE;
+        int y1 = rand() % GRID_SIZE;
+        int x2 = rand() % GRID_SIZE;
+        int y2 = rand() % GRID_SIZE;
         
-        draw_filled_circle(input, cx, cy, r);
-        target[0] = NORMALIZE_COORD(cx); target[1] = NORMALIZE_COORD(cy); target[2] = NORMALIZE_RADIUS(r); 
-        forward_pass(input, hidden_net, hidden_out, output);
+        draw_rectangle(input, x1, y1, x2, y2); // Profiling handled inside
         
-        printf("\nTest Case #%d:\n", i + 1);
-        print_image_and_path(input, target, output);
+        // Target is arbitrary (or all zero) since it's an out-of-distribution test.
+        // We'll set target to zero just for loss calculation, but the primary metric is inspection.
+        target[0] = 0.0; target[1] = 0.0; target[2] = 0.0;
+        
+        forward_pass(input, hidden_net, hidden_out, output); // Profiling handled inside
+
+        double loss = 0.0;
+        for (int k = 0; k < N_OUTPUT; k++) {
+            double diff = output[k] - target[k];
+            loss += diff * diff * COORD_WEIGHT;
+        }
+        cumulative_test_loss += loss;
     }
+    
+    // We cannot compute "accuracy" since there is no target, only loss relative to zero target.
+    printf("RECTANGLE TEST SUMMARY:\n");
+    printf("Total Test Cases: %d\n", total_test_runs);
+    printf("Average (Arbitrary) Loss per Test Case (against zero target): %.6f\n", cumulative_test_loss / total_test_runs);
+    printf("NOTE: Network was trained on CIRCLES. This tests its generalization/failure on RECTANGLES.\n");
+
+    // Print a sample prediction on a rectangle
+    if (total_test_runs > 0) {
+        printf("\nSample Prediction on a Random Rectangle:\n");
+        int x1 = GRID_SIZE / 4, y1 = GRID_SIZE / 4;
+        int x2 = 3 * GRID_SIZE / 4, y2 = 3 * GRID_SIZE / 4;
+        draw_rectangle(input, x1, y1, x2, y2);
+        forward_pass(input, hidden_net, hidden_out, output);
+
+        int pred_cx = (int)round(output[0] * (GRID_SIZE - 1.0));
+        int pred_cy = (int)round(output[1] * (GRID_SIZE - 1.0));
+        int pred_r = (int)round(output[2] * MAX_RADIUS);
+        
+        printf("  Input (Rectangle): Corner 1 (%d, %d), Corner 2 (%d, %d)\n", x1, y1, x2, y2);
+        printf("  Network Prediction (Circle-like interpretation): (CX, CY, R) = (%2d, %2d, %2d)\n", pred_cx, pred_cy, pred_r);
+    }
+    printf("--------------------------------------------------\n");
+    END_PROFILE(PROFILE_TEST_NN_RECTS)
+}
+
+// --- Main and Profiling Print Functions ---
+
+void print_profiling_stats() {
+    printf("\n==================================================\n");
+    printf("PROFILING STATS (Accumulated CPU Time)\n");
+    printf("==================================================\n");
+    printf("%-20s | %15s | %10s\n", "Function", "Total Time (ms)", "Total Time (s)");
+    printf("--------------------------------------------------\n");
+    double total_time_sec = 0.0;
+    for (int i = 0; i < NUM_FUNCTIONS; i++) {
+        double time_sec = (double)func_times[i] / CLOCKS_PER_SEC;
+        double time_ms = time_sec * 1000.0;
+        printf("%-20s | %15.3f | %10.6f\n", func_names[i], time_ms, time_sec);
+        total_time_sec += time_sec;
+    }
+    printf("--------------------------------------------------\n");
+    printf("%-20s | %15s | %10.6f\n", "TOTAL PROFILED TIME", "", total_time_sec);
+    printf("==================================================\n");
 }
 
 int main() {
     srand(time(NULL));
 
-    printf("--- 32x32 Circle Recognition NN with Real Singular Value Analysis ---\n");
+    printf("--- 32x32 Circle Recognition NN (SVD Removed, Profiling Added) ---\n");
     
     // 1. Initialize and Generate Data
     initialize_nn();
@@ -520,7 +395,11 @@ int main() {
     train_nn();
 
     // 3. Test Network
-    test_nn(100);
+    test_nn_circles(N_TEST_CIRCLES);
+    test_nn_rectangles(N_TEST_RECTANGLES);
+
+    // 4. Summarize Profiling
+    print_profiling_stats();
 
     return 0;
 }
