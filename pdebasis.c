@@ -18,14 +18,14 @@
 #define N_REGRESSION_TESTS 90 // 10 samples per class for regression test
 
 // Neural Network Parameters
-#define LEARNING_RATE 0.0002 
-#define N_EPOCHS_TRAIN 300000 
+#define LEARNING_RATE 0.0006 
+#define N_EPOCHS_TRAIN 700000 
 #define TARGET_LINE_SET 0.0
 #define TARGET_RECTANGLE 1.0
 #define TARGET_SPLINE 2.0 // New target for 4-point spline
 #define CLASSIFICATION_WEIGHT 1.0 
 #define REGRESSION_WEIGHT 5.0     
-#define MAX_ROTATION_DEGREE 30.0 
+#define MAX_ROTATION_DEGREE 90.0 
 // ---------------------
 
 // --- Dynamic Globals ---
