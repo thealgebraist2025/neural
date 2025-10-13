@@ -12,25 +12,27 @@
 #define GRID_SIZE 32       
 #define D_SIZE (GRID_SIZE * GRID_SIZE) 
 #define N_INPUT D_SIZE     
-#define N_OUTPUT 14        // [Cls, x, y, w, h, rotation, P1x, P1y, P2x, P2y, P3x, P3y, P4x, P4y]
+#define NUM_SEGMENTS 7
+// [Start X, Start Y] + 7 * [Direction, Steps] + [Exit X, Exit Y] = 2 + 14 + 2 = 18
+#define N_OUTPUT (2 + (NUM_SEGMENTS * 2) + 2) 
 #define N_HIDDEN 128       
-#define N_TEST_SAMPLES 600 
-#define N_REGRESSION_TESTS 30 
-#define N_VISUAL_TESTS 20  // 10 Rectangles, 10 Splines
+#define N_SAMPLES_TRAIN 5000 
+#define N_SAMPLES_TEST 100 
 
 // Neural Network Parameters
 #define LEARNING_RATE 0.0002 
 #define N_EPOCHS_TRAIN 800000 
-#define TARGET_LINE_SET 0.0
-#define TARGET_RECTANGLE 1.0
-#define TARGET_SPLINE 2.0 
-#define CLASSIFICATION_WEIGHT 1.0 
-#define REGRESSION_WEIGHT 5.0     
-#define MAX_ROTATION_DEGREE 90.0 
-#define MAX_PIXEL_VALUE 250.0 // Max pixel value for normalization to 0..9
+#define PATH_WEIGHT 5.0     
+#define MAX_STEPS 10.0 // Max steps in one instruction segment for normalization
+
+// Direction Encoding (Used as regression targets, rounded in output)
+#define DIR_UP 0.0
+#define DIR_DOWN 1.0
+#define DIR_LEFT 2.0
+#define DIR_RIGHT 3.0
 
 // --- Dynamic Globals ---
-int N_SAMPLES = 32000; 
+int N_SAMPLES = N_SAMPLES_TRAIN; 
 int N_EPOCHS = N_EPOCHS_TRAIN; 
  
 // Global Data & Matrices 
@@ -41,38 +43,38 @@ double targets[N_SAMPLES_MAX][N_OUTPUT];
 double w_ih[N_INPUT][N_HIDDEN]; double b_h[N_HIDDEN]; 
 double w_ho[N_HIDDEN][N_OUTPUT]; double b_o[N_OUTPUT];
 
-// Test Data 
-double test_data[N_TEST_SAMPLES][D_SIZE];
-double test_targets_cls[N_TEST_SAMPLES]; 
+// Test Data - Targets are generated alongside the image for the test set
+double test_data[N_SAMPLES_TEST][D_SIZE];
+double test_targets[N_SAMPLES_TEST][N_OUTPUT];
 
 
 // --- Helper Macros ---
 #define CLAMP(val, min, max) ((val) < (min) ? (min) : ((val) > (max) ? (max) : (val)))
-#define NORMALIZE_COORD(coord) ((double)(coord) / GRID_SIZE)
+#define NORMALIZE_COORD(coord) ((double)(coord) / (GRID_SIZE - 1.0))
+#define DENORMALIZE_COORD(coord) ((int)(round((coord) * (GRID_SIZE - 1.0))))
+#define NORMALIZE_STEPS(steps) ((double)(steps) / MAX_STEPS)
+#define DENORMALIZE_STEPS(steps) ((int)(CLAMP(round((steps) * MAX_STEPS), 0, GRID_SIZE)))
 
 
 // --- Function Prototypes ---
-void generate_rectangle(double image[D_SIZE], double target_data[N_OUTPUT]);
-void generate_random_lines(double image[D_SIZE], double target_data[N_OUTPUT]);
-void generate_4_point_spline(double image[D_SIZE], double target_data[N_OUTPUT]);
-void load_data_balanced(int n_samples);
-void load_balanced_dataset();
-void generate_test_set();
+void draw_line(double image[D_SIZE], int x1, int y1, int x2, int y2, double val);
+void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]);
+void load_data(int n_samples, double set[N_SAMPLES_MAX][D_SIZE], double target_set[N_SAMPLES_MAX][N_OUTPUT]);
+void load_train_set();
+void load_test_set();
 
 void initialize_nn();
 void train_nn(const double input_set[N_SAMPLES_MAX][N_INPUT]);
-double test_on_set_cls(int n_set_size, const double input_set[][N_INPUT]);
 double sigmoid(double x);
 void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], double output[N_OUTPUT]);
 void backward_pass_and_update(const double input[N_INPUT], const double hidden_out[N_HIDDEN], const double output[N_OUTPUT], const double target[N_OUTPUT]);
 
-void estimate_nn_epochs();
-void test_regression();
-void print_image_and_overlay(const double input_image[D_SIZE], const double estimated_output[N_OUTPUT]);
+void test_labyrinth_path(int n_set_size, const double input_set[][N_INPUT], const double target_set[][N_OUTPUT]);
+void print_labyrinth_and_path(const double input_image[D_SIZE], const double target_output[N_OUTPUT], const double estimated_output[N_OUTPUT]);
 
 
 // -----------------------------------------------------------------
-// --- DATA GENERATION FUNCTIONS ---
+// --- DATA GENERATION FUNCTIONS (Labyrinth Specific) ---
 // -----------------------------------------------------------------
 
 // Helper function to draw a line for rendering
@@ -85,7 +87,7 @@ void draw_line(double image[D_SIZE], int x1, int y1, int x2, int y2, double val)
 
     while (1) {
         if (x1 >= 0 && x1 < GRID_SIZE && y1 >= 0 && y1 < GRID_SIZE) {
-            image[GRID_SIZE * y1 + x1] = val;
+            image[GRID_SIZE * y1 + x1] = val; // White pixel for path
         }
         if (x1 == x2 && y1 == y2) break;
         int e2 = 2 * err;
@@ -94,227 +96,137 @@ void draw_line(double image[D_SIZE], int x1, int y1, int x2, int y2, double val)
     }
 }
 
-void generate_4_point_spline(double image[D_SIZE], double target_data[N_OUTPUT]) {
-    for (int i = 0; i < D_SIZE; i++) { image[i] = 0.0; } 
+// Generates a random, non-intersecting, mostly horizontal/vertical path
+// and sets the target data.
+void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]) {
+    for (int i = 0; i < D_SIZE; i++) { image[i] = 0.0; } // Black image (walls)
     
-    double points[4][2];
-    for(int i = 0; i < 4; i++) {
-        points[i][0] = 4.0 + (double)(rand() % (GRID_SIZE - 8));
-        points[i][1] = 4.0 + (double)(rand() % (GRID_SIZE - 8));
+    // Path value
+    double path_val = 250.0; 
+
+    // 1. Define 7 random intermediate points inside the image
+    int target_points[NUM_SEGMENTS + 1][2]; // [x, y]
+
+    // Start point (x>2, x<30, same for y)
+    target_points[0][0] = 3 + (rand() % (GRID_SIZE - 6));
+    target_points[0][1] = 3 + (rand() % (GRID_SIZE - 6));
+    
+    // Intermediate points
+    for(int i = 1; i < NUM_SEGMENTS; i++) {
+        target_points[i][0] = 3 + (rand() % (GRID_SIZE - 6));
+        target_points[i][1] = 3 + (rand() % (GRID_SIZE - 6));
     }
     
-    double value = 200.0 + (double)(rand() % 50);
-    int prev_x = (int)points[0][0];
-    int prev_y = (int)points[0][1];
+    // Last point: Exit on boundary (x=0, x=31, y=0, or y=31)
+    int side = rand() % 4; // 0:Top, 1:Bottom, 2:Left, 3:Right
+    if (side == 0) { // Top (y=0)
+        target_points[NUM_SEGMENTS][0] = 1 + (rand() % (GRID_SIZE - 2));
+        target_points[NUM_SEGMENTS][1] = 0;
+    } else if (side == 1) { // Bottom (y=31)
+        target_points[NUM_SEGMENTS][0] = 1 + (rand() % (GRID_SIZE - 2));
+        target_points[NUM_SEGMENTS][1] = GRID_SIZE - 1;
+    } else if (side == 2) { // Left (x=0)
+        target_points[NUM_SEGMENTS][0] = 0;
+        target_points[NUM_SEGMENTS][1] = 1 + (rand() % (GRID_SIZE - 2));
+    } else { // Right (x=31)
+        target_points[NUM_SEGMENTS][0] = GRID_SIZE - 1;
+        target_points[NUM_SEGMENTS][1] = 1 + (rand() % (GRID_SIZE - 2));
+    }
+
+    // 2. Generate non-intersecting path segments (Horizontal/Vertical moves only)
+    int current_x = target_points[0][0];
+    int current_y = target_points[0][1];
     
-    for (int i = 1; i <= 100; i++) {
-        double t = (double)i / 100.0;
-        double t2 = t * t;
-        double t3 = t2 * t;
-        double one_minus_t = 1.0 - t;
-        double one_minus_t2 = one_minus_t * one_minus_t;
-        double one_minus_t3 = one_minus_t2 * one_minus_t;
+    // Store instructions for the target array
+    int instruction_idx = 2; // Start after Start X/Y
+    
+    for (int i = 0; i < NUM_SEGMENTS; i++) {
+        int next_x = target_points[i+1][0];
+        int next_y = target_points[i+1][1];
         
-        double x = points[0][0] * one_minus_t3 + 
-                   points[1][0] * 3 * t * one_minus_t2 + 
-                   points[2][0] * 3 * t2 * one_minus_t + 
-                   points[3][0] * t3;
-        double y = points[0][1] * one_minus_t3 + 
-                   points[1][1] * 3 * t * one_minus_t2 + 
-                   points[2][1] * 3 * t2 * one_minus_t + 
-                   points[3][1] * t3;
-                   
-        int curr_x = (int)(x + 0.5);
-        int curr_y = (int)(y + 0.5);
+        // Randomly choose to move H or V first
+        int move_order[2] = {0, 1}; // 0: Horizontal, 1: Vertical
+        if (rand() % 2) { move_order[0] = 1; move_order[1] = 0; }
         
-        draw_line(image, prev_x, prev_y, curr_x, curr_y, value);
-        prev_x = curr_x;
-        prev_y = curr_y;
-    }
+        int start_segment_x = current_x;
+        int start_segment_y = current_y;
 
-    target_data[0] = TARGET_SPLINE; 
-    target_data[1] = target_data[2] = target_data[3] = target_data[4] = 0.0; 
-    target_data[5] = 0.0; 
+        for (int m = 0; m < 2; m++) {
+            if (move_order[m] == 0) { // Horizontal move
+                int dx = next_x - current_x;
+                if (dx != 0) {
+                    draw_line(image, current_x, current_y, next_x, current_y, path_val);
+                    
+                    // Store instruction
+                    target_data[instruction_idx] = (dx > 0) ? DIR_RIGHT : DIR_LEFT;
+                    target_data[instruction_idx+1] = NORMALIZE_STEPS(abs(dx));
+                    instruction_idx += 2;
 
-    for(int i = 0; i < 4; i++) {
-        target_data[6 + 2*i + 0] = NORMALIZE_COORD(points[i][0]); 
-        target_data[6 + 2*i + 1] = NORMALIZE_COORD(points[i][1]); 
-    }
-}
+                    current_x = next_x;
+                }
+            } else { // Vertical move
+                int dy = next_y - current_y;
+                if (dy != 0) {
+                    draw_line(image, current_x, current_y, current_x, next_y, path_val);
+                    
+                    // Store instruction
+                    target_data[instruction_idx] = (dy > 0) ? DIR_DOWN : DIR_UP;
+                    target_data[instruction_idx+1] = NORMALIZE_STEPS(abs(dy));
+                    instruction_idx += 2;
 
-void generate_rectangle(double image[D_SIZE], double target_data[N_OUTPUT]) {
-    int rect_w = 8 + (rand() % (GRID_SIZE - 12)); 
-    int rect_h = 8 + (rand() % (GRID_SIZE - 12)); 
-    int center_x = GRID_SIZE / 2;
-    int center_y = GRID_SIZE / 2;
-    double rotation_deg = (double)(rand() % 180);
-    double rotation_rad = rotation_deg * M_PI / 180.0; 
-    double cos_r = cos(rotation_rad);
-    double sin_r = sin(rotation_rad);
-    
-    for (int i = 0; i < D_SIZE; i++) { image[i] = 0.0; } 
-    double min_x = DBL_MAX, min_y = DBL_MAX;
-    double max_x = DBL_MIN, max_y = DBL_MIN;
-    
-    double value = 200.0 + (double)(rand() % 50);
-
-    for (int dy = 0; dy < rect_h; ++dy) {
-        for (int dx = 0; dx < rect_w; ++dx) {
-            double x_rel = dx - (rect_w / 2.0);
-            double y_rel = dy - (rect_h / 2.0);
-
-            double x_rot = x_rel * cos_r - y_rel * sin_r;
-            double y_rot = x_rel * sin_r + y_rel * cos_r;
-
-            int x_grid = (int)(center_x + x_rot + 0.5);
-            int y_grid = (int)(center_y + y_rot + 0.5);
-
-            if (x_grid >= 0 && x_grid < GRID_SIZE && y_grid >= 0 && y_grid < GRID_SIZE) {
-                int index = GRID_SIZE * y_grid + x_grid;
-                image[index] = value;
-                
-                if (x_grid < min_x) min_x = x_grid;
-                if (y_grid < min_y) min_y = y_grid;
-                if (x_grid > max_x) max_x = x_grid;
-                if (y_grid > max_y) max_y = y_grid;
+                    current_y = next_y;
+                }
             }
         }
+        
+        // Pad with (DIR_RIGHT, 0 steps) if the number of instructions is less than 2 per segment
+        // This makes the training robust, but we skip this for simplicity in this constrained FNN example
     }
     
-    int final_start_x = (int)min_x;
-    int final_start_y = (int)min_y;
-    int final_w = (int)(max_x - min_x + 1);
-    int final_h = (int)(max_y - min_y + 1);
-
-    if (final_start_x < 0 || final_start_x >= GRID_SIZE) final_start_x = 0;
-    if (final_start_y < 0 || final_start_y >= GRID_SIZE) final_start_y = 0;
-    final_w = CLAMP(final_w, 1, GRID_SIZE - final_start_x);
-    final_h = CLAMP(final_h, 1, GRID_SIZE - final_start_y);
-
-    target_data[0] = TARGET_RECTANGLE; 
-    target_data[1] = NORMALIZE_COORD(final_start_x); 
-    target_data[2] = NORMALIZE_COORD(final_start_y); 
-    target_data[3] = NORMALIZE_COORD(final_w);       
-    target_data[4] = NORMALIZE_COORD(final_h);       
-    target_data[5] = rotation_deg / MAX_ROTATION_DEGREE; 
-    for(int i = 6; i < N_OUTPUT; i++) { target_data[i] = 0.0; }
-}
-
-void generate_random_lines(double image[D_SIZE], double target_data[N_OUTPUT]) {
-    for (int i = 0; i < D_SIZE; i++) { image[i] = 0.0; } 
-    int num_lines = 1 + (rand() % 6); 
-    for (int l = 0; l < num_lines; l++) {
-        int length_options[] = {4, 8, 16};
-        int length = length_options[rand() % 3];
-        int x_start = rand() % GRID_SIZE;
-        int y_start = rand() % GRID_SIZE;
-        int orientation = rand() % 2; 
-        double value = 200.0 + (double)(rand() % 50);
-
-        for (int i = 0; i < length; i++) {
-            int x = x_start, y = y_start;
-            if (orientation == 0) { x = (x_start + i) % GRID_SIZE; } 
-            else { y = (y_start + i) % GRID_SIZE; }
-            int index = GRID_SIZE * y + x;
-            if (index >= 0 && index < D_SIZE) { image[index] = value; }
-        }
-    }
+    // 3. Set Target Data
     
-    target_data[0] = TARGET_LINE_SET; 
-    for(int i = 1; i < N_OUTPUT; i++) { target_data[i] = 0.0; }
+    // Start X/Y
+    target_data[0] = NORMALIZE_COORD(target_points[0][0]);
+    target_data[1] = NORMALIZE_COORD(target_points[0][1]);
+    
+    // Instructions (already set above)
+    // NOTE: This generation method can result in fewer than 7 * 2 instructions if horizontal/vertical moves cancel out.
+    // For a simple FNN, the network must learn that the remainder of the output vector should be ignored (or zeroed out).
+    // We explicitly pad the remaining instruction slots with a 'no-op' instruction (e.g., UP, 0 steps).
+    while (instruction_idx < 2 + NUM_SEGMENTS * 2) {
+        target_data[instruction_idx] = DIR_UP; 
+        target_data[instruction_idx+1] = 0.0; // 0 steps
+        instruction_idx += 2;
+    }
+
+    // Exit X/Y
+    target_data[N_OUTPUT-2] = NORMALIZE_COORD(target_points[NUM_SEGMENTS][0]);
+    target_data[N_OUTPUT-1] = NORMALIZE_COORD(target_points[NUM_SEGMENTS][1]);
+
+    // 4. Post-processing: Add walls/noise around the path (optional, current 0.0 serves as wall)
+    // For simplicity, we just use the 0.0 background as walls.
 }
 
 
-void load_data_balanced(int n_samples) {
+void load_data(int n_samples, double set[N_SAMPLES_MAX][D_SIZE], double target_set[N_SAMPLES_MAX][N_OUTPUT]) {
     for (int k = 0; k < n_samples; ++k) {
-        if (k % 3 == 0) { 
-            generate_random_lines(dataset[k], targets[k]);
-        } else if (k % 3 == 1) { 
-            generate_rectangle(dataset[k], targets[k]);
-        } else {
-            generate_4_point_spline(dataset[k], targets[k]);
-        }
+        generate_labyrinth(set[k], target_set[k]);
     }
 }
-void load_balanced_dataset() {
-    printf("Generating BALANCED dataset (%d images): 33.3%% Lines, 33.3%% Rectangles, 33.3%% Splines.\n", N_SAMPLES);
-    load_data_balanced(N_SAMPLES);
+void load_train_set() {
+    printf("Generating TRAINING dataset (%d labyrinths). N_OUTPUT=%d.\n", N_SAMPLES_TRAIN, N_OUTPUT);
+    load_data(N_SAMPLES_TRAIN, dataset, targets);
+    N_SAMPLES = N_SAMPLES_TRAIN;
 }
-void generate_test_set() {
-    printf("Generating CLASSIFICATION TEST dataset (%d images): 1/3 mix.\n", N_TEST_SAMPLES);
-    for (int k = 0; k < N_TEST_SAMPLES; ++k) {
-        double temp_target[N_OUTPUT];
-        if (k % 3 == 0) { 
-            generate_random_lines(test_data[k], temp_target);
-        } else if (k % 3 == 1) { 
-            generate_rectangle(test_data[k], temp_target);
-        } else {
-            generate_4_point_spline(test_data[k], temp_target);
-        }
-        test_targets_cls[k] = temp_target[0]; 
-    }
+void load_test_set() {
+    printf("Generating TEST dataset (%d labyrinths).\n", N_SAMPLES_TEST);
+    load_data(N_SAMPLES_TEST, test_data, test_targets);
 }
 
 
 // -----------------------------------------------------------------
-// --- NN CORE FUNCTIONS ---
+// --- NN CORE FUNCTIONS (Adjusted) ---
 // -----------------------------------------------------------------
-
-void initialize_nn() {
-    for (int i = 0; i < N_INPUT; i++) {
-        for (int j = 0; j < N_HIDDEN; j++) {
-            w_ih[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * 0.1;
-        }
-    }
-    for (int j = 0; j < N_HIDDEN; j++) {
-        b_h[j] = 0.0;
-        for (int k = 0; k < N_OUTPUT; k++) {
-            w_ho[j][k] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * 0.1;
-        }
-    }
-    for (int k = 0; k < N_OUTPUT; k++) {
-        b_o[k] = 0.0;
-    }
-}
-
-void train_nn(const double input_set[N_SAMPLES_MAX][N_INPUT]) {
-    printf("Training on raw %d-dimensional image pixels with 14-output regression...\n", N_INPUT);
-    for (int epoch = 0; epoch < N_EPOCHS; epoch++) {
-        int sample_index = rand() % N_SAMPLES;
-        
-        double hidden_out[N_HIDDEN];
-        double output[N_OUTPUT];
-        
-        forward_pass(input_set[sample_index], hidden_out, output);
-        backward_pass_and_update(input_set[sample_index], hidden_out, output, targets[sample_index]);
-
-        if (N_EPOCHS > 1000 && (epoch % (N_EPOCHS / 10) == 0) && epoch != 0) {
-            printf("  Epoch %d/%d completed.\n", epoch, N_EPOCHS);
-        }
-    }
-}
-
-double sigmoid(double x) { 
-    return 1.0 / (1.0 + exp(-x)); 
-}
-
-void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], double output[N_OUTPUT]) {
-    for (int j = 0; j < N_HIDDEN; j++) {
-        double h_net = b_h[j];
-        for (int i = 0; i < N_INPUT; i++) {
-            h_net += input[i] * w_ih[i][j];
-        }
-        hidden_out[j] = sigmoid(h_net);
-    }
-    
-    for (int k = 0; k < N_OUTPUT; k++) {
-        double o_net = b_o[k]; 
-        for (int j = 0; j < N_HIDDEN; j++) { 
-            o_net += hidden_out[j] * w_ho[j][k]; 
-        } 
-        output[k] = o_net; 
-    }
-}
 
 void backward_pass_and_update(const double input[N_INPUT], const double hidden_out[N_HIDDEN], const double output[N_OUTPUT], const double target[N_OUTPUT]) {
     double delta_o[N_OUTPUT];
@@ -323,26 +235,9 @@ void backward_pass_and_update(const double input[N_INPUT], const double hidden_o
     
     for (int k = 0; k < N_OUTPUT; k++) {
         double error = output[k] - target[k];
-        double weight = REGRESSION_WEIGHT; 
-
-        if (k == 0) { 
-            weight = CLASSIFICATION_WEIGHT;
-        } else {
-            double target_cls = target[0];
-            
-            if (k >= 1 && k <= 5) { // Rect: x, y, w, h, rotation
-                if (fabs(target_cls - TARGET_RECTANGLE) > DBL_EPSILON) {
-                    weight = 0.0;
-                }
-            }
-            else if (k >= 6 && k <= 13) { // Spline: Px, Py...
-                if (fabs(target_cls - TARGET_SPLINE) > DBL_EPSILON) {
-                    weight = 0.0;
-                }
-            } else {
-                weight = 0.0; // Lines or irrelevant outputs
-            }
-        }
+        double weight = PATH_WEIGHT; // Use higher weight for path data
+        
+        // No Classification to check, all outputs are weighted for regression
         
         delta_o[k] = error * weight; 
     }
@@ -371,300 +266,193 @@ void backward_pass_and_update(const double input[N_INPUT], const double hidden_o
     }
 }
 
-double test_on_set_cls(int n_set_size, const double input_set[][N_INPUT]) {
-    int correct_predictions = 0; 
-    double hidden_out[N_HIDDEN]; 
-    double output[N_OUTPUT];
+// -----------------------------------------------------------------
+// --- TESTING AND VISUALIZATION (Labyrinth Specific) ---
+// -----------------------------------------------------------------
+
+// Helper to decode a single instruction
+void decode_instruction(double dir_norm, double steps_norm, char *dir_char, int *steps) {
+    int dir_rounded = (int)round(dir_norm);
     
-    for (int i = 0; i < n_set_size; i++) {
-        forward_pass(input_set[i], hidden_out, output);
-        
-        double cls_score = output[0];
-        double actual = test_targets_cls[i];
-        
-        double prediction = round(cls_score);
-        prediction = CLAMP(prediction, TARGET_LINE_SET, TARGET_SPLINE);
-
-        if (fabs(prediction - actual) < DBL_EPSILON) { 
-            correct_predictions++; 
-        }
-    }
-    return (double)correct_predictions / n_set_size;
+    if (dir_rounded == (int)DIR_UP) *dir_char = 'U';
+    else if (dir_rounded == (int)DIR_DOWN) *dir_char = 'D';
+    else if (dir_rounded == (int)DIR_LEFT) *dir_char = 'L';
+    else if (dir_rounded == (int)DIR_RIGHT) *dir_char = 'R';
+    else *dir_char = '?';
+    
+    *steps = DENORMALIZE_STEPS(steps_norm);
 }
 
-// -----------------------------------------------------------------
-// --- PROFILING FUNCTIONS ---
-// -----------------------------------------------------------------
-
-void estimate_nn_epochs() {
-    printf("\n--- NN EPOCHS CONFIGURATION ---\n");
-    printf("Setting fixed epochs to N_EPOCHS=%d for convergence of complex regression task.\n", N_EPOCHS);
-}
-
-
-// -----------------------------------------------------------------
-// --- VISUALIZATION FUNCTION (NEW) ---
-// -----------------------------------------------------------------
 
 /**
- * Renders the input image and the estimated shape side-by-side.
+ * Renders the labyrinth image and plots the true and estimated path.
+ * The labyrinth visualization in ASCII:
+ * # = Wall
+ * = Open Path (if path is not drawn)
+ * 0 = Start Point
+ * * = Connecting Path Segment
+ * 1-7 = Segment End Points (up to 7)
+ * E = Exit Point
  */
-void print_image_and_overlay(const double input_image[D_SIZE], const double estimated_output[N_OUTPUT]) {
-    // 1. Prepare the Estimated Shape Image (Blank grid)
-    char est_image[GRID_SIZE][GRID_SIZE];
+void print_labyrinth_and_path(const double input_image[D_SIZE], const double target_output[N_OUTPUT], const double estimated_output[N_OUTPUT]) {
+    
+    char true_path_map[GRID_SIZE][GRID_SIZE];
+    char est_path_map[GRID_SIZE][GRID_SIZE];
+    
+    // Initialize maps: # for wall (0.0 input), ' ' for open path (250.0 input)
     for (int y = 0; y < GRID_SIZE; y++) {
         for (int x = 0; x < GRID_SIZE; x++) {
-            est_image[y][x] = '.'; // Empty background
+            if (input_image[GRID_SIZE * y + x] < 1.0) { // Black pixel = Wall
+                true_path_map[y][x] = '#';
+                est_path_map[y][x] = '#';
+            } else { // White pixel = Open Path
+                true_path_map[y][x] = ' ';
+                est_path_map[y][x] = ' ';
+            }
         }
     }
     
-    // 2. Determine and Draw Estimated Shape
-    double cls_score = estimated_output[0];
-    double estimated_cls = round(CLAMP(cls_score, TARGET_LINE_SET, TARGET_SPLINE));
+    // --- Decode Targets and Predictions ---
     
-    if (fabs(estimated_cls - TARGET_RECTANGLE) < DBL_EPSILON) {
-        // Draw Estimated ROTATED RECTANGLE (Simplified: draw bounding box for visualization)
-        int x = (int)(CLAMP(estimated_output[1], 0.0, 1.0) * GRID_SIZE);
-        int y = (int)(CLAMP(estimated_output[2], 0.0, 1.0) * GRID_SIZE);
-        int w = (int)(CLAMP(estimated_output[3], 0.0, 1.0) * GRID_SIZE);
-        int h = (int)(CLAMP(estimated_output[4], 0.0, 1.0) * GRID_SIZE);
+    int true_start_x = DENORMALIZE_COORD(target_output[0]);
+    int true_start_y = DENORMALIZE_COORD(target_output[1]);
+    int true_exit_x = DENORMALIZE_COORD(target_output[N_OUTPUT-2]);
+    int true_exit_y = DENORMALIZE_COORD(target_output[N_OUTPUT-1]);
+
+    int est_start_x = DENORMALIZE_COORD(estimated_output[0]);
+    int est_start_y = DENORMALIZE_COORD(estimated_output[1]);
+    int est_exit_x = DENORMALIZE_COORD(estimated_output[N_OUTPUT-2]);
+    int est_exit_y = DENORMALIZE_COORD(estimated_output[N_OUTPUT-1]);
+    
+    // --- Draw Path Function ---
+    // Plots the path using '0', 'E', '1-7', '*'
+    void draw_path(char map[GRID_SIZE][GRID_SIZE], int start_x, int start_y, int exit_x, int exit_y, const double output_vec[N_OUTPUT]) {
+        int current_x = start_x;
+        int current_y = start_y;
         
-        for (int j = 0; j < h; j++) {
-            for (int i = 0; i < w; i++) {
-                int px = x + i;
-                int py = y + j;
-                if (px >= 0 && px < GRID_SIZE && py >= 0 && py < GRID_SIZE) {
-                    // Draw outer border and center 'X'
-                    if (i == 0 || i == w - 1 || j == 0 || j == h - 1 || (i == w/2 && j == h/2)) {
-                        est_image[py][px] = '@';
-                    } else if (w < 4 && h < 4) { // Small box fill
-                        est_image[py][px] = '@';
+        // Mark Start and Exit
+        if (current_x >= 0 && current_x < GRID_SIZE && current_y >= 0 && current_y < GRID_SIZE) {
+            map[current_y][current_x] = '0';
+        }
+        if (exit_x >= 0 && exit_x < GRID_SIZE && exit_y >= 0 && exit_y < GRID_SIZE) {
+            map[exit_y][exit_x] = 'E';
+        }
+        
+        // Draw Segments
+        for (int i = 0; i < NUM_SEGMENTS; i++) {
+            double dir_norm = output_vec[2 + 2*i];
+            double steps_norm = output_vec[3 + 2*i];
+            char dir_char;
+            int steps;
+            decode_instruction(dir_norm, steps_norm, &dir_char, &steps);
+            
+            if (steps == 0) continue; // Skip no-op instruction
+
+            for (int s = 1; s <= steps; s++) {
+                if (dir_char == 'U') current_y--;
+                else if (dir_char == 'D') current_y++;
+                else if (dir_char == 'L') current_x--;
+                else if (dir_char == 'R') current_x++;
+                
+                // Draw '*' for path segment
+                if (current_x >= 0 && current_x < GRID_SIZE && current_y >= 0 && current_y < GRID_SIZE) {
+                    if (map[current_y][current_x] == ' ') {
+                        map[current_y][current_x] = '*';
                     }
                 }
             }
-        }
-        
-    } else if (fabs(estimated_cls - TARGET_SPLINE) < DBL_EPSILON) {
-        // Draw Estimated SPLINE (Cubic Bézier Curve)
-        double points[4][2];
-        for(int i = 0; i < 4; i++) {
-            points[i][0] = CLAMP(estimated_output[6 + 2*i + 0], 0.0, 1.0) * GRID_SIZE; 
-            points[i][1] = CLAMP(estimated_output[7 + 2*i + 0], 0.0, 1.0) * GRID_SIZE; 
             
-            // Mark control points
-            int px = (int)points[i][0];
-            int py = (int)points[i][1];
-            if (px >= 0 && px < GRID_SIZE && py >= 0 && py < GRID_SIZE) {
-                 est_image[py][px] = '#'; // Use '#' for control points
-            }
-        }
-        
-        int prev_x = (int)points[0][0];
-        int prev_y = (int)points[0][1];
-        for (int i = 1; i <= 100; i++) {
-            double t = (double)i / 100.0;
-            double t2 = t * t;
-            double t3 = t2 * t;
-            double one_minus_t = 1.0 - t;
-            double one_minus_t2 = one_minus_t * one_minus_t;
-            double one_minus_t3 = one_minus_t2 * one_minus_t;
-            
-            double x = points[0][0] * one_minus_t3 + 
-                       points[1][0] * 3 * t * one_minus_t2 + 
-                       points[2][0] * 3 * t2 * one_minus_t + 
-                       points[3][0] * t3;
-            double y = points[0][1] * one_minus_t3 + 
-                       points[1][1] * 3 * t * one_minus_t2 + 
-                       points[2][1] * 3 * t2 * one_minus_t + 
-                       points[3][1] * t3;
-                       
-            int curr_x = (int)(x + 0.5);
-            int curr_y = (int)(y + 0.5);
-            
-            // Draw line segment and mark pixels with '@'
-            int dx = abs(curr_x - prev_x);
-            int dy = abs(curr_y - prev_y);
-            int sx = prev_x < curr_x ? 1 : -1;
-            int sy = prev_y < curr_y ? 1 : -1;
-            int err = dx - dy;
-
-            int line_x = prev_x;
-            int line_y = prev_y;
-
-            while (1) {
-                if (line_x >= 0 && line_x < GRID_SIZE && line_y >= 0 && line_y < GRID_SIZE) {
-                    est_image[line_y][line_x] = '@';
+            // Mark segment end point
+            if (i < NUM_SEGMENTS - 1) {
+                if (current_x >= 0 && current_x < GRID_SIZE && current_y >= 0 && current_y < GRID_SIZE) {
+                    map[current_y][current_x] = '1' + i; // '1' through '7' (last one is '7')
                 }
-                if (line_x == curr_x && line_y == curr_y) break;
-                int e2 = 2 * err;
-                if (e2 > -dy) { err -= dy; line_x += sx; }
-                if (e2 < dx) { err += dx; line_y += sy; }
             }
-            prev_x = curr_x;
-            prev_y = curr_y;
         }
     }
-    // Lines (0.0) are not rendered here.
     
-    // 3. Print Side-by-Side
-    printf("     Input Image (0-9)  | Estimated Shape ('@' or '#')\n");
+    draw_path(true_path_map, true_start_x, true_start_y, true_exit_x, true_exit_y, target_output);
+    draw_path(est_path_map, est_start_x, est_start_y, est_exit_x, est_exit_y, estimated_output);
+    
+    // --- Print Side-by-Side ---
+    printf("\n--- True Path (Target) | Predicted Path (Output) ---\n");
+    printf("TRUE Start: (%d, %d), Exit: (%d, %d)\n", true_start_x, true_start_y, true_exit_x, true_exit_y);
+    printf("EST Start:  (%d, %d), Exit: (%d, %d)\n", est_start_x, est_start_y, est_exit_x, est_exit_y);
+    printf("--------------------------------------------------------------------------------------------------\n");
+    
     for (int y = 0; y < GRID_SIZE; y++) {
-        // Print Input Image
-        printf(" ");
+        // Print True Path Map
         for (int x = 0; x < GRID_SIZE; x++) {
-            // Scale pixel value (0.0-250.0) to character ('0'-'9')
-            int pixel_val = (int)(input_image[GRID_SIZE * y + x] * 9.0 / MAX_PIXEL_VALUE + 0.5);
-            printf("%d", CLAMP(pixel_val, 0, 9));
+            printf("%c", true_path_map[y][x]);
         }
         
         // Separator
         printf(" | ");
         
-        // Print Estimated Shape Image
+        // Print Estimated Path Map
         for (int x = 0; x < GRID_SIZE; x++) {
-            printf("%c", est_image[y][x]);
+            printf("%c", est_path_map[y][x]);
         }
         printf("\n");
     }
+    printf("--------------------------------------------------------------------------------------------------\n");
 }
 
 
-// -----------------------------------------------------------------
-// --- REGRESSION TESTING (Updated for Visual Tests) ---
-// -----------------------------------------------------------------
+// --- Test Function ---
 
-const char* get_class_name(double target_cls) {
-    if (fabs(target_cls - TARGET_RECTANGLE) < DBL_EPSILON) return "RECTANGLE";
-    if (fabs(target_cls - TARGET_SPLINE) < DBL_EPSILON) return "SPLINE";
-    return "LINE";
-}
-
-void test_regression() {
-    printf("\n--- STEP 3: REGRESSION TEST (%d Samples: Lines/Rects/Splines) ---\n", N_REGRESSION_TESTS);
-    printf("Image dimensions: %dx%d pixels. Cls Targets: 0.0=Line, 1.0=Rect, 2.0=Spline.\n", GRID_SIZE, GRID_SIZE);
-    printf("--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\n");
-    printf("| # | Cls | Est. Cls | Est. X, Y, W, H (Px) | Known X, Y, W, H | Est. Rot (Deg) | Known Rot (Deg) | Estimated Spline Points (Px) | Known Spline Points (Px) |\n");
-    printf("|---|-----|----------|----------------------|------------------|----------------|-----------------|------------------------------|--------------------------|\n");
-
-    double hidden_out[N_HIDDEN];
+void test_labyrinth_path(int n_set_size, const double input_set[][N_INPUT], const double target_set[][N_OUTPUT]) {
+    double hidden_out[N_HIDDEN]; 
     double output[N_OUTPUT];
     
-    int rect_visual_count = 0;
-    int spline_visual_count = 0;
+    printf("\n--- STEP 3: LABYRINTH PATH PREDICTION TEST (%d Samples) ---\n", n_set_size);
     
-    // Test 10 lines, 10 rectangles, 10 splines (since N_REGRESSION_TESTS=30)
-    for (int i = 0; i < N_REGRESSION_TESTS; i++) {
-        double test_image[D_SIZE];
-        double known_target[N_OUTPUT];
-        
-        // Generate test data for 3 classes
-        if (i < N_REGRESSION_TESTS/3) { // Lines (Index 0-9)
-             generate_random_lines(test_image, known_target); 
-        } else if (i < 2 * N_REGRESSION_TESTS/3) { // Rectangles (Index 10-19)
-            generate_rectangle(test_image, known_target); 
-        } else { // Splines (Index 20-29)
-            generate_4_point_spline(test_image, known_target);
-        }
-        
-        forward_pass(test_image, hidden_out, output);
-        
-        double target_cls = known_target[0];
-        
-        // --- PRINT STATS ROW ---
-        int est_x = (int)(CLAMP(output[1], 0.0, 1.0) * GRID_SIZE + 0.5);
-        int est_y = (int)(CLAMP(output[2], 0.0, 1.0) * GRID_SIZE + 0.5);
-        int est_w = (int)(CLAMP(output[3], 0.0, 1.0) * GRID_SIZE + 0.5);
-        int est_h = (int)(CLAMP(output[4], 0.0, 1.0) * GRID_SIZE + 0.5);
-        
-        double est_rot_deg = CLAMP(output[5], 0.0, 1.0) * MAX_ROTATION_DEGREE;
-
-        int known_x = (int)(known_target[1] * GRID_SIZE + 0.5);
-        int known_y = (int)(known_target[2] * GRID_SIZE + 0.5);
-        int known_w = (int)(known_target[3] * GRID_SIZE + 0.5);
-        int known_h = (int)(known_target[4] * GRID_SIZE + 0.5);
-        double known_rot_deg = known_target[5] * MAX_ROTATION_DEGREE;
-        
-        char est_spline_str[64];
-        char known_spline_str[64];
-        
-        if (fabs(target_cls - TARGET_SPLINE) < DBL_EPSILON) {
-            snprintf(est_spline_str, 64, "%2d,%2d %2d,%2d %2d,%2d %2d,%2d",
-                     (int)(CLAMP(output[6], 0.0, 1.0) * GRID_SIZE + 0.5), (int)(CLAMP(output[7], 0.0, 1.0) * GRID_SIZE + 0.5),
-                     (int)(CLAMP(output[8], 0.0, 1.0) * GRID_SIZE + 0.5), (int)(CLAMP(output[9], 0.0, 1.0) * GRID_SIZE + 0.5),
-                     (int)(CLAMP(output[10], 0.0, 1.0) * GRID_SIZE + 0.5), (int)(CLAMP(output[11], 0.0, 1.0) * GRID_SIZE + 0.5),
-                     (int)(CLAMP(output[12], 0.0, 1.0) * GRID_SIZE + 0.5), (int)(CLAMP(output[13], 0.0, 1.0) * GRID_SIZE + 0.5));
-            snprintf(known_spline_str, 64, "%2d,%2d %2d,%2d %2d,%2d %2d,%2d",
-                     (int)(known_target[6] * GRID_SIZE + 0.5), (int)(known_target[7] * GRID_SIZE + 0.5),
-                     (int)(known_target[8] * GRID_SIZE + 0.5), (int)(known_target[9] * GRID_SIZE + 0.5),
-                     (int)(known_target[10] * GRID_SIZE + 0.5), (int)(known_target[11] * GRID_SIZE + 0.5),
-                     (int)(known_target[12] * GRID_SIZE + 0.5), (int)(known_target[13] * GRID_SIZE + 0.5));
-        } else {
-            snprintf(est_spline_str, 64, "N/A");
-            snprintf(known_spline_str, 64, "N/A");
-        }
-        
-        printf("| %1d | %s | %8.4f | %2d,%2d,%2d,%2d | %2d,%2d,%2d,%2d | %14.1f | %15.1f | %28s | %24s |\n",
-               i + 1,
-               get_class_name(target_cls),
-               output[0],
-               est_x, est_y, est_w, est_h,
-               known_x, known_y, known_w, known_h,
-               est_rot_deg, known_rot_deg,
-               est_spline_str, known_spline_str);
-               
-        // --- VISUALIZATION CHECK ---
-        if (fabs(target_cls - TARGET_RECTANGLE) < DBL_EPSILON && rect_visual_count < 10) {
-            printf("\n--- VISUAL TEST (Rectangle #%d) ---\n", rect_visual_count + 1);
-            print_image_and_overlay(test_image, output);
-            printf("----------------------------------------------------------------\n");
-            rect_visual_count++;
-        } else if (fabs(target_cls - TARGET_SPLINE) < DBL_EPSILON && spline_visual_count < 10) {
-            printf("\n--- VISUAL TEST (Spline #%d) ---\n", spline_visual_count + 1);
-            print_image_and_overlay(test_image, output);
-            printf("----------------------------------------------------------------\n");
-            spline_visual_count++;
+    // Test and visualize a few samples
+    for (int i = 0; i < n_set_size; i++) {
+        if (i < 5) {
+            forward_pass(input_set[i], hidden_out, output);
+            print_labyrinth_and_path(input_set[i], target_set[i], output);
         }
     }
-    printf("--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\n");
+    
+    // Print example instructions for the first visualized sample
+    printf("--- Example Instructions (Sample 1) ---\n");
+    printf("True Instructions:\n");
+    for (int i = 0; i < NUM_SEGMENTS; i++) {
+        char dir_char;
+        int steps;
+        decode_instruction(target_set[0][2 + 2*i], target_set[0][3 + 2*i], &dir_char, &steps);
+        printf("  Segment %d: (%c, %d) -> Normalized Dir: %.2f, Steps: %.2f\n", i+1, dir_char, steps, target_set[0][2 + 2*i], target_set[0][3 + 2*i]);
+    }
+    
+    printf("\nPredicted Instructions:\n");
+    forward_pass(input_set[0], hidden_out, output);
+    for (int i = 0; i < NUM_SEGMENTS; i++) {
+        char dir_char;
+        int steps;
+        decode_instruction(output[2 + 2*i], output[3 + 2*i], &dir_char, &steps);
+        printf("  Segment %d: (%c, %d) -> Raw Output Dir: %.2f, Steps: %.2f\n", i+1, dir_char, steps, output[2 + 2*i], output[3 + 2*i]);
+    }
 }
 
+
 // -----------------------------------------------------------------
-// --- MAIN EXECUTION ---
+// --- MAIN PROGRAM (Updated to use new Labyrinth functions) ---
 // -----------------------------------------------------------------
-int main() {
+
+int main(int argc, char **argv) {
     srand(time(NULL));
-    
-    clock_t start_total, end_total;
-    start_total = clock();
 
-    load_balanced_dataset(); 
-    generate_test_set();
-    estimate_nn_epochs();
-
-    printf("\n--- GLOBAL CONFIGURATION ---\n");
-    printf("Model: Classification + 13-Output Regression (Rect Bounding Box + Spline Points)\n");
-    printf("Train Samples: %d | Input Dim: %d | Hidden Dim: %d | Output Dim: %d\n", N_SAMPLES, N_INPUT, N_HIDDEN, N_OUTPUT);
-    printf("Learning Rate: %.4f | Classification Weight: %.1f | Regression Weight: %.1f\n", LEARNING_RATE, CLASSIFICATION_WEIGHT, REGRESSION_WEIGHT);
-
-    // --- STEP 1: NN Training ---
-    printf("\n--- STEP 1: NN Training ---\n");
-    clock_t start_nn = clock();
+    // 1. Initialize and Load Data
     initialize_nn();
-    train_nn(dataset);
-    clock_t end_nn = clock();
-    printf("NN Training time: %.4f seconds.\n", (double)(end_nn - start_nn) / CLOCKS_PER_SEC);
+    load_train_set();
+    load_test_set();
 
-    // --- STEP 2: Standard Classification Testing ---
-    printf("\n--- STEP 2: Standard Classification Testing Results ---\n");
+    // 2. Training
+    train_nn(dataset);
     
-    double acc_test = test_on_set_cls(N_TEST_SAMPLES, test_data);
-    printf("NN Testing Accuracy (Line/Rect/Spline): %.2f%%\n", acc_test * 100.0);
-    
-    // --- STEP 3: Regression Testing and Visualization ---
-    test_regression();
-    
-    end_total = clock();
-    printf("\nTotal execution time: %.4f seconds.\n", (double)(end_total - start_total) / CLOCKS_PER_SEC);
+    // 3. Testing and Visualization
+    test_labyrinth_path(N_SAMPLES_TEST, test_data, test_targets);
 
     return 0;
 }
