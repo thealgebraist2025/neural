@@ -3,7 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-#include <time.h>
+#include <time.h> // Includes time_t and time()
 #include <float.h>
 #include <string.h> 
 
@@ -26,12 +26,12 @@
 #define N_HIDDEN 64       
 #define N_SAMPLES_TOTAL 10000 
 #define N_TEST_CASES_PER_LABYRINTH 10 
-#define INITIAL_LEARNING_RATE 0.00001 
+#define INITIAL_LEARNING_RATE 0.00001 // Slightly increased LR for speed
 #define N_EPOCHS_TRAIN 1000000 
 #define COORD_WEIGHT 1.0                 
 #define CLASSIFICATION_WEIGHT 1.0 
 #define MAX_STEPS 16.0 
-#define MAX_TRAINING_SECONDS 120.0 // ⬅️ CONFIRMED: Max 2 minutes (120 seconds)
+#define MAX_TRAINING_SECONDS 120 // ⬅️ CRITICAL: Changed to int for time_t comparison
 #define SOLVED_ERROR_THRESHOLD 0.1 
 
 // **Gradient Clipping Parameter**
@@ -509,8 +509,10 @@ void train_nn() {
     printf("Training Vanilla NN with %d inputs and %d hidden neurons (Samples: %d, Initial LR: %.6e, Coords Weight: %.1f, Clip: %.1f, Hidden: Tanh, Reg Output: Sigmoid).\n", 
            N_INPUT, N_HIDDEN, N_SAMPLES_TOTAL, INITIAL_LEARNING_RATE, COORD_WEIGHT, GRADIENT_CLIP_NORM);
     
-    clock_t start_time = clock();
-    double time_elapsed;
+    // ⬅️ CRITICAL FIX: Use time(NULL) for wall-clock time
+    time_t start_time = time(NULL);
+    time_t end_time = start_time + MAX_TRAINING_SECONDS;
+    
     int report_interval = 500; 
 
     double input[N_INPUT];
@@ -525,10 +527,11 @@ void train_nn() {
 
     for (int epoch = 0; epoch < N_EPOCHS_TRAIN; epoch++) {
         
-        // ⬅️ CRITICAL FIX: Check time at the very start of the loop
-        time_elapsed = (double)(clock() - start_time) / CLOCKS_PER_SEC;
-        if (time_elapsed >= MAX_TRAINING_SECONDS) {
-            printf("\n--- Training stopped: Maximum time limit of %.0f seconds reached after %d epochs. ---\n", MAX_TRAINING_SECONDS, epoch);
+        // ⬅️ Time check: Stop when wall-clock time exceeds the limit
+        if (time(NULL) >= end_time) {
+            double time_elapsed = (double)(time(NULL) - start_time);
+            printf("\n--- Training stopped: Maximum time limit of %.0f seconds (%.2f s elapsed) reached after %d epochs. ---\n", 
+                   (double)MAX_TRAINING_SECONDS, time_elapsed, epoch);
             break;
         }
 
@@ -590,7 +593,7 @@ void train_nn() {
             update_learning_rate(current_avg_loss); 
             
             // Re-calculate time for reporting
-            time_elapsed = (double)(clock() - start_time) / CLOCKS_PER_SEC;
+            double time_elapsed = (double)(time(NULL) - start_time);
 
             printf("  Epoch %d/%d completed. Time elapsed: %.2f s. LR: %.6e. Avg Loss (per sample): %.4f\n", 
                    epoch, N_EPOCHS_TRAIN, time_elapsed, current_learning_rate, current_avg_loss);
