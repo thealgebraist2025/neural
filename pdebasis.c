@@ -69,6 +69,8 @@ double sigmoid(double x);
 void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], double output[N_OUTPUT]);
 void backward_pass_and_update(const double input[N_INPUT], const double hidden_out[N_HIDDEN], const double output[N_OUTPUT], const double target[N_OUTPUT]);
 
+void decode_instruction(double dir_norm, double steps_norm, char *dir_char, int *steps);
+void draw_path(char map[GRID_SIZE][GRID_SIZE], int start_x, int start_y, int exit_x, int exit_y, const double output_vec[N_OUTPUT]); // NEW PROTOTYPE
 void test_labyrinth_path(int n_set_size, const double input_set[][N_INPUT], const double target_set[][N_OUTPUT]);
 void print_labyrinth_and_path(const double input_image[D_SIZE], const double target_output[N_OUTPUT], const double estimated_output[N_OUTPUT]);
 
@@ -178,9 +180,6 @@ void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]) {
                 }
             }
         }
-        
-        // Pad with (DIR_RIGHT, 0 steps) if the number of instructions is less than 2 per segment
-        // This makes the training robust, but we skip this for simplicity in this constrained FNN example
     }
     
     // 3. Set Target Data
@@ -190,9 +189,7 @@ void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]) {
     target_data[1] = NORMALIZE_COORD(target_points[0][1]);
     
     // Instructions (already set above)
-    // NOTE: This generation method can result in fewer than 7 * 2 instructions if horizontal/vertical moves cancel out.
-    // For a simple FNN, the network must learn that the remainder of the output vector should be ignored (or zeroed out).
-    // We explicitly pad the remaining instruction slots with a 'no-op' instruction (e.g., UP, 0 steps).
+    // Pad the remaining instruction slots with a 'no-op' instruction (UP, 0 steps).
     while (instruction_idx < 2 + NUM_SEGMENTS * 2) {
         target_data[instruction_idx] = DIR_UP; 
         target_data[instruction_idx+1] = 0.0; // 0 steps
@@ -204,7 +201,6 @@ void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]) {
     target_data[N_OUTPUT-1] = NORMALIZE_COORD(target_points[NUM_SEGMENTS][1]);
 
     // 4. Post-processing: Add walls/noise around the path (optional, current 0.0 serves as wall)
-    // For simplicity, we just use the 0.0 background as walls.
 }
 
 
@@ -225,8 +221,66 @@ void load_test_set() {
 
 
 // -----------------------------------------------------------------
-// --- NN CORE FUNCTIONS (Adjusted) ---
+// --- NN CORE FUNCTIONS ---
 // -----------------------------------------------------------------
+
+void initialize_nn() {
+    for (int i = 0; i < N_INPUT; i++) {
+        for (int j = 0; j < N_HIDDEN; j++) {
+            w_ih[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * 0.1;
+        }
+    }
+    for (int j = 0; j < N_HIDDEN; j++) {
+        b_h[j] = 0.0;
+        for (int k = 0; k < N_OUTPUT; k++) {
+            w_ho[j][k] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * 0.1;
+        }
+    }
+    for (int k = 0; k < N_OUTPUT; k++) {
+        b_o[k] = 0.0;
+    }
+}
+
+void train_nn(const double input_set[N_SAMPLES_MAX][N_INPUT]) {
+    printf("Training on raw %d-dimensional image pixels with %d-output path prediction...\n", N_INPUT, N_OUTPUT);
+    for (int epoch = 0; epoch < N_EPOCHS; epoch++) {
+        int sample_index = rand() % N_SAMPLES;
+        
+        double hidden_out[N_HIDDEN];
+        double output[N_OUTPUT];
+        
+        forward_pass(input_set[sample_index], hidden_out, output);
+        backward_pass_and_update(input_set[sample_index], hidden_out, output, targets[sample_index]);
+
+        if (N_EPOCHS > 1000 && (epoch % (N_EPOCHS / 10) == 0) && epoch != 0) {
+            printf("  Epoch %d/%d completed.\n", epoch, N_EPOCHS);
+        }
+    }
+}
+
+double sigmoid(double x) { 
+    return 1.0 / (1.0 + exp(-x)); 
+}
+
+void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], double output[N_OUTPUT]) {
+    for (int j = 0; j < N_HIDDEN; j++) {
+        double h_net = b_h[j];
+        for (int i = 0; i < N_INPUT; i++) {
+            // Note: Normalization is done implicitly by the fact that path_val is around 250.0
+            // For stability, input should ideally be scaled to 0..1 or -1..1
+            h_net += input[i] * w_ih[i][j]; 
+        }
+        hidden_out[j] = sigmoid(h_net);
+    }
+    
+    for (int k = 0; k < N_OUTPUT; k++) {
+        double o_net = b_o[k]; 
+        for (int j = 0; j < N_HIDDEN; j++) { 
+            o_net += hidden_out[j] * w_ho[j][k]; 
+        } 
+        output[k] = o_net; 
+    }
+}
 
 void backward_pass_and_update(const double input[N_INPUT], const double hidden_out[N_HIDDEN], const double output[N_OUTPUT], const double target[N_OUTPUT]) {
     double delta_o[N_OUTPUT];
@@ -266,6 +320,7 @@ void backward_pass_and_update(const double input[N_INPUT], const double hidden_o
     }
 }
 
+
 // -----------------------------------------------------------------
 // --- TESTING AND VISUALIZATION (Labyrinth Specific) ---
 // -----------------------------------------------------------------
@@ -283,16 +338,59 @@ void decode_instruction(double dir_norm, double steps_norm, char *dir_char, int 
     *steps = DENORMALIZE_STEPS(steps_norm);
 }
 
+// Helper to draw the path on the ASCII map (MOVED OUTSIDE)
+void draw_path(char map[GRID_SIZE][GRID_SIZE], int start_x, int start_y, int exit_x, int exit_y, const double output_vec[N_OUTPUT]) {
+    int current_x = start_x;
+    int current_y = start_y;
+    
+    // Mark Start and Exit
+    if (current_x >= 0 && current_x < GRID_SIZE && current_y >= 0 && current_y < GRID_SIZE) {
+        map[current_y][current_x] = '0';
+    }
+    // Only mark 'E' for exit if it's the final target location
+    if (exit_x >= 0 && exit_x < GRID_SIZE && exit_y >= 0 && exit_y < GRID_SIZE) {
+        map[exit_y][exit_x] = 'E';
+    }
+    
+    // Draw Segments
+    for (int i = 0; i < NUM_SEGMENTS; i++) {
+        double dir_norm = output_vec[2 + 2*i];
+        double steps_norm = output_vec[3 + 2*i];
+        char dir_char;
+        int steps;
+        decode_instruction(dir_norm, steps_norm, &dir_char, &steps); 
+        
+        if (steps == 0) continue; // Skip no-op instruction
+
+        for (int s = 1; s <= steps; s++) {
+            if (dir_char == 'U') current_y--;
+            else if (dir_char == 'D') current_y++;
+            else if (dir_char == 'L') current_x--;
+            else if (dir_char == 'R') current_x++;
+            
+            // Draw '*' for path segment
+            if (current_x >= 0 && current_x < GRID_SIZE && current_y >= 0 && current_y < GRID_SIZE) {
+                if (map[current_y][current_x] == ' ') {
+                    map[current_y][current_x] = '*';
+                }
+            }
+        }
+        
+        // Mark segment end point
+        if (i < NUM_SEGMENTS - 1) {
+            if (current_x >= 0 && current_x < GRID_SIZE && current_y >= 0 && current_y < GRID_SIZE) {
+                // If it's not the exit, mark intermediate point 1-6
+                if (map[current_y][current_x] != 'E') {
+                    map[current_y][current_x] = '1' + i; 
+                }
+            }
+        }
+    }
+}
+
 
 /**
  * Renders the labyrinth image and plots the true and estimated path.
- * The labyrinth visualization in ASCII:
- * # = Wall
- * = Open Path (if path is not drawn)
- * 0 = Start Point
- * * = Connecting Path Segment
- * 1-7 = Segment End Points (up to 7)
- * E = Exit Point
  */
 void print_labyrinth_and_path(const double input_image[D_SIZE], const double target_output[N_OUTPUT], const double estimated_output[N_OUTPUT]) {
     
@@ -324,53 +422,7 @@ void print_labyrinth_and_path(const double input_image[D_SIZE], const double tar
     int est_exit_x = DENORMALIZE_COORD(estimated_output[N_OUTPUT-2]);
     int est_exit_y = DENORMALIZE_COORD(estimated_output[N_OUTPUT-1]);
     
-    // --- Draw Path Function ---
-    // Plots the path using '0', 'E', '1-7', '*'
-    void draw_path(char map[GRID_SIZE][GRID_SIZE], int start_x, int start_y, int exit_x, int exit_y, const double output_vec[N_OUTPUT]) {
-        int current_x = start_x;
-        int current_y = start_y;
-        
-        // Mark Start and Exit
-        if (current_x >= 0 && current_x < GRID_SIZE && current_y >= 0 && current_y < GRID_SIZE) {
-            map[current_y][current_x] = '0';
-        }
-        if (exit_x >= 0 && exit_x < GRID_SIZE && exit_y >= 0 && exit_y < GRID_SIZE) {
-            map[exit_y][exit_x] = 'E';
-        }
-        
-        // Draw Segments
-        for (int i = 0; i < NUM_SEGMENTS; i++) {
-            double dir_norm = output_vec[2 + 2*i];
-            double steps_norm = output_vec[3 + 2*i];
-            char dir_char;
-            int steps;
-            decode_instruction(dir_norm, steps_norm, &dir_char, &steps);
-            
-            if (steps == 0) continue; // Skip no-op instruction
-
-            for (int s = 1; s <= steps; s++) {
-                if (dir_char == 'U') current_y--;
-                else if (dir_char == 'D') current_y++;
-                else if (dir_char == 'L') current_x--;
-                else if (dir_char == 'R') current_x++;
-                
-                // Draw '*' for path segment
-                if (current_x >= 0 && current_x < GRID_SIZE && current_y >= 0 && current_y < GRID_SIZE) {
-                    if (map[current_y][current_x] == ' ') {
-                        map[current_y][current_x] = '*';
-                    }
-                }
-            }
-            
-            // Mark segment end point
-            if (i < NUM_SEGMENTS - 1) {
-                if (current_x >= 0 && current_x < GRID_SIZE && current_y >= 0 && current_y < GRID_SIZE) {
-                    map[current_y][current_x] = '1' + i; // '1' through '7' (last one is '7')
-                }
-            }
-        }
-    }
-    
+    // --- Draw Paths ---
     draw_path(true_path_map, true_start_x, true_start_y, true_exit_x, true_exit_y, target_output);
     draw_path(est_path_map, est_start_x, est_start_y, est_exit_x, est_exit_y, estimated_output);
     
@@ -409,7 +461,7 @@ void test_labyrinth_path(int n_set_size, const double input_set[][N_INPUT], cons
     
     // Test and visualize a few samples
     for (int i = 0; i < n_set_size; i++) {
-        if (i < 5) {
+        if (i < 5) { // Show 5 visual tests
             forward_pass(input_set[i], hidden_out, output);
             print_labyrinth_and_path(input_set[i], target_set[i], output);
         }
@@ -417,6 +469,8 @@ void test_labyrinth_path(int n_set_size, const double input_set[][N_INPUT], cons
     
     // Print example instructions for the first visualized sample
     printf("--- Example Instructions (Sample 1) ---\n");
+    forward_pass(input_set[0], hidden_out, output);
+    
     printf("True Instructions:\n");
     for (int i = 0; i < NUM_SEGMENTS; i++) {
         char dir_char;
@@ -426,7 +480,6 @@ void test_labyrinth_path(int n_set_size, const double input_set[][N_INPUT], cons
     }
     
     printf("\nPredicted Instructions:\n");
-    forward_pass(input_set[0], hidden_out, output);
     for (int i = 0; i < NUM_SEGMENTS; i++) {
         char dir_char;
         int steps;
