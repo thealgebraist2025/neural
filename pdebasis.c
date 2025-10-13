@@ -23,9 +23,9 @@
 
 // **Network & Training Parameters**
 #define N_HIDDEN 64       
-#define N_SAMPLES_FIXED 25 // ⬅️ UPDATED
+#define N_SAMPLES_FIXED 25 
 #define N_TEST_CASES_PER_LABYRINTH 10 
-#define LEARNING_RATE 0.002 // ⬅️ UPDATED
+#define LEARNING_RATE 0.002 
 #define N_EPOCHS_TRAIN 800000 
 #define COORD_WEIGHT 10.0      
 #define CLASSIFICATION_WEIGHT 1.0 
@@ -34,7 +34,7 @@
 #define SOLVED_ERROR_THRESHOLD 0.1 
 
 // **Gradient Clipping Parameter**
-#define GRADIENT_CLIP_NORM 1.0 // ⬅️ NEW
+#define GRADIENT_CLIP_NORM 1.0 
 
 // Direction Encoding
 #define DIR_UP_IDX 0
@@ -120,7 +120,6 @@ void draw_line(double image[D_SIZE], int x1, int y1, int x2, int y2, double val)
     }
 }
 
-// Generates a legal path using BFS and encodes the instructions.
 void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int start_y, int exit_x, int exit_y, double target_data[N_OUTPUT]) {
     
     for (int i = 0; i < N_OUTPUT; i++) { target_data[i] = 0.0; } 
@@ -184,6 +183,8 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
     int current_path_idx = path_length - 1;
     int last_dir = -1;
     int steps = 0;
+    int dir_start_idx; // Declared outside of the goto label to fix C23 warning
+    int steps_idx; // Declared outside of the goto label to fix C23 warning
 
     while (current_path_idx > 0 && current_segment < NUM_SEGMENTS) {
         int next_path_idx = current_path_idx - 1;
@@ -216,12 +217,12 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
         current_path_idx = next_path_idx;
         continue;
         
-    finalize_segment:
-        // Encode the finished segment
-        int dir_start_idx = GET_DIR_OUTPUT_START_IDX(current_segment);
+    finalize_segment: // FIX: Label followed by declaration moved out
+        // Encode the finished segment 
+        dir_start_idx = GET_DIR_OUTPUT_START_IDX(current_segment);
         target_data[dir_start_idx + last_dir] = 1.0; 
         
-        int steps_idx = GET_STEPS_OUTPUT_IDX(current_segment);
+        steps_idx = GET_STEPS_OUTPUT_IDX(current_segment);
         target_data[steps_idx] = NORMALIZE_STEPS(steps);
         
         current_segment++;
@@ -234,10 +235,10 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
     
     // Encode the final segment
     if (steps > 0 && current_segment < NUM_SEGMENTS) {
-        int dir_start_idx = GET_DIR_OUTPUT_START_IDX(current_segment);
+        dir_start_idx = GET_DIR_OUTPUT_START_IDX(current_segment);
         target_data[dir_start_idx + last_dir] = 1.0; 
         
-        int steps_idx = GET_STEPS_OUTPUT_IDX(current_segment);
+        steps_idx = GET_STEPS_OUTPUT_IDX(current_segment);
         target_data[steps_idx] = NORMALIZE_STEPS(steps);
     }
 
@@ -686,13 +687,18 @@ void draw_path(char map[GRID_SIZE][GRID_SIZE], int start_x, int start_y, int exi
     }
 }
 
+// FIX: Corrected function to use output_vec and ensure coordinates come from predictions
 int is_path_legal(const double labyrinth[D_SIZE], int start_x, int start_y, const double output_vec[N_OUTPUT]) {
+    
+    // The path starts at the predicted start coordinate (output_vec[0], output_vec[1])
     int current_x = DENORMALIZE_COORD(output_vec[0]);
-    int current_y = DENORMALIZE_COORD(output[1]);
+    int current_y = DENORMALIZE_COORD(output_vec[1]);
+    
+    // The path should aim for the predicted exit coordinate
     int exit_x = DENORMALIZE_COORD(output_vec[N_OUTPUT-2]);
     int exit_y = DENORMALIZE_COORD(output_vec[N_OUTPUT-1]);
 
-    // Check Start is on path/open space
+    // Check predicted Start is on path/open space
     if (current_x < 0 || current_x >= GRID_SIZE || current_y < 0 || current_y >= GRID_SIZE) return 0;
     if (labyrinth[GRID_SIZE * current_y + current_x] < 0.5) return 0;
     
@@ -803,14 +809,17 @@ void test_nn_and_summarize() {
         for (int test_run = 0; test_run < N_TEST_CASES_PER_LABYRINTH; test_run++) {
             
             // Generate the training case (which becomes a test case here)
-            // Note: This loads the labyrinth and generates a random start point and its target path.
             load_train_case(lab_idx, input, target); 
             
             forward_pass(input, hidden_out, output);
             cumulative_test_loss += calculate_loss(output, target);
             
-            // Check legality and accuracy
-            int legal_path = is_path_legal(input, DENORMALIZE_COORD(output[0]), DENORMALIZE_COORD(output[1]), output);
+            // Get actual start coords for the legality check (since load_train_case knows them)
+            int true_start_x = DENORMALIZE_COORD(target[0]);
+            int true_start_y = DENORMALIZE_COORD(target[1]);
+
+            // Check legality and accuracy (using the predicted output vector)
+            int legal_path = is_path_legal(input, true_start_x, true_start_y, output);
             
             int coords_accurate = 1;
             
