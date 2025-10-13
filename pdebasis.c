@@ -14,19 +14,19 @@
 // **Network Configuration**
 #define N_INPUT D_SIZE         // x_1 to x_1024 
 #define N_HIDDEN 128           // INCREASED: z_1 to z_128 
-#define N_OUTPUT 10            // 3 Class + 3 Circle Params + 4 Rectangle Params
+#define N_OUTPUT 10            // 3 Class (0,1,2) + 3 Circle Params (3,4,5) + 4 Rectangle Params (6,7,8,9)
 
 // **Training Parameters**
 #define NUM_IMAGES 3000        // 1000 Circles + 1000 Rectangles + 1000 Other
 #define N_TRAINING_EPOCHS 20000 
-#define BATCH_SIZE 32          // INCREASED for better gradient estimate
+#define BATCH_SIZE 32          // Increased for better gradient estimate
 #define REPORT_FREQ 500             
 #define INITIAL_LEARNING_RATE 0.0001 // Adam's default learning rate
 #define CLASSIFICATION_WEIGHT 1.0  // Weight for Cross-Entropy Loss
 #define REGRESSION_WEIGHT 0.1      // Weight for L2 Regression Loss
 #define MIN_RADIUS 3           
 #define MAX_RADIUS 10.0    
-#define MAX_RECT_SIZE (GRID_SIZE - 2) // Max side length for rectangle
+#define MAX_RECT_SIZE (GRID_SIZE - 2) 
 
 // **Adam Optimizer Parameters**
 #define BETA1 0.9
@@ -51,10 +51,9 @@ double input_std = 1.0;
 
 // Data Storage (3000 cases)
 double single_images[NUM_IMAGES][D_SIZE]; 
-// Target: [3 Class One-Hot, 3 Circle Norm, 4 Rect Norm]
 double target_properties[NUM_IMAGES][N_OUTPUT]; 
 
-// --- Profiling Setup (same as before) ---
+// --- Profiling Setup ---
 enum FuncName {
     PROFILE_DRAW_CIRCLE, PROFILE_DRAW_RECTANGLE, PROFILE_DRAW_OTHER,
     PROFILE_GENERATE_DATA, PROFILE_LOAD_TRAIN_CASE,
@@ -92,7 +91,7 @@ void softmax(const double input[N_OUTPUT], double output[3]) {
     
     double sum_exp = 0.0;
     for (int k = 0; k < 3; k++) {
-        output[k] = exp(input[k] - max_val); 
+        output[k] = exp(input[k] - max_val); // Stable computation
         sum_exp += output[k];
     }
     for (int k = 0; k < 3; k++) {
@@ -102,7 +101,6 @@ void softmax(const double input[N_OUTPUT], double output[3]) {
 
 // --- Drawing Functions ---
 
-// Function to draw random pixels (Class 2: Other)
 void draw_random_pixels(double image[D_SIZE]) {
     START_PROFILE(PROFILE_DRAW_OTHER)
     for (int i = 0; i < D_SIZE; i++) image[i] = 0.0; 
@@ -113,8 +111,6 @@ void draw_random_pixels(double image[D_SIZE]) {
     }
     END_PROFILE(PROFILE_DRAW_OTHER)
 }
-
-// ... draw_filled_circle and draw_rectangle are similar to previous, but include profiling ...
 
 void draw_filled_circle(double image[D_SIZE], int cx, int cy, int r) {
     START_PROFILE(PROFILE_DRAW_CIRCLE)
@@ -155,7 +151,6 @@ void generate_data() {
     START_PROFILE(PROFILE_GENERATE_DATA)
     int n_per_class = NUM_IMAGES / 3;
     
-    // Calculate mean/std for normalization (simple estimate)
     double sum = 0.0;
     double sum_sq = 0.0;
     int total_pixels = 0;
@@ -164,14 +159,12 @@ void generate_data() {
         double *image = single_images[i];
         double *target = target_properties[i];
         
-        // Target: [C, R, O] for classification
-        target[0] = target[1] = target[2] = 0.0; 
-        // Target: Regression parameters 
-        for(int k = 3; k < N_OUTPUT; k++) target[k] = 0.0;
+        // Zero all targets
+        for(int k = 0; k < N_OUTPUT; k++) target[k] = 0.0;
 
         // Class 0: Circles
         if (i < n_per_class) {
-            target[0] = 1.0; // Circle class
+            target[0] = 1.0; // Circle class (one-hot)
             int min_center = MAX_RADIUS;
             int max_center = GRID_SIZE - MAX_RADIUS - 1;
             int cx = min_center + (rand() % (max_center - min_center + 1));
@@ -184,7 +177,7 @@ void generate_data() {
         } 
         // Class 1: Rectangles
         else if (i < 2 * n_per_class) {
-            target[1] = 1.0; // Rectangle class
+            target[1] = 1.0; // Rectangle class (one-hot)
             int x1 = rand() % (GRID_SIZE - 2); 
             int y1 = rand() % (GRID_SIZE - 2);
             int x2 = x1 + (rand() % (MAX_RECT_SIZE - 1) + 2); 
@@ -199,11 +192,11 @@ void generate_data() {
         }
         // Class 2: Other (Random Pixels)
         else {
-            target[2] = 1.0; // Other class
+            target[2] = 1.0; // Other class (one-hot)
             draw_random_pixels(image);
         }
 
-        // Accumulate stats
+        // Accumulate stats for normalization
         for (int j = 0; j < D_SIZE; j++) {
             sum += image[j];
             sum_sq += image[j] * image[j];
@@ -211,10 +204,10 @@ void generate_data() {
         }
     }
     
-    // Finalize normalization stats
+    // Finalize normalization stats (Global Mean/Std Dev for all images)
     input_mean = sum / total_pixels;
     input_std = sqrt(sum_sq / total_pixels - input_mean * input_mean);
-    if (input_std < 1e-6) input_std = 1.0;
+    if (input_std < 1e-6) input_std = 1.0; // Avoid division by zero/near zero
 
     END_PROFILE(PROFILE_GENERATE_DATA)
 }
@@ -223,7 +216,7 @@ void load_train_case(double input[N_INPUT], double target[N_OUTPUT]) {
     START_PROFILE(PROFILE_LOAD_TRAIN_CASE)
     int img_idx = rand() % NUM_IMAGES;
     
-    // Copy and Normalize Input
+    // Copy and Normalize Input (Input Normalization is the key convergence improvement)
     for (int i = 0; i < N_INPUT; i++) {
         input[i] = (single_images[img_idx][i] - input_mean) / input_std;
     }
@@ -236,7 +229,7 @@ void load_train_case(double input[N_INPUT], double target[N_OUTPUT]) {
 // --- NN Core Functions ---
 
 void initialize_nn() {
-    // Xavier initialization
+    // Xavier initialization (helps gradients flow better)
     double fan_in_h = (double)N_INPUT;
     double limit_h = sqrt(6.0 / (fan_in_h + N_HIDDEN)); 
     double fan_in_o = (double)N_HIDDEN;
@@ -274,23 +267,27 @@ void forward_pass(const double input[N_INPUT], double hidden_net[N_HIDDEN], doub
     // 3. Output Layer (Probabilities/Identity)
     softmax(output_net, output_prob); // Classification head (0, 1, 2)
     for (int k = 3; k < N_OUTPUT; k++) {
-        output_prob[k] = output_net[k]; // Regression heads (Identity)
+        output_prob[k] = output_net[k]; // Regression heads (Identity activation)
     }
     END_PROFILE(PROFILE_FORWARD_PASS)
 }
 
 // --- Training Function with Adam Optimizer ---
 
+// Adam Optimizer implementation (adaptive learning rate and momentum)
 void adam_update(double *param, double *grad, double *m, double *v, int t, double lr) {
     double beta1_t = pow(BETA1, t);
     double beta2_t = pow(BETA2, t);
     
+    // Update biased first and second moment estimates
     *m = BETA1 * (*m) + (1.0 - BETA1) * (*grad);
     *v = BETA2 * (*v) + (1.0 - BETA2) * (*grad) * (*grad);
     
+    // Bias correction
     double m_hat = (*m) / (1.0 - beta1_t);
     double v_hat = (*v) / (1.0 - beta2_t);
     
+    // Final update
     *param -= lr * m_hat / (sqrt(v_hat) + EPSILON);
 }
 
@@ -323,37 +320,37 @@ void train_nn() {
             double delta_o[N_OUTPUT];
             double delta_h[N_HIDDEN]; 
             double error_h[N_HIDDEN];
-            double total_batch_loss = 0.0;
+            double total_sample_loss = 0.0;
 
             // --- 1. Output Delta Calculation (Classification & Regression) ---
             
-            // Classification Head (0, 1, 2): Cross-Entropy derivative (output_prob - target_one_hot)
+            // Classification Head (0, 1, 2): Cross-Entropy derivative
             for (int k = 0; k < 3; k++) {
                 delta_o[k] = (output_prob[k] - target[k]) * CLASSIFICATION_WEIGHT; 
-                if (target[k] > 0.5) { // Only calculate CE loss for the target class
-                    total_batch_loss += -log(output_prob[k] > 1e-12 ? output_prob[k] : 1e-12) * CLASSIFICATION_WEIGHT;
+                if (target[k] > 0.5) { // Calculate CE loss for the target class
+                    total_sample_loss += -log(output_prob[k] > 1e-12 ? output_prob[k] : 1e-12) * CLASSIFICATION_WEIGHT;
                 }
             }
             
-            // Regression Heads (3-9): L2 derivative (output_net - target)
+            // Regression Heads (3-9): L2 derivative
             for (int k = 3; k < N_OUTPUT; k++) {
-                // Apply a mask: Only penalize if target parameter is non-zero (i.e., belongs to the shape)
+                // Masking: Only penalize if target parameter is non-zero (i.e., belongs to the shape)
                 if (target[k] != 0.0) { 
                     delta_o[k] = (output_net[k] - target[k]) * REGRESSION_WEIGHT; 
-                    total_batch_loss += 0.5 * (output_net[k] - target[k]) * (output_net[k] - target[k]) * REGRESSION_WEIGHT;
+                    total_sample_loss += 0.5 * (output_net[k] - target[k]) * (output_net[k] - target[k]) * REGRESSION_WEIGHT;
                 } else {
                     delta_o[k] = 0.0;
                 }
             }
             
-            // --- 2. Hidden Delta Calculation ---
+            // --- 2. Hidden Delta Calculation (backprop through polynomial activation) ---
             for (int j = 0; j < N_HIDDEN; j++) {
                 error_h[j] = 0.0;
                 for (int k = 0; k < N_OUTPUT; k++) error_h[j] += delta_o[k] * w_ho[j][k];
                 delta_h[j] = error_h[j] * poly_derivative(hidden_net[j]);
             }
             
-            // --- 3. Accumulate Gradients ---
+            // --- 3. Accumulate Gradients (for Batch Update) ---
             for (int k = 0; k < N_OUTPUT; k++) {
                 grad_b_o_acc[k] += delta_o[k];
                 for (int j = 0; j < N_HIDDEN; j++) grad_w_ho_acc[j][k] += delta_o[k] * hidden_out[j];
@@ -364,12 +361,12 @@ void train_nn() {
             }
             
             END_PROFILE(PROFILE_BACKPROP_UPDATE)
-            cumulative_loss_report += total_batch_loss; 
+            cumulative_loss_report += total_sample_loss; 
             samples_processed_in_report++;
 
         } // END BATCH LOOP
 
-        // --- ADAM WEIGHT UPDATE ---
+        // --- ADAM WEIGHT UPDATE (After batch accumulation) ---
         t++; // Adam timestep
         double inv_batch_size = 1.0 / BATCH_SIZE;
         
@@ -400,7 +397,7 @@ void train_nn() {
         }
         
         if ((epoch + 1) % REPORT_FREQ == 0) {
-            printf("  Epoch: %6d | Avg Loss: %7.6f | Batches: %d\n", 
+            printf("  Epoch: %6d | Avg Loss: %7.6f | Adam Batches: %d\n", 
                    epoch + 1, cumulative_loss_report / samples_processed_in_report, t);
             cumulative_loss_report = 0.0; 
             samples_processed_in_report = 0;
@@ -412,7 +409,6 @@ void train_nn() {
 
 // --- Testing Function ---
 
-// Test function now calculates metrics for all three tasks
 void test_nn(int n_test_per_class) {
     START_PROFILE(PROFILE_TEST_NN)
     double input[N_INPUT], target[N_OUTPUT];
@@ -425,14 +421,13 @@ void test_nn(int n_test_per_class) {
     int total_rect_tests = 0;
     int accurate_rect_reg = 0;
     
-    // Test on (Circle, Rectangle, Other)
     int n_test_total = n_test_per_class * 3;
-    printf("\n--- TESTING PHASE START (%d cases total) ---\n", n_test_total);
+    printf("\n--- TESTING PHASE START (%d cases total: %d per class) ---\n", n_test_total, n_test_per_class);
 
     for (int i = 0; i < n_test_total; i++) {
         
-        // Randomly select a test case from the 3 data generation methods
-        int class_id = rand() % 3;
+        // Ensure each class is tested evenly
+        int class_id = i % 3; 
         double test_target[N_OUTPUT];
         
         // Generate random test case for chosen class
@@ -513,10 +508,10 @@ void test_nn(int n_test_per_class) {
     printf("Classification Accuracy: %d / %d (%.2f%%)\n", 
            correct_classification, n_test_total, (double)correct_classification / n_test_total * 100.0);
     printf("--------------------------------------------------\n");
-    printf("Circle Regression (Class 0):\n");
+    printf("Circle Regression (Class 0 - %d cases):\n", total_circle_tests);
     printf("  Accurate (5%% norm. error): %d / %d (%.2f%%)\n", 
            accurate_circle_reg, total_circle_tests, (double)accurate_circle_reg / total_circle_tests * 100.0);
-    printf("Rectangle Regression (Class 1):\n");
+    printf("Rectangle Regression (Class 1 - %d cases):\n", total_rect_tests);
     printf("  Accurate (5%% norm. error): %d / %d (%.2f%%)\n", 
            accurate_rect_reg, total_rect_tests, (double)accurate_rect_reg / total_rect_tests * 100.0);
     printf("--------------------------------------------------\n");
@@ -524,12 +519,27 @@ void test_nn(int n_test_per_class) {
     // Print a sample visualization (Circle)
     printf("\nVISUALIZATION: Sample Circle Prediction\n");
     int cx = GRID_SIZE / 2, cy = GRID_SIZE / 2, r = (int)MAX_RADIUS;
+    
+    // 1. Setup Input (Circle)
     draw_filled_circle(input, cx, cy, r);
     for (int k = 0; k < N_INPUT; k++) input[k] = (input[k] - input_mean) / input_std;
+    
+    // 2. Forward Pass
     forward_pass(input, hidden_net, hidden_out, output_net, output_prob);
+    
+    // 3. RE-CALCULATE max_prob and pred_class for this sample
+    double sample_max_prob = -1.0;
+    int sample_pred_class = -1;
+    for (int k = 0; k < 3; k++) {
+        if (output_prob[k] > sample_max_prob) {
+            sample_max_prob = output_prob[k];
+            sample_pred_class = k;
+        }
+    }
+    
     printf("  Target: (CX, CY, R) = (%d, %d, %d)\n", cx, cy, r);
     printf("  Prediction: Class %d (Prob: %.2f%%) | Circle: (CX, CY, R) = (%d, %d, %d)\n",
-           (int)round(output_prob[0]), max_prob * 100.0,
+           sample_pred_class, sample_max_prob * 100.0,
            DENORMALIZE_COORD(output_net[3]), DENORMALIZE_COORD(output_net[4]), DENORMALIZE_RADIUS(output_net[5]));
     
     END_PROFILE(PROFILE_TEST_NN)
@@ -556,7 +566,8 @@ void print_profiling_stats() {
 
 
 int main() {
-    srand(time(NULL));
+    // Seed srand only once
+    srand((unsigned int)time(NULL));
 
     printf("--- Multi-Task Shape Recognition NN (Adam, Normalized, Converged) ---\n");
     
@@ -568,7 +579,7 @@ int main() {
     // 2. Train Network
     train_nn();
 
-    // 3. Test Network
+    // 3. Test Network (100 cases per class = 300 total)
     test_nn(100);
 
     // 4. Summarize Profiling
