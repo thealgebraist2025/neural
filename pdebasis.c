@@ -6,29 +6,30 @@
 #include <string.h> 
 
 // --- Configuration ---
-#define N_SAMPLES_MAX 150000 // Training size
-#define D_SIZE 256         // 16x16 image size (RAW INPUT DIMENSION)
-#define GRID_SIZE 16       // Image grid size (16x16)
+#define N_SAMPLES_MAX 10000 
+#define GRID_SIZE 32       // Image grid size 
+#define D_SIZE (GRID_SIZE * GRID_SIZE) // 32*32 = 1024 raw inputs
 #define N_INPUT D_SIZE     // NN Input Dimension
-#define N_OUTPUT 5         // NN Output: [Classification, x, y, w, h]
-#define N_HIDDEN 64        // Hidden layer size
-#define N_TEST_SAMPLES 45000 // Standard test set size
-#define N_REGRESSION_TESTS 500 // Regression test size
+#define N_OUTPUT 6         // NN Output: [Classification, x, y, w, h, rotation]
+#define N_HIDDEN 256       // INCREASED: Larger hidden layer for rotation task
+#define N_TEST_SAMPLES 500 
+#define N_REGRESSION_TESTS 50 
 
 // Neural Network Parameters
-#define LEARNING_RATE 0.002 
-#define N_EPOCHS_TRAIN 250000 // FIXED: Increased training epochs significantly
+#define LEARNING_RATE 0.0005 // REDUCED for stability with increased complexity
+#define N_EPOCHS_TRAIN 100000 
 #define TARGET_RECTANGLE 1.0
 #define TARGET_LINE_SET 0.0
 #define CLASSIFICATION_WEIGHT 1.0 
-#define REGRESSION_WEIGHT 2.0     // INCREASED: Prioritizing bounding box loss
+#define REGRESSION_WEIGHT 5.0     // INCREASED: Heavily prioritize coordinates and rotation
+#define MAX_ROTATION_DEGREE 180.0 // Max rotation range (0 to 180 degrees)
 // ---------------------
 
 // --- Dynamic Globals ---
-int N_SAMPLES = 50000; 
-int N_EPOCHS = N_EPOCHS_TRAIN; // Use the fixed large value
+int N_SAMPLES = 10000; 
+int N_EPOCHS = N_EPOCHS_TRAIN; 
  
-// Global Data & Matrices
+// Global Data & Matrices 
 double dataset[N_SAMPLES_MAX][D_SIZE]; 
 double targets[N_SAMPLES_MAX][N_OUTPUT]; 
 
@@ -63,35 +64,85 @@ void test_regression();
 void generate_test_rectangle(double image[D_SIZE], double target_data[N_OUTPUT]);
 
 // -----------------------------------------------------------------
-// --- DATA GENERATION FUNCTIONS (Unchanged logic) ---
+// --- DATA GENERATION FUNCTIONS (UPDATED for Rotation and Bounding Box) ---
 // -----------------------------------------------------------------
 
 void generate_rectangle(double image[D_SIZE], double target_data[N_OUTPUT]) {
-    int rect_w = 4 + (rand() % 8);
-    int rect_h = 4 + (rand() % 8);
-    int start_x = rand() % (GRID_SIZE - rect_w);
-    int start_y = rand() % (GRID_SIZE - rect_h);
+    // 1. Initial Rectangle Parameters
+    int rect_w = 8 + (rand() % (GRID_SIZE - 12)); 
+    int rect_h = 8 + (rand() % (GRID_SIZE - 12)); 
+    // Center the rectangle roughly in the middle half of the grid
+    int center_x = GRID_SIZE / 2;
+    int center_y = GRID_SIZE / 2;
+    // Rotation degree: 0 to 180
+    double rotation_deg = (double)(rand() % 180);
+    double rotation_rad = rotation_deg * M_PI / 180.0;
+    double cos_r = cos(rotation_rad);
+    double sin_r = sin(rotation_rad);
     
+    // 2. Clear Image and Initialize Bounding Box extremes
     for (int i = 0; i < D_SIZE; i++) { image[i] = 0.0; } 
+    double min_x = DBL_MAX, min_y = DBL_MAX;
+    double max_x = DBL_MIN, max_y = DBL_MIN;
     
-    for (int y = start_y; y < start_y + rect_h; ++y) {
-        for (int x = start_x; x < start_x + rect_w; ++x) {
-            image[GRID_SIZE * y + x] = 200.0 + (double)(rand() % 50);
+    // 3. Draw Rotated Rectangle and Calculate Minimal Bounding Box
+    double value = 200.0 + (double)(rand() % 50);
+
+    for (int dy = 0; dy < rect_h; ++dy) {
+        for (int dx = 0; dx < rect_w; ++dx) {
+            // Unrotated point relative to center of the rectangle
+            double x_rel = dx - (rect_w / 2.0);
+            double y_rel = dy - (rect_h / 2.0);
+
+            // Apply Rotation
+            double x_rot = x_rel * cos_r - y_rel * sin_r;
+            double y_rot = x_rel * sin_r + y_rel * cos_r;
+
+            // Translate back to grid coordinates
+            int x_grid = (int)(center_x + x_rot + 0.5);
+            int y_grid = (int)(center_y + y_rot + 0.5);
+
+            if (x_grid >= 0 && x_grid < GRID_SIZE && y_grid >= 0 && y_grid < GRID_SIZE) {
+                int index = GRID_SIZE * y_grid + x_grid;
+                image[index] = value;
+                
+                // Update Minimal Bounding Box
+                if (x_grid < min_x) min_x = x_grid;
+                if (y_grid < min_y) min_y = y_grid;
+                if (x_grid > max_x) max_x = x_grid;
+                if (y_grid > max_y) max_y = y_grid;
+            }
         }
     }
+    
+    // 4. Calculate Final Bounding Box Dimensions
+    int final_start_x = (int)min_x;
+    int final_start_y = (int)min_y;
+    int final_w = (int)(max_x - min_x + 1);
+    int final_h = (int)(max_y - min_y + 1);
 
-    target_data[0] = TARGET_RECTANGLE; 
-    target_data[1] = (double)start_x / GRID_SIZE; 
-    target_data[2] = (double)start_y / GRID_SIZE; 
-    target_data[3] = (double)rect_w / GRID_SIZE;  
-    target_data[4] = (double)rect_h / GRID_SIZE;  
+    // Clamp dimensions to the grid size
+    if (final_start_x < 0 || final_start_x >= GRID_SIZE) final_start_x = 0;
+    if (final_start_y < 0 || final_start_y >= GRID_SIZE) final_start_y = 0;
+    final_w = CLAMP(final_w, 1, GRID_SIZE - final_start_x);
+    final_h = CLAMP(final_h, 1, GRID_SIZE - final_start_y);
+
+    // 5. Set Targets (6 outputs)
+    target_data[0] = TARGET_RECTANGLE; // Classification
+    // Bounding Box (based on minimal axis-aligned box)
+    target_data[1] = (double)final_start_x / GRID_SIZE; // x_norm
+    target_data[2] = (double)final_start_y / GRID_SIZE; // y_norm
+    target_data[3] = (double)final_w / GRID_SIZE;       // w_norm
+    target_data[4] = (double)final_h / GRID_SIZE;       // h_norm
+    // Rotation Degree (Normalized)
+    target_data[5] = rotation_deg / MAX_ROTATION_DEGREE; // rotation_norm
 }
 
 void generate_random_lines(double image[D_SIZE], double target_data[N_OUTPUT]) {
     for (int i = 0; i < D_SIZE; i++) { image[i] = 0.0; } 
-    int num_lines = 1 + (rand() % 4); 
+    int num_lines = 1 + (rand() % 6); 
     for (int l = 0; l < num_lines; l++) {
-        int length_options[] = {2, 4, 8};
+        int length_options[] = {4, 8, 16};
         int length = length_options[rand() % 3];
         int x_start = rand() % GRID_SIZE;
         int y_start = rand() % GRID_SIZE;
@@ -107,8 +158,9 @@ void generate_random_lines(double image[D_SIZE], double target_data[N_OUTPUT]) {
         }
     }
     
-    target_data[0] = TARGET_LINE_SET; 
-    target_data[1] = target_data[2] = target_data[3] = target_data[4] = 0.0; 
+    // Set Targets for Non-Rectangle (6 placeholder values)
+    target_data[0] = TARGET_LINE_SET; // Classification
+    target_data[1] = target_data[2] = target_data[3] = target_data[4] = target_data[5] = 0.0; 
 }
 
 void load_data_balanced(int n_samples) {
@@ -150,11 +202,10 @@ void estimate_nn_epochs() {
 }
 
 // -----------------------------------------------------------------
-// --- NN CORE FUNCTIONS (Bug fix maintained, Logic updated) ---
+// --- NN CORE FUNCTIONS (Updated for N_OUTPUT=6 and N_HIDDEN=256) ---
 // -----------------------------------------------------------------
 
 void initialize_nn() {
-    // Input-to-Hidden
     for (int i = 0; i < N_INPUT; i++) {
         for (int j = 0; j < N_HIDDEN; j++) {
             w_ih[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * 0.1;
@@ -162,7 +213,6 @@ void initialize_nn() {
     }
     for (int j = 0; j < N_HIDDEN; j++) {
         b_h[j] = 0.0;
-        // Hidden-to-Output
         for (int k = 0; k < N_OUTPUT; k++) {
             w_ho[j][k] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * 0.1;
         }
@@ -173,7 +223,7 @@ void initialize_nn() {
 }
 
 void train_nn(const double input_set[N_SAMPLES_MAX][N_INPUT]) {
-    printf("Training on raw %d-dimensional image pixels with 5-output regression...\n", N_INPUT);
+    printf("Training on raw %d-dimensional image pixels with 6-output regression...\n", N_INPUT);
     for (int epoch = 0; epoch < N_EPOCHS; epoch++) {
         int sample_index = rand() % N_SAMPLES;
         
@@ -183,7 +233,6 @@ void train_nn(const double input_set[N_SAMPLES_MAX][N_INPUT]) {
         forward_pass(input_set[sample_index], hidden_out, output);
         backward_pass_and_update(input_set[sample_index], hidden_out, output, targets[sample_index]);
 
-        // Simple progress indicator for long training
         if (N_EPOCHS > 1000 && (epoch % (N_EPOCHS / 10) == 0) && epoch != 0) {
             printf("  Epoch %d/%d completed.\n", epoch, N_EPOCHS);
         }
@@ -195,7 +244,7 @@ double sigmoid(double x) {
 }
 
 void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], double output[N_OUTPUT]) {
-    // Input to Hidden Layer (Sigmoid activation)
+    // Input to Hidden Layer
     for (int j = 0; j < N_HIDDEN; j++) {
         double h_net = b_h[j];
         for (int i = 0; i < N_INPUT; i++) {
@@ -215,7 +264,7 @@ void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], doub
         if (k == 0) {
             output[k] = sigmoid(o_net);
         } else {
-            // Outputs [1..4] (Regression) use identity (linear)
+            // Outputs [1..5] (Regression: x, y, w, h, rotation) use identity (linear)
             output[k] = o_net;
         }
     }
@@ -234,9 +283,9 @@ void backward_pass_and_update(const double input[N_INPUT], const double hidden_o
         if (k == 0) { 
             delta_o[k] = error * output[k] * (1.0 - output[k]) * weight;
         } else {
-            // Apply regression loss ONLY if the image is a rectangle (target[0] is 1.0)
+            // Regression loss applied to outputs 1 through 5
             if (fabs(target[0] - TARGET_RECTANGLE) < DBL_EPSILON) {
-                weight = REGRESSION_WEIGHT; // Use increased regression weight
+                weight = REGRESSION_WEIGHT; 
             } else {
                 weight = 0.0; 
             }
@@ -249,7 +298,7 @@ void backward_pass_and_update(const double input[N_INPUT], const double hidden_o
         for (int k = 0; k < N_OUTPUT; k++) {
             error_h[j] += delta_o[k] * w_ho[j][k];
         }
-        delta_h[j] = error_h[j] * hidden_out[j] * (1.0 - hidden_out[j]); // Sigmoid derivative
+        delta_h[j] = error_h[j] * hidden_out[j] * (1.0 - hidden_out[j]);
     }
     
     // 3. Update Weights and Biases (Hidden-to-Output)
@@ -290,15 +339,15 @@ double test_on_set_cls(int n_set_size, const double input_set[][N_INPUT]) {
 }
 
 // -----------------------------------------------------------------
-// --- REGRESSION TESTING (Updated to clamp output) ---
+// --- REGRESSION TESTING (Updated for Rotation) ---
 // -----------------------------------------------------------------
 
 void test_regression() {
-    printf("\n--- STEP 3: REGRESSION TEST (%d Random Rectangles) ---\n", N_REGRESSION_TESTS);
-    printf("Image dimensions are %dx%d pixels.\n", GRID_SIZE, GRID_SIZE);
-    printf("--------------------------------------------------------------------------------------\n");
-    printf("| # | Cls Score | Est. X, Y, W, H (Norm) | Est. X, Y, W, H (Pixels) | Known X, Y, W, H |\n");
-    printf("|---|-----------|------------------------|--------------------------|------------------|\n");
+    printf("\n--- STEP 3: REGRESSION TEST (%d Random Rotated Rectangles) ---\n", N_REGRESSION_TESTS);
+    printf("Image dimensions are %dx%d pixels. Max rotation is %.1f degrees.\n", GRID_SIZE, GRID_SIZE, MAX_ROTATION_DEGREE);
+    printf("--------------------------------------------------------------------------------------------------------------------------------------\n");
+    printf("| # | Cls Score | Est. X, Y, W, H (Pixels) | Known X, Y, W, H | Est. Rot (Norm) | Known Rot (Norm) | Est. Rot (Deg) | Known Rot (Deg) |\n");
+    printf("|---|-----------|--------------------------|------------------|-----------------|------------------|----------------|-----------------|\n");
 
     double hidden_out[N_HIDDEN];
     double output[N_OUTPUT];
@@ -311,31 +360,39 @@ void test_regression() {
         
         forward_pass(test_image, hidden_out, output);
         
-        // --- Clamping estimated normalized outputs to [0.0, 1.0] for validity ---
+        // Clamping estimated normalized outputs to [0.0, 1.0] for valid pixel/degree conversion
         double est_x_norm = CLAMP(output[1], 0.0, 1.0);
         double est_y_norm = CLAMP(output[2], 0.0, 1.0);
         double est_w_norm = CLAMP(output[3], 0.0, 1.0);
         double est_h_norm = CLAMP(output[4], 0.0, 1.0);
+        double est_rot_norm = CLAMP(output[5], 0.0, 1.0); // Clamped Rotation Norm
+
         
-        // Denormalize known and estimated dimensions (round to nearest integer)
+        // Denormalize known and estimated dimensions 
         int known_x = (int)(known_target[1] * GRID_SIZE + 0.5);
         int known_y = (int)(known_target[2] * GRID_SIZE + 0.5);
         int known_w = (int)(known_target[3] * GRID_SIZE + 0.5);
         int known_h = (int)(known_target[4] * GRID_SIZE + 0.5);
+        double known_rot_norm = known_target[5];
 
         int est_x = (int)(est_x_norm * GRID_SIZE + 0.5);
         int est_y = (int)(est_y_norm * GRID_SIZE + 0.5);
         int est_w = (int)(est_w_norm * GRID_SIZE + 0.5);
         int est_h = (int)(est_h_norm * GRID_SIZE + 0.5);
         
-        printf("| %1d | %9.4f | %0.2f, %0.2f, %0.2f, %0.2f | %2d, %2d, %2d, %2d | %2d, %2d, %2d, %2d |\n",
+        // Rotation in Degrees
+        double known_rot_deg = known_rot_norm * MAX_ROTATION_DEGREE;
+        double est_rot_deg = est_rot_norm * MAX_ROTATION_DEGREE;
+        
+        printf("| %1d | %9.4f | %2d, %2d, %2d, %2d | %2d, %2d, %2d, %2d | %15.4f | %16.4f | %14.1f | %15.1f |\n",
                i + 1,
                output[0],
-               est_x_norm, est_y_norm, est_w_norm, est_h_norm, // Print clamped normalized values
                est_x, est_y, est_w, est_h,
-               known_x, known_y, known_w, known_h);
+               known_x, known_y, known_w, known_h,
+               est_rot_norm, known_rot_norm,
+               est_rot_deg, known_rot_deg);
     }
-    printf("--------------------------------------------------------------------------------------\n");
+    printf("--------------------------------------------------------------------------------------------------------------------------------------\n");
 }
 
 // -----------------------------------------------------------------
@@ -343,15 +400,20 @@ void test_regression() {
 // -----------------------------------------------------------------
 int main() {
     srand(time(NULL));
+    // Use M_PI if it's not defined by default
+    #ifndef M_PI
+        #define M_PI 3.14159265358979323846
+    #endif
+
     clock_t start_total, end_total;
     start_total = clock();
 
     load_balanced_dataset(); 
     generate_test_set();
-    estimate_nn_epochs(); // Simply prints the new epoch config
+    estimate_nn_epochs();
 
     printf("\n--- GLOBAL CONFIGURATION ---\n");
-    printf("Model: Classification + Regression NN\n");
+    printf("Model: Classification + 6-Output Regression (with Rotation)\n");
     printf("Train Samples: %d | Input Dim: %d | Hidden Dim: %d | Output Dim: %d\n", N_SAMPLES, N_INPUT, N_HIDDEN, N_OUTPUT);
     printf("Learning Rate: %.4f | Classification Weight: %.1f | Regression Weight: %.1f\n", LEARNING_RATE, CLASSIFICATION_WEIGHT, REGRESSION_WEIGHT);
 
