@@ -13,13 +13,13 @@
 
 // **Network Configuration**
 #define N_INPUT D_SIZE         
-#define N_HIDDEN 128           
+#define N_HIDDEN 64           
 #define N_OUTPUT 10            // 3 Class + 3 Circle Params + 4 Rectangle Params
 
 // **Training Parameters**
-#define NUM_IMAGES 3000        
-#define TRAINING_TIME_LIMIT 60.0 // Stop training after 60 seconds
-#define BATCH_SIZE 32          // **REINSTATED MINI-BATCH**
+#define NUM_IMAGES 300        
+#define TRAINING_TIME_LIMIT 120.0 // Stop training after 60 seconds
+#define BATCH_SIZE 8          // **REINSTATED MINI-BATCH**
 #define REPORT_FREQ 500             
 #define INITIAL_LEARNING_RATE 0.0001 // **REINSTATED ADAM LR**
 #define CLASSIFICATION_WEIGHT 1.0  
