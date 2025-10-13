@@ -34,7 +34,7 @@
 #define CLASSIFICATION_WEIGHT 1.0 
 #define MAX_STEPS 16.0 
 
-// ⬅️ CRITICAL FIX CONFIGURATION (2-minute limit)
+// CRITICAL FIX CONFIGURATION (2-minute limit)
 #define MAX_TRAINING_SECONDS 120 // Target: Max 2 minutes
 #define WARMUP_EPOCHS 100 // Epochs used for timing estimation
 #define REPORT_SECONDS 1 // Report frequency (every second)
@@ -77,7 +77,7 @@ double b_o[N_OUTPUT];
 // --- Function Prototypes ---
 void draw_line(double image[D_SIZE], int x1, int y1, int x2, int y2, double val);
 void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int start_y, int exit_x, int exit_y, double target_data[N_OUTPUT]);
-void generate_labyrinth(int index); // Prototype updated to accept index
+void generate_labyrinth(int index); 
 void extract_longest_paths(const double labyrinth[D_SIZE], double feature_output[NUM_LONGEST_PATHS * PATH_FEATURE_SIZE]);
 void load_train_case(double input[N_INPUT], double target[N_OUTPUT]);
 
@@ -101,10 +101,12 @@ void train_nn();
 void test_nn_and_summarize();
 int is_path_legal(const double labyrinth[D_SIZE], int start_x, int start_y, const double output_vec[N_OUTPUT]);
 void print_labyrinth_and_path(const double input_vec[N_INPUT], const double target_output[N_OUTPUT], const double estimated_output[N_OUTPUT]);
+void decode_instruction_output(const double output_vec[N_OUTPUT], int segment, char *dir_char, int *steps);
+void decode_instruction_target(const double target_vec[N_OUTPUT], int segment, char *dir_char, int *steps);
 
 
 // -----------------------------------------------------------------
-// --- NN CORE ACTIVATION FUNCTIONS (No changes) ---
+// --- NN CORE ACTIVATION FUNCTIONS ---
 // -----------------------------------------------------------------
 
 double tanh_activation(double x) {
@@ -141,11 +143,10 @@ void softmax(double vector[N_DIRECTION_CLASSES]) {
 }
 
 // -----------------------------------------------------------------
-// --- DATA GENERATION FUNCTIONS (Updated) ---
+// --- DATA GENERATION FUNCTIONS ---
 // -----------------------------------------------------------------
 
 void draw_line(double image[D_SIZE], int x1, int y1, int x2, int y2, double val) {
-    // ... (Bresenham's line algorithm - no change needed)
     int dx = abs(x2 - x1);
     int dy = abs(y2 - y1);
     int sx = x1 < x2 ? 1 : -1;
@@ -164,15 +165,10 @@ void draw_line(double image[D_SIZE], int x1, int y1, int x2, int y2, double val)
 }
 
 void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int start_y, int exit_x, int exit_y, double target_data[N_OUTPUT]) {
-    // **INFINITE LOOP CHECK**: This function uses Breadth-First Search (BFS) for pathfinding.
-    // BFS is guaranteed to terminate because it uses a finite queue (max D_SIZE)
-    // and a 'visited' array to prevent cycling through the maze. The segment 
-    // encoding loop is capped by 'current_segment < NUM_SEGMENTS' (7) and 
-    // 'current_path_idx > 0', which strictly decreases. No infinite loops here.
     
     for (int i = 0; i < N_OUTPUT; i++) { target_data[i] = 0.0; } 
     
-    // BFS implementation 
+    // BFS implementation (pathfinding logic remains the same)
     typedef struct { int x, y, prev_idx; } BFSNode;
     BFSNode queue[D_SIZE];
     int visited[GRID_SIZE][GRID_SIZE];
@@ -227,7 +223,6 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
     int last_dir = -1;
     int steps = 0;
     
-    // Guaranteed to terminate because current_path_idx decreases
     while (current_path_idx > 0 && current_segment < NUM_SEGMENTS) {
         int next_path_idx = current_path_idx - 1;
         int prev_x = queue[path_indices[current_path_idx]].x;
@@ -330,7 +325,7 @@ void generate_labyrinth(int index) {
 
 
 void extract_longest_paths(const double labyrinth[D_SIZE], double feature_output[NUM_LONGEST_PATHS * PATH_FEATURE_SIZE]) {
-    // ... (No change needed)
+    
     typedef struct { int length, direction; } PathFeature;
     PathFeature all_paths[GRID_SIZE * GRID_SIZE]; 
     int path_count = 0;
@@ -441,11 +436,11 @@ void load_train_case(double input[N_INPUT], double target[N_OUTPUT]) {
 
 
 // -----------------------------------------------------------------
-// --- NN CORE FUNCTIONS (No changes) ---
+// --- NN CORE FUNCTIONS ---
 // -----------------------------------------------------------------
 
 void initialize_nn() {
-    // ... (Xavier Initialization - no change needed)
+    
     double fan_in_h = (double)N_INPUT;
     double fan_in_o = (double)N_HIDDEN;
     
@@ -475,7 +470,6 @@ double clip_gradient(double grad, double max_norm) {
 }
 
 void forward_pass(const double input[N_INPUT], double hidden_net[N_HIDDEN], double hidden_out[N_HIDDEN], double output_net[N_OUTPUT], double output[N_OUTPUT]) {
-    // ... (Forward Pass logic - no change needed)
     
     // 1. Input (4130) to Hidden (Tanh)
     for (int j = 0; j < N_HIDDEN; j++) {
@@ -513,7 +507,6 @@ void forward_pass(const double input[N_INPUT], double hidden_net[N_HIDDEN], doub
 }
 
 void update_learning_rate(double current_avg_loss) { 
-    // ... (Learning rate decay logic - no change needed)
     if (isnan(current_avg_loss) || current_avg_loss > last_avg_loss * 1.5 || current_avg_loss > 100000.0) {
         current_learning_rate *= 0.5;
         if (current_learning_rate < 1e-10) current_learning_rate = 1e-10; 
@@ -535,7 +528,6 @@ void update_learning_rate(double current_avg_loss) {
 int estimate_epochs_per_second(double input[N_INPUT], double target[N_OUTPUT]) {
     printf("[DEBUG] --- Timing Warmup: Running %d epochs to estimate performance. ---\n", WARMUP_EPOCHS);
     
-    // ... (Warmup logic - no change needed)
     double hidden_net[N_HIDDEN], hidden_out[N_HIDDEN], output_net[N_OUTPUT], output[N_OUTPUT];
     
     double w_fh_copy[N_INPUT][N_HIDDEN];
@@ -547,15 +539,13 @@ int estimate_epochs_per_second(double input[N_INPUT], double target[N_OUTPUT]) {
         load_train_case(input, target);
         forward_pass(input, hidden_net, hidden_out, output_net, output);
         
-        // Simplified backprop for timing: just update a few weights 
         double error = calculate_loss(output, target);
         
-        // Perform a minimal weight update to simulate the full training load accurately
         double delta_o[N_OUTPUT] = {0.0};
         delta_o[0] = (output[0] - target[0]) * sigmoid_derivative(output[0]);
         for(int j=0; j<N_HIDDEN; j++) {
             double delta_h = delta_o[0] * w_ho[j][0] * tanh_derivative(hidden_out[j]);
-            w_fh[0][j] -= 0.0 * delta_h * input[0]; // Learning rate set to 0 to prevent actual training
+            w_fh[0][j] -= 0.0 * delta_h * input[0]; 
         }
     }
     
@@ -583,7 +573,6 @@ void train_nn() {
     double input[N_INPUT];
     double target[N_OUTPUT];
     
-    // Estimate max epochs
     int epochs_per_sec = estimate_epochs_per_second(input, target);
     int max_epochs_to_run = (int)((double)epochs_per_sec * MAX_TRAINING_SECONDS * 0.98); 
     
@@ -606,7 +595,6 @@ void train_nn() {
 
     for (int epoch = 0; epoch < max_epochs_to_run; epoch++) {
         
-        // CRITICAL: Epoch limit check 
         if (epoch >= max_epochs_to_run) {
             double time_elapsed = difftime(time(NULL), start_time);
             printf("\n--- Training stopped: Estimated epoch limit (%d) reached. Time elapsed: %.2f s. ---\n", 
@@ -621,7 +609,6 @@ void train_nn() {
         samples_processed_in_report++;
         total_samples_processed++;
         
-        // **Backpropagation and Update** (omitted for brevity, no changes)
         double delta_o[N_OUTPUT];
         double delta_h[N_HIDDEN]; 
         double error_h[N_HIDDEN] = {0.0};
@@ -661,9 +648,7 @@ void train_nn() {
         for (int j = 0; j < N_HIDDEN; j++) { 
             b_h[j] -= current_learning_rate * delta_h[j]; 
         }
-        // **End Backpropagation**
         
-        // Time-based reporting
         if (time(NULL) >= next_report_time) {
             double current_avg_loss = cumulative_loss_report / samples_processed_in_report;
             update_learning_rate(current_avg_loss); 
@@ -684,7 +669,6 @@ void train_nn() {
 }
 
 double calculate_loss(const double output[N_OUTPUT], const double target[N_OUTPUT]) {
-    // ... (Loss calculation - no change needed)
     double total_loss = 0.0;
     
     for (int k = 0; k < N_OUTPUT; k++) {
@@ -702,14 +686,207 @@ double calculate_loss(const double output[N_OUTPUT], const double target[N_OUTPU
 
 
 // -----------------------------------------------------------------
-// --- TESTING AND VISUALIZATION FUNCTIONS (Updated) ---
+// --- TESTING AND VISUALIZATION FUNCTIONS ---
 // -----------------------------------------------------------------
 
-// ... (Decode functions - no change needed)
+void decode_instruction_output(const double output_vec[N_OUTPUT], int segment, char *dir_char, int *steps) {
+    double steps_norm = output_vec[GET_STEPS_OUTPUT_IDX(segment)];
+    *steps = DENORMALIZE_STEPS(steps_norm);
+
+    int dir_start_idx = GET_DIR_OUTPUT_START_IDX(segment);
+    int max_idx = 0;
+    double max_val = output_vec[dir_start_idx];
+
+    for (int k = 1; k < N_DIRECTION_CLASSES; k++) {
+        if (output_vec[dir_start_idx + k] > max_val) {
+            max_val = output_vec[dir_start_idx + k];
+            max_idx = k;
+        }
+    }
+    
+    if (*steps > 0 && max_val < 0.25) { 
+         *steps = 0;
+    }
+
+    if (max_idx == DIR_UP_IDX) *dir_char = 'U';
+    else if (max_idx == DIR_DOWN_IDX) *dir_char = 'D';
+    else if (max_idx == DIR_LEFT_IDX) *dir_char = 'L';
+    else if (max_idx == DIR_RIGHT_IDX) *dir_char = 'R';
+    else *dir_char = '?'; 
+}
+
+void decode_instruction_target(const double target_vec[N_OUTPUT], int segment, char *dir_char, int *steps) {
+    *steps = DENORMALIZE_STEPS(target_vec[GET_STEPS_OUTPUT_IDX(segment)]);
+
+    int dir_start_idx = GET_DIR_OUTPUT_START_IDX(segment);
+    int one_hot_idx = -1;
+
+    for (int k = 0; k < N_DIRECTION_CLASSES; k++) {
+        if (target_vec[dir_start_idx + k] > 0.5) { 
+            one_hot_idx = k;
+            break;
+        }
+    }
+    
+    if (one_hot_idx == DIR_UP_IDX) *dir_char = 'U';
+    else if (one_hot_idx == DIR_DOWN_IDX) *dir_char = 'D';
+    else if (one_hot_idx == DIR_LEFT_IDX) *dir_char = 'L';
+    else if (one_hot_idx == DIR_RIGHT_IDX) *dir_char = 'R';
+    else *dir_char = '?';
+}
+
+void draw_path(char map[GRID_SIZE][GRID_SIZE], int start_x, int start_y, int exit_x, int exit_y, const double output_vec[N_OUTPUT], int is_target) {
+    int current_x = start_x;
+    int current_y = start_y;
+    
+    if (current_x >= 0 && current_x < GRID_SIZE && current_y >= 0 && current_y < GRID_SIZE) {
+        map[current_y][current_x] = '0';
+    }
+    if (exit_x >= 0 && exit_x < GRID_SIZE && exit_y >= 0 && exit_y < GRID_SIZE) {
+        if (map[exit_y][exit_x] != '0') {
+             map[exit_y][exit_x] = 'E';
+        }
+    }
+    
+    for (int i = 0; i < NUM_SEGMENTS; i++) {
+        char dir_char;
+        int steps;
+        
+        if (is_target) {
+            decode_instruction_target(output_vec, i, &dir_char, &steps);
+        } else {
+            decode_instruction_output(output_vec, i, &dir_char, &steps);
+        }
+        
+        if (steps == 0) continue; 
+
+        for (int s = 1; s <= steps; s++) {
+            if (dir_char == 'U') current_y--;
+            else if (dir_char == 'D') current_y++;
+            else if (dir_char == 'L') current_x--;
+            else if (dir_char == 'R') current_x++;
+            
+            if (current_x >= 0 && current_x < GRID_SIZE && current_y >= 0 && current_y < GRID_SIZE) {
+                if (map[current_y][current_x] == ' ') {
+                    map[current_y][current_x] = '*';
+                }
+            }
+        }
+        
+        if (i < NUM_SEGMENTS - 1) {
+            if (current_x >= 0 && current_x < GRID_SIZE && current_y >= 0 && current_y < GRID_SIZE) {
+                if (map[current_y][current_x] == '*') { 
+                    map[current_y][current_x] = '1' + i; 
+                }
+            }
+        }
+    }
+}
+
+int is_path_legal(const double labyrinth[D_SIZE], int start_x, int start_y, const double output_vec[N_OUTPUT]) {
+    
+    int current_x = DENORMALIZE_COORD(output_vec[0]);
+    int current_y = DENORMALIZE_COORD(output_vec[1]);
+    
+    int exit_x = DENORMALIZE_COORD(output_vec[N_OUTPUT-2]);
+    int exit_y = DENORMALIZE_COORD(output_vec[N_OUTPUT-1]);
+
+    if (current_x < 0 || current_x >= GRID_SIZE || current_y < 0 || current_y >= GRID_SIZE) return 0;
+    if (labyrinth[GRID_SIZE * current_y + current_x] < 0.5) return 0;
+    
+    for (int i = 0; i < NUM_SEGMENTS; i++) {
+        char dir_char;
+        int steps;
+        
+        decode_instruction_output(output_vec, i, &dir_char, &steps);
+        if (steps == 0) continue; 
+
+        for (int s = 1; s <= steps; s++) {
+            int next_x = current_x;
+            int next_y = current_y;
+
+            if (dir_char == 'U') next_y--;
+            else if (dir_char == 'D') next_y++;
+            else if (dir_char == 'L') next_x--;
+            else if (dir_char == 'R') next_x++;
+            
+            if (next_x < 0 || next_x >= GRID_SIZE || next_y < 0 || next_y >= GRID_SIZE) return 0;
+            if (labyrinth[GRID_SIZE * next_y + next_x] < 0.5) return 0;
+            
+            current_x = next_x;
+            current_y = next_y;
+        }
+    }
+
+    return (abs(current_x - exit_x) + abs(current_y - exit_y) < 2); 
+}
+
+
+void print_labyrinth_and_path(const double input_vec[N_INPUT], const double target_output[N_OUTPUT], const double estimated_output[N_OUTPUT]) {
+    
+    int VIS_SIZE = (GRID_SIZE > 16) ? 16 : GRID_SIZE;
+
+    const double* input_image = input_vec;
+    
+    char true_path_map[GRID_SIZE][GRID_SIZE];
+    char est_path_map[GRID_SIZE][GRID_SIZE];
+    
+    for (int y = 0; y < GRID_SIZE; y++) {
+        for (int x = 0; x < GRID_SIZE; x++) {
+            if (input_image[GRID_SIZE * y + x] < 0.5) { 
+                true_path_map[y][x] = '#';
+                est_path_map[y][x] = '#';
+            } else { 
+                true_path_map[y][x] = ' ';
+                est_path_map[y][x] = ' ';
+            }
+        }
+    }
+    
+    int true_start_x = DENORMALIZE_COORD(target_output[0]);
+    int true_start_y = DENORMALIZE_COORD(target_output[1]);
+    int true_exit_x = DENORMALIZE_COORD(target_output[N_OUTPUT-2]);
+    int true_exit_y = DENORMALIZE_COORD(target_output[N_OUTPUT-1]);
+
+    int est_start_x = DENORMALIZE_COORD(estimated_output[0]);
+    int est_start_y = DENORMALIZE_COORD(estimated_output[1]);
+    int est_exit_x = DENORMALIZE_COORD(estimated_output[N_OUTPUT-2]);
+    int est_exit_y = DENORMALIZE_COORD(estimated_output[N_OUTPUT-1]);
+    
+    draw_path(true_path_map, true_start_x, true_start_y, true_exit_x, true_exit_y, target_output, 1);
+    draw_path(est_path_map, est_start_x, est_start_y, est_exit_x, est_exit_y, estimated_output, 0);
+    
+    int center_x = (true_start_x + true_exit_x) / 2;
+    int center_y = (true_start_y + true_exit_y) / 2;
+    int start_vis_x = CLAMP(center_x - VIS_SIZE/2, 0, GRID_SIZE - VIS_SIZE);
+    int start_vis_y = CLAMP(center_y - VIS_SIZE/2, 0, GRID_SIZE - VIS_SIZE);
+
+    printf("\n--- True Path (Target) | Predicted Path (Output) ---\n");
+    printf("TRUE Start: (%d, %d), Exit: (%d, %d)\n", true_start_x, true_start_y, true_exit_x, true_exit_y);
+    printf("EST Start:  (%d, %d), Exit: (%d, %d)\n", est_start_x, est_start_y, est_exit_x, est_exit_y);
+    
+    if (GRID_SIZE > VIS_SIZE) {
+        printf("Visualizing %dx%d area around path center (%d, %d)\n", VIS_SIZE, VIS_SIZE, center_x, center_y);
+    }
+    printf("--------------------------------------------------\n");
+    
+    for (int y = 0; y < VIS_SIZE; y++) {
+        for (int x = 0; x < VIS_SIZE; x++) {
+            printf("%c", true_path_map[start_vis_y + y][start_vis_x + x]);
+        }
+        printf(" | ");
+        for (int x = 0; x < VIS_SIZE; x++) {
+            printf("%c", est_path_map[start_vis_y + y][start_vis_x + x]);
+        }
+        printf("\n");
+    }
+    printf("--------------------------------------------------\n");
+}
+
 
 void test_nn_and_summarize() {
     
-    int total_test_runs = N_TEST_CASES_PER_LABYRINTH * NUM_LABYRINTHS * 5; // Test more broadly
+    int total_test_runs = N_TEST_CASES_PER_LABYRINTH * NUM_LABYRINTHS * 5; 
 
     printf("\n--- STEP 3: STARTING TEST AND SUMMARY PHASE ---\n");
     printf("Testing on %d fixed labyrinths with %d random start points (Total %d tests).\n", 
@@ -725,11 +902,11 @@ void test_nn_and_summarize() {
     double output_net[N_OUTPUT];
     double output[N_OUTPUT];
 
-    srand(12345); // Consistent seed for testing
+    srand(12345); 
 
     for (int test_run = 0; test_run < total_test_runs; test_run++) {
         
-        load_train_case(input, target); // Randomly selects one of the two labyrinths
+        load_train_case(input, target); 
         
         forward_pass(input, hidden_net, hidden_out, output_net, output);
         cumulative_test_loss += calculate_loss(output, target);
@@ -777,7 +954,7 @@ void test_nn_and_summarize() {
 
     for (int i = 0; i < 10; i++) {
         
-        load_train_case(input, target); // Randomly selects and loads
+        load_train_case(input, target); 
         forward_pass(input, hidden_net, hidden_out, output_net, output);
 
         printf("Test Case #%d (Labyrinth ID determined in load_train_case):\n", i + 1);
@@ -786,10 +963,9 @@ void test_nn_and_summarize() {
     printf("--- TEST PHASE COMPLETE ---\n");
 }
 
-// ... (Other functions like is_path_legal and print_labyrinth_and_path are not changed)
 
 // -----------------------------------------------------------------
-// --- MAIN PROGRAM (Updated) ---
+// --- MAIN PROGRAM ---
 // -----------------------------------------------------------------
 
 int main(int argc, char **argv) {
@@ -800,7 +976,6 @@ int main(int argc, char **argv) {
     printf("--- STEP 1: INITIALIZATION AND LABYRINTH GENERATION ---\n");
     initialize_nn(); 
     
-    // Generate two distinct labyrinths
     for (int i = 0; i < NUM_LABYRINTHS; i++) {
         generate_labyrinth(i); 
     }
