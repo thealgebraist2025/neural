@@ -31,7 +31,7 @@
 #define COORD_WEIGHT 1.0                 
 #define CLASSIFICATION_WEIGHT 1.0 
 #define MAX_STEPS 16.0 
-#define MAX_TRAINING_SECONDS 120.0 
+#define MAX_TRAINING_SECONDS 120.0 // ⬅️ CONFIRMED: Max 2 minutes (120 seconds)
 #define SOLVED_ERROR_THRESHOLD 0.1 
 
 // **Gradient Clipping Parameter**
@@ -69,7 +69,7 @@ double b_o[N_OUTPUT];
 #define GET_STEPS_OUTPUT_IDX(segment) (2 + (NUM_SEGMENTS * N_DIRECTION_CLASSES) + (segment))
 
 
-// --- Function Prototypes (FIXED: All required declarations are here) ---
+// --- Function Prototypes ---
 void draw_line(double image[D_SIZE], int x1, int y1, int x2, int y2, double val);
 void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int start_y, int exit_x, int exit_y, double target_data[N_OUTPUT]);
 void generate_single_labyrinth(); 
@@ -84,9 +84,9 @@ double sigmoid(double x);
 double sigmoid_derivative(double x);
 
 void softmax(double vector[N_DIRECTION_CLASSES]);
-void initialize_nn(); // ⬅️ ADDED
-void update_learning_rate(double current_avg_loss); // ⬅️ ADDED
-double clip_gradient(double grad, double max_norm); // ⬅️ ADDED
+void initialize_nn(); 
+void update_learning_rate(double current_avg_loss); 
+double clip_gradient(double grad, double max_norm); 
 
 void forward_pass(const double input[N_INPUT], double hidden_net[N_HIDDEN], double hidden_out[N_HIDDEN], double output_net[N_OUTPUT], double output[N_OUTPUT]);
 void train_nn();
@@ -99,7 +99,6 @@ void print_labyrinth_and_path(const double input_vec[N_INPUT], const double targ
 // --- NN CORE ACTIVATION FUNCTIONS ---
 // -----------------------------------------------------------------
 
-// Tanh Activation
 double tanh_activation(double x) {
     return tanh(x);
 }
@@ -108,7 +107,6 @@ double tanh_derivative(double tanh_out) {
     return 1.0 - (tanh_out * tanh_out);
 }
 
-// Sigmoid Activation
 double sigmoid(double x) {
     return 1.0 / (1.0 + exp(-x));
 }
@@ -415,7 +413,7 @@ void load_train_case(double input[N_INPUT], double target[N_OUTPUT]) {
 
 
 // -----------------------------------------------------------------
-// --- NN CORE FUNCTIONS (UPDATED) ---
+// --- NN CORE FUNCTIONS ---
 // -----------------------------------------------------------------
 
 void initialize_nn() {
@@ -442,7 +440,7 @@ void initialize_nn() {
     }
 }
 
-double clip_gradient(double grad, double max_norm) { // ⬅️ DEFINITION
+double clip_gradient(double grad, double max_norm) { 
     if (grad > max_norm) return max_norm;
     if (grad < -max_norm) return -max_norm;
     return grad;
@@ -486,7 +484,7 @@ void forward_pass(const double input[N_INPUT], double hidden_net[N_HIDDEN], doub
     }
 }
 
-void update_learning_rate(double current_avg_loss) { // ⬅️ DEFINITION
+void update_learning_rate(double current_avg_loss) { 
     // Only aggressively decay if loss explodes (very large) or increases substantially
     if (isnan(current_avg_loss) || current_avg_loss > last_avg_loss * 1.5 || current_avg_loss > 100000.0) {
         current_learning_rate *= 0.5;
@@ -527,6 +525,7 @@ void train_nn() {
 
     for (int epoch = 0; epoch < N_EPOCHS_TRAIN; epoch++) {
         
+        // ⬅️ CRITICAL FIX: Check time at the very start of the loop
         time_elapsed = (double)(clock() - start_time) / CLOCKS_PER_SEC;
         if (time_elapsed >= MAX_TRAINING_SECONDS) {
             printf("\n--- Training stopped: Maximum time limit of %.0f seconds reached after %d epochs. ---\n", MAX_TRAINING_SECONDS, epoch);
@@ -553,7 +552,7 @@ void train_nn() {
                 double sig_deriv = sigmoid_derivative(output[k]); 
                 delta_o[k] = error * COORD_WEIGHT * sig_deriv; 
             }
-            delta_o[k] = clip_gradient(delta_o[k], GRADIENT_CLIP_NORM); // ⬅️ CALL OK
+            delta_o[k] = clip_gradient(delta_o[k], GRADIENT_CLIP_NORM); 
         }
         
         // 2. Calculate Hidden Delta (Tanh)
@@ -577,7 +576,7 @@ void train_nn() {
         for (int i = 0; i < N_INPUT; i++) { 
             for (int j = 0; j < N_HIDDEN; j++) { 
                 double gradient = delta_h[j] * input[i];
-                w_fh[i][j] -= current_learning_rate * clip_gradient(gradient, GRADIENT_CLIP_NORM); // ⬅️ CALL OK
+                w_fh[i][j] -= current_learning_rate * clip_gradient(gradient, GRADIENT_CLIP_NORM); 
             } 
         }
         // 5. Update Hidden Biases
@@ -588,8 +587,11 @@ void train_nn() {
         // ERROR RATE REPORTING AND LR SCHEDULING
         if ((epoch % report_interval == 0) && epoch != 0) {
             double current_avg_loss = cumulative_loss_report / samples_processed_in_report;
-            update_learning_rate(current_avg_loss); // ⬅️ CALL OK
+            update_learning_rate(current_avg_loss); 
             
+            // Re-calculate time for reporting
+            time_elapsed = (double)(clock() - start_time) / CLOCKS_PER_SEC;
+
             printf("  Epoch %d/%d completed. Time elapsed: %.2f s. LR: %.6e. Avg Loss (per sample): %.4f\n", 
                    epoch, N_EPOCHS_TRAIN, time_elapsed, current_learning_rate, current_avg_loss);
             
@@ -906,7 +908,7 @@ int main(int argc, char **argv) {
     srand(time(NULL));
 
     // 1. Initialize, Generate Single Labyrinth
-    initialize_nn(); // ⬅️ CALL OK
+    initialize_nn(); 
     generate_single_labyrinth(); 
 
     // 2. Training (Time limited to 2 minutes)
