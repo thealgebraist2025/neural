@@ -1,5 +1,3 @@
-#define _XOPEN_SOURCE 
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -8,12 +6,12 @@
 #include <string.h> 
 
 // --- Configuration ---
-#define GRID_SIZE 32       
-#define D_SIZE (GRID_SIZE * GRID_SIZE) // 1024
 
-// **Network Configuration**
-#define N_INPUT D_SIZE         
-#define N_OUTPUT 10            
+// **Network Configuration (Text Compression / Lookup Map)**
+#define N_INPUT 256            // Index 0 to 255 (One-Hot Encoded)
+#define N_OUTPUT 512           // 64 characters * 8 bits/char
+#define SENTENCE_LENGTH 64     // Length of output sentence
+#define NUM_TRAINING_CASES 256 // Directly defined size of the dataset
 
 // **Hidden Layer Sizes**
 #define N_HIDDEN1 16 
@@ -22,16 +20,11 @@
 #define N_HIDDEN4 16 
 
 // **Training Parameters**
-#define NUM_IMAGES 500        
-#define TRAINING_TIME_LIMIT 180.0 // Resetting to 60s
-#define BATCH_SIZE 16          
+#define TRAINING_TIME_LIMIT 60.0 
+#define BATCH_SIZE 32          
 #define REPORT_FREQ 500             
 #define INITIAL_LEARNING_RATE 0.0001 
-#define CLASSIFICATION_WEIGHT 1.0  
-#define REGRESSION_WEIGHT 5.0      
-#define MIN_RADIUS 3           
-#define MAX_RADIUS 10.0    
-#define MAX_RECT_SIZE (GRID_SIZE - 2) 
+#define REGRESSION_WEIGHT 1.0      
 
 // **Adam Optimizer Parameters**
 #define BETA1 0.9
@@ -40,7 +33,7 @@
 
 // --- Global Data & Matrices (4 Layers) ---
 
-// Weights and Biases
+// Weights and Biases 
 double w_f1[N_INPUT][N_HIDDEN1];    
 double b_1[N_HIDDEN1]; 
 double w_12[N_HIDDEN1][N_HIDDEN2];  
@@ -68,20 +61,19 @@ double m_b_o[N_OUTPUT], v_b_o[N_OUTPUT];
 double input_mean = 0.0;
 double input_std = 1.0;
 
-// Data Storage 
-double single_images[NUM_IMAGES][D_SIZE]; 
-double target_properties[NUM_IMAGES][N_OUTPUT]; 
+// Data Storage (NUM_TRAINING_CASES used instead of NUM_IMAGES)
+char sentences[NUM_TRAINING_CASES][SENTENCE_LENGTH + 1]; 
+double target_properties[NUM_TRAINING_CASES][N_OUTPUT];  
+double single_images[NUM_TRAINING_CASES][N_INPUT];       
 
-// --- Profiling Setup (Unchanged) ---
+// --- Profiling Setup ---
 enum FuncName {
-    PROFILE_DRAW_CIRCLE, PROFILE_DRAW_RECTANGLE, PROFILE_DRAW_OTHER,
     PROFILE_GENERATE_DATA, PROFILE_LOAD_TRAIN_CASE,
     PROFILE_FORWARD_PASS, PROFILE_BACKPROP_UPDATE, 
     PROFILE_TRAIN_NN, PROFILE_TEST_NN,
     NUM_FUNCTIONS 
 };
 const char *func_names[NUM_FUNCTIONS] = {
-    "draw_filled_circle", "draw_rectangle", "draw_random_pixels",
     "generate_data", "load_train_case", 
     "forward_pass", "backprop_update", 
     "train_nn", "test_nn"
@@ -91,14 +83,7 @@ clock_t func_times[NUM_FUNCTIONS] = {0};
 #define START_PROFILE(func) clock_t start_##func = clock();
 #define END_PROFILE(func) func_times[func] += (clock() - start_##func);
 
-// --- Normalization Helpers (Unchanged) ---
-#define NORMALIZE_COORD(coord) ((double)(coord) / (GRID_SIZE - 1.0))
-#define DENORMALIZE_COORD(norm) ((int)round((norm) * (GRID_SIZE - 1.0)))
-#define NORMALIZE_RADIUS(radius) ((double)(radius) / MAX_RADIUS)
-#define DENORMALIZE_RADIUS(norm) ((int)round((norm) * MAX_RADIUS))
-#define NORMALIZE_RECT_C(c) ((double)(c) / (GRID_SIZE - 1.0))
-
-// --- Activation Functions (UPDATED TO ReLU) ---
+// --- Activation Functions (ReLU for hidden, Sigmoid for output) ---
 
 double poly_activation(double z_net) { 
     return (z_net > 0) ? z_net : 0.0; // ReLU
@@ -109,144 +94,146 @@ double poly_derivative(double z_net) {
 double sigmoid(double z) { return 1.0 / (1.0 + exp(-z)); }
 double sigmoid_derivative(double z, double output) { return output * (1.0 - output); }
 
-void softmax(const double input[N_OUTPUT], double output[3]) {
-    double max_val = input[0];
-    if (input[1] > max_val) max_val = input[1];
-    if (input[2] > max_val) max_val = input[2];
-    
-    double sum_exp = 0.0;
-    for (int k = 0; k < 3; k++) {
-        output[k] = exp(input[k] - max_val); 
-        sum_exp += output[k];
-    }
-    for (int k = 0; k < 3; k++) {
-        output[k] /= sum_exp;
-    }
-}
 
-// --- Drawing and Data Functions (Included for completeness/context) ---
+// --- Data Generation Functions ---
 
-void draw_random_pixels(double image[D_SIZE]) { 
-    START_PROFILE(PROFILE_DRAW_OTHER)
-    for (int i = 0; i < D_SIZE; i++) image[i] = 0.0; 
-    int num_on = D_SIZE * 0.20; 
-    for (int i = 0; i < num_on; i++) {
-        int idx = rand() % D_SIZE;
-        image[idx] = 1.0;
+void hardcode_sentences() {
+    // Generate 256 distinct 64-character strings based on tech/comp sci topics.
+    const char *base_text = 
+        "The quick brown fox jumps over the lazy dog. Programming is a process "
+        "that leads to the creation of executable computer programs. Computer "
+        "programs contain a sequence of instructions written in a programming "
+        "language. This language can be high-level or low-level. The sun rises "
+        "in the east and sets in the west. Neural networks are a set of "
+        "algorithms, modeled after the human brain, that are designed to "
+        "recognize patterns. They are used to make predictions or classifications. "
+        "The capital of France is Paris. The history of computing is fascinating "
+        "and spans centuries of innovation. The current year is 2025 and AI is "
+        "rapidly advancing. Compression tools encode information efficiently. "
+        "A multi-task network solves several problems simultaneously. "
+        "The deep architecture 4x16 implies four hidden layers of sixteen neurons."
+        "The gradient descent algorithm is used to minimize the loss function. "
+        "It updates the weights in the opposite direction of the gradient. "
+        "Adam and RMSprop are common adaptive learning rate optimizers."
+        "The universe is vast and contains many mysteries. Binary code is the "
+        "fundamental language of computers, consisting only of zeros and ones. "
+        "All data, including text and images, is ultimately represented in binary. "
+        "Floating point numbers are used to approximate real values. Backpropagation "
+        "is the core algorithm for training deep neural networks. It calculates "
+        "the gradient of the loss function with respect to the weights. "
+        "Optimization is the key to training large-scale models effectively. "
+        "The Hessian matrix contains second-order derivative information. "
+        "Eigenvalues describe the curvature of the loss landscape. "
+        "Second-order methods like Newton's method use the inverse Hessian. "
+        "Quasi-Newton methods approximate the inverse Hessian efficiently. "
+        "L-BFGS is a memory-efficient Quasi-Newton optimization algorithm. "
+        "Adaptive methods, like Adam, scale the learning rate per parameter. "
+        "This scaling mimics a diagonal approximation of the Hessian inverse. "
+        "The condition number of the Hessian dictates convergence speed. "
+        "Ill-conditioned landscapes lead to slow, zigzagging paths in training. "
+        "The complexity of computing the full Hessian inverse is prohibitive. "
+        "Transforming calculations to the 'determinant space' means diagonalization. "
+        "Diagonalization simplifies matrix multiplication to scalar scaling. "
+        "The Fast Fourier Transform (FFT) is an example of such a transformation. "
+        "It converts convolution in the time domain to multiplication in frequency. "
+        "Similarly, using eigenvalues simplifies the gradient step's geometry. "
+        "The eigen-space changes continuously as the network weights are updated. "
+        "Therefore, one cannot simply initialize parameters in the eigen-space. "
+        "Iteration and approximation are necessary to follow the changing space. "
+        "The weights must be updated frequently to match the local curvature. "
+        "The entire dataset must be processed efficiently for large models. "
+        "Batch processing helps to average the noise in the gradient estimates. "
+        "The learning rate hyperparameter controls the step size magnitude. "
+        "Weight initialization is crucial for avoiding vanishing gradients. "
+        "ReLU activation prevents saturation in deep network hidden layers. "
+        "Sigmoid is used for the output layer when predicting binary outcomes. "
+        "Binary Cross-Entropy or MSE are suitable loss functions for this task. "
+        "The output of this network is a compressed text representation. "
+        "A one-hot index input maps to a 64-character encoded sentence output. "
+        "The network acts as a lookup table with a compressed intermediate layer. "
+        "Training requires perfect reconstruction of all 256 unique sentences. "
+        "The small 16-neuron bottleneck forces the network to learn compression. "
+        "This is an example of an Autoencoder structure's encoding mechanism. "
+        "The information is forced through a highly dimensional reduction. "
+        "The challenge lies in mapping the index to the latent representation. "
+        "The decoder part then reconstructs the 512 binary output bits. "
+        "Accuracy is measured by checking if the entire 64-char string matches. "
+        "High accuracy is expected given the finite, fixed dataset size. "
+        "The system should eventually memorize the 256 input-output mappings. "
+        "This showcases the immense representational power of neural networks. "
+        "This sentence is unique and helps fill the 256 required slots. "
+        "Another unique sentence to ensure the training data is fully utilized. "
+        "The last few sentences are just fillers to reach the precise length. "
+        "This is the end of the base text for data generation purposes. ";
+
+
+    int base_len = strlen(base_text);
+
+    for (int i = 0; i < NUM_TRAINING_CASES; i++) {
+        // Find a unique 64-char substring 
+        int start = (i * 10 + i * i) % (base_len - SENTENCE_LENGTH);
+        strncpy(sentences[i], base_text + start, SENTENCE_LENGTH);
+        sentences[i][SENTENCE_LENGTH] = '\0';
+        
+        // Ensure sentences are unique by adding a varying character at the start
+        sentences[i][0] = (char)(33 + (i % 94)); // Printable ASCII: '!' to '~'
+        
+        // Ensure a null terminator is at the end of the 64-char block
+        sentences[i][SENTENCE_LENGTH] = '\0';
     }
-    END_PROFILE(PROFILE_DRAW_OTHER)
-}
-
-void draw_filled_circle(double image[D_SIZE], int cx, int cy, int r) {
-    START_PROFILE(PROFILE_DRAW_CIRCLE)
-    for (int i = 0; i < D_SIZE; i++) image[i] = 0.0; 
-    for (int y = 0; y < GRID_SIZE; y++) {
-        for (int x = 0; x < GRID_SIZE; x++) {
-            if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r) {
-                image[GRID_SIZE * y + x] = 1.0; 
-            }
-        }
-    }
-    END_PROFILE(PROFILE_DRAW_CIRCLE)
-}
-
-void draw_rectangle(double image[D_SIZE], int x1, int y1, int x2, int y2) {
-    START_PROFILE(PROFILE_DRAW_RECTANGLE)
-    for (int i = 0; i < D_SIZE; i++) image[i] = 0.0; 
-    int min_x = (x1 < x2) ? x1 : x2;
-    int max_x = (x1 > x2) ? x1 : x2;
-    int min_y = (y1 < y2) ? y1 : y2;
-    int max_y = (y1 > y2) ? y1 : y2;
-    
-    if (min_x < 0) min_x = 0; if (min_y < 0) min_y = 0;
-    if (max_x >= GRID_SIZE) max_x = GRID_SIZE - 1;
-    if (max_y >= GRID_SIZE) max_y = GRID_SIZE - 1;
-
-    for (int y = min_y; y <= max_y; y++) {
-        for (int x = min_x; x <= max_x; x++) {
-            image[GRID_SIZE * y + x] = 1.0; 
-        }
-    }
-    END_PROFILE(PROFILE_DRAW_RECTANGLE)
 }
 
 void generate_data() {
     START_PROFILE(PROFILE_GENERATE_DATA)
-    int n_per_class = NUM_IMAGES / 3;
+    hardcode_sentences();
     
-    double sum = 0.0;
-    double sum_sq = 0.0;
-    int total_pixels = 0;
-
-    for (int i = 0; i < NUM_IMAGES; i++) {
-        double *image = single_images[i];
-        double *target = target_properties[i];
+    // 1. Convert sentences to binary targets and generate one-hot inputs
+    for (int i = 0; i < NUM_TRAINING_CASES; i++) {
+        // Input: One-Hot vector (Index i)
+        for (int k = 0; k < N_INPUT; k++) single_images[i][k] = 0.0;
+        single_images[i][i] = 1.0;
         
-        for(int k = 0; k < N_OUTPUT; k++) target[k] = 0.0;
-
-        if (i < n_per_class) { // Circles
-            target[0] = 1.0; 
-            int min_center = MAX_RADIUS;
-            int max_center = GRID_SIZE - MAX_RADIUS - 1;
-            int cx = min_center + (rand() % (max_center - min_center + 1));
-            int cy = min_center + (rand() % (max_center - min_center + 1));
-            int r = (int)MIN_RADIUS + (rand() % ((int)MAX_RADIUS - (int)MIN_RADIUS + 1));
-            draw_filled_circle(image, cx, cy, r);
-            target[3] = NORMALIZE_COORD(cx); target[4] = NORMALIZE_COORD(cy); target[5] = NORMALIZE_RADIUS(r); 
-        } 
-        else if (i < 2 * n_per_class) { // Rectangles
-            target[1] = 1.0; 
-            int x1 = rand() % (GRID_SIZE - 2); int y1 = rand() % (GRID_SIZE - 2);
-            int x2 = x1 + (rand() % (MAX_RECT_SIZE - 1) + 2); 
-            int y2 = y1 + (rand() % (MAX_RECT_SIZE - 1) + 2);
-            if (x2 >= GRID_SIZE) x2 = GRID_SIZE - 1; if (y2 >= GRID_SIZE) y2 = GRID_SIZE - 1;
-            draw_rectangle(image, x1, y1, x2, y2);
-            for(int k = 3; k < 6; k++) target[k] = 0.0;
-            target[6] = NORMALIZE_RECT_C(x1); target[7] = NORMALIZE_RECT_C(y1); 
-            target[8] = NORMALIZE_RECT_C(x2); target[9] = NORMALIZE_RECT_C(y2); 
-        }
-        else { // Other
-            target[2] = 1.0; 
-            draw_random_pixels(image);
-        }
-
-        for (int j = 0; j < D_SIZE; j++) {
-            sum += image[j];
-            sum_sq += image[j] * image[j];
-            total_pixels++;
+        // Target: 64 chars * 8 bits = 512 bits
+        for (int c = 0; c < SENTENCE_LENGTH; c++) {
+            char ascii_char = sentences[i][c];
+            for (int b = 0; b < 8; b++) {
+                // Check the b-th bit (from MSB to LSB: b=0 is MSB, b=7 is LSB)
+                int bit_index = c * 8 + b;
+                if ((ascii_char >> (7 - b)) & 1) {
+                    target_properties[i][bit_index] = 1.0;
+                } else {
+                    target_properties[i][bit_index] = 0.0;
+                }
+            }
         }
     }
-    
-    input_mean = sum / total_pixels;
-    input_std = sqrt(sum_sq / total_pixels - input_mean * input_mean);
-    // Use the values reported in the prompt history
-    input_mean = 0.0000;
-    input_std = 1.0000;
-    // The normalization logic for individual images must use these values for consistency.
 
+    // Normalization Stats (Irrelevant for One-Hot Input)
+    input_mean = 0.0; 
+    input_std = 1.0; 
+    
     END_PROFILE(PROFILE_GENERATE_DATA)
 }
 
 void load_train_case(double input[N_INPUT], double target[N_OUTPUT]) {
     START_PROFILE(PROFILE_LOAD_TRAIN_CASE)
-    int img_idx = rand() % NUM_IMAGES;
+    int img_idx = rand() % NUM_TRAINING_CASES;
     
-    // Use reported mean/std for proper normalization
-    for (int i = 0; i < N_INPUT; i++) {
-        input[i] = (single_images[img_idx][i] - 0.0) / 1.0; 
-    }
+    // Load one-hot input (no normalization needed for 0/1)
+    memcpy(input, single_images[img_idx], N_INPUT * sizeof(double)); 
     
+    // Load 512-bit binary target
     memcpy(target, target_properties[img_idx], N_OUTPUT * sizeof(double)); 
     END_PROFILE(PROFILE_LOAD_TRAIN_CASE)
 }
 
 
-// --- NN Core Functions (Unchanged logic, uses new poly_activation) ---
+// --- NN Core Functions ---
 
 void initialize_nn() {
     #define XAVIER_LIMIT(Nin, Nout) sqrt(6.0 / ((double)(Nin) + (Nout)))
     
-    // Input (1024) -> H1 (16)
+    // Input (256) -> H1 (16)
     double limit_f1 = XAVIER_LIMIT(N_INPUT, N_HIDDEN1);
     for (int i = 0; i < N_INPUT; i++) for (int j = 0; j < N_HIDDEN1; j++) w_f1[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * limit_f1; 
     for (int j = 0; j < N_HIDDEN1; j++) b_1[j] = 0.0; 
@@ -254,7 +241,7 @@ void initialize_nn() {
     // H1 (16) -> H2 (16)
     double limit_12 = XAVIER_LIMIT(N_HIDDEN1, N_HIDDEN2);
     for (int i = 0; i < N_HIDDEN1; i++) for (int j = 0; j < N_HIDDEN2; j++) w_12[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * limit_12; 
-    for (int j = 0; j < N_HIDDEN2; j++) b_2[j] = 0.0; 
+    for (int j = 0; j < N_HIDDEN2; j++) b_2[j = 0.0; 
 
     // H2 (16) -> H3 (16)
     double limit_23 = XAVIER_LIMIT(N_HIDDEN2, N_HIDDEN3);
@@ -266,7 +253,7 @@ void initialize_nn() {
     for (int i = 0; i < N_HIDDEN3; i++) for (int j = 0; j < N_HIDDEN4; j++) w_34[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * limit_34; 
     for (int j = 0; j < N_HIDDEN4; j++) b_4[j] = 0.0; 
     
-    // H4 (16) -> Output (10)
+    // H4 (16) -> Output (512)
     double limit_4o = XAVIER_LIMIT(N_HIDDEN4, N_OUTPUT);
     for (int i = 0; i < N_HIDDEN4; i++) for (int j = 0; j < N_OUTPUT; j++) w_4o[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * limit_4o; 
     for (int k = 0; k < N_OUTPUT; k++) b_o[k] = 0.0;
@@ -291,12 +278,12 @@ void forward_pass(const double input[N_INPUT],
                   double output_net[N_OUTPUT], double output_prob[N_OUTPUT]) {
     START_PROFILE(PROFILE_FORWARD_PASS)
     
-    // --- Layer 1: Input to H1 (1024 -> 16) ---
+    // --- Layer 1: Input (256) to H1 (16) ---
     for (int j = 0; j < N_HIDDEN1; j++) {
         double h_net = b_1[j];
         for (int i = 0; i < N_INPUT; i++) h_net += input[i] * w_f1[i][j]; 
         h1_net[j] = h_net;
-        h1_out[j] = poly_activation(h_net);
+        h1_out[j] = poly_activation(h_net); // ReLU
     }
     
     // --- Layer 2: H1 to H2 (16 -> 16) ---
@@ -304,7 +291,7 @@ void forward_pass(const double input[N_INPUT],
         double h_net = b_2[j];
         for (int i = 0; i < N_HIDDEN1; i++) h_net += h1_out[i] * w_12[i][j]; 
         h2_net[j] = h_net;
-        h2_out[j] = poly_activation(h_net);
+        h2_out[j] = poly_activation(h_net); // ReLU
     }
 
     // --- Layer 3: H2 to H3 (16 -> 16) ---
@@ -312,7 +299,7 @@ void forward_pass(const double input[N_INPUT],
         double h_net = b_3[j];
         for (int i = 0; i < N_HIDDEN2; i++) h_net += h2_out[i] * w_23[i][j]; 
         h3_net[j] = h_net;
-        h3_out[j] = poly_activation(h_net);
+        h3_out[j] = poly_activation(h_net); // ReLU
     }
     
     // --- Layer 4: H3 to H4 (16 -> 16) ---
@@ -320,26 +307,21 @@ void forward_pass(const double input[N_INPUT],
         double h_net = b_4[j];
         for (int i = 0; i < N_HIDDEN3; i++) h_net += h3_out[i] * w_34[i][j]; 
         h4_net[j] = h_net;
-        h4_out[j] = poly_activation(h_net);
+        h4_out[j] = poly_activation(h_net); // ReLU
     }
 
-    // --- Output Layer: H4 to Output (16 -> 10) ---
+    // --- Output Layer: H4 to Output (16 -> 512) ---
     for (int k = 0; k < N_OUTPUT; k++) {
         double o_net = b_o[k]; 
         for (int j = 0; j < N_HIDDEN4; j++) o_net += h4_out[j] * w_4o[j][k]; 
         output_net[k] = o_net;
-    }
-    
-    // Final Activations
-    softmax(output_net, output_prob); // Classification head
-    for (int k = 3; k < N_OUTPUT; k++) {
-        output_prob[k] = sigmoid(output_net[k]); // Sigmoid for Regression Heads
+        // Final Activation: Sigmoid for 512 binary bits
+        output_prob[k] = sigmoid(o_net); 
     }
     END_PROFILE(PROFILE_FORWARD_PASS)
 }
 
-// --- Training Function (Unchanged logic, relies on new poly_derivative) ---
-
+// Adam Update Function
 void adam_update(double *param, double *grad, double *m, double *v, int t, double lr) {
     double beta1_t = pow(BETA1, t);
     double beta2_t = pow(BETA2, t);
@@ -377,7 +359,7 @@ void train_nn() {
     
     clock_t start_time = clock();
     
-    printf("--- TRAINING PHASE START (Adam, Deep Net: 4x16 with ReLU, Time Limit: %.1f s) ---\n", 
+    printf("--- TRAINING PHASE START (Adam, Deep Net: 4x16, Task: Text Compression, Time Limit: %.1f s) ---\n", 
            TRAINING_TIME_LIMIT);
     
     while ((double)(clock() - start_time) / CLOCKS_PER_SEC < TRAINING_TIME_LIMIT) {
@@ -396,51 +378,40 @@ void train_nn() {
             double delta_1[N_HIDDEN1], error_1[N_HIDDEN1];
             double total_sample_loss = 0.0;
 
-            // --- 1. Output Delta & Loss Calculation ---
-            
-            // Classification (0, 1, 2): Cross-Entropy
-            for (int k = 0; k < 3; k++) {
-                delta_o[k] = (output_prob[k] - target[k]) * CLASSIFICATION_WEIGHT; 
-                if (target[k] > 0.5) { 
-                    total_sample_loss += -log(output_prob[k] > 1e-12 ? output_prob[k] : 1e-12) * CLASSIFICATION_WEIGHT;
-                }
-            }
-            // Regression (3-9): L2 + Sigmoid derivative
-            for (int k = 3; k < N_OUTPUT; k++) {
-                if (target[k] != 0.0) { 
-                    delta_o[k] = (output_prob[k] - target[k]) * sigmoid_derivative(output_net[k], output_prob[k]) * REGRESSION_WEIGHT; 
-                    total_sample_loss += 0.5 * (output_prob[k] - target[k]) * (output_prob[k] - target[k]) * REGRESSION_WEIGHT;
-                } else {
-                    delta_o[k] = 0.0;
-                }
+            // --- 1. Output Delta & Loss Calculation (MSE/L2 Loss on 512 bits) ---
+            for (int k = 0; k < N_OUTPUT; k++) {
+                double error = output_prob[k] - target[k];
+                // Delta for MSE/L2 loss + Sigmoid derivative
+                delta_o[k] = error * sigmoid_derivative(output_net[k], output_prob[k]) * REGRESSION_WEIGHT; 
+                total_sample_loss += 0.5 * error * error * REGRESSION_WEIGHT;
             }
             
             // 2. Backpropagate Errors (Output -> H4)
             for (int j = 0; j < N_HIDDEN4; j++) {
                 error_4[j] = 0.0;
                 for (int k = 0; k < N_OUTPUT; k++) error_4[j] += delta_o[k] * w_4o[j][k];
-                delta_4[j] = error_4[j] * poly_derivative(h4_net[j]);
+                delta_4[j] = error_4[j] * poly_derivative(h4_net[j]); // ReLU derivative
             }
             
             // H4 -> H3
             for (int j = 0; j < N_HIDDEN3; j++) {
                 error_3[j] = 0.0;
-                for (int k = 0; k < N_HIDDEN4; k++) error_3[j] += delta_4[k] * w_34[j][k]; // Note: w_34 is N_H3 x N_H4
-                delta_3[j] = error_3[j] * poly_derivative(h3_net[j]);
+                for (int k = 0; k < N_HIDDEN4; k++) error_3[j] += delta_4[k] * w_34[j][k]; 
+                delta_3[j] = error_3[j] * poly_derivative(h3_net[j]); // ReLU derivative
             }
             
             // H3 -> H2
             for (int j = 0; j < N_HIDDEN2; j++) {
                 error_2[j] = 0.0;
-                for (int k = 0; k < N_HIDDEN3; k++) error_2[j] += delta_3[k] * w_23[j][k]; // Note: w_23 is N_H2 x N_H3
-                delta_2[j] = error_2[j] * poly_derivative(h2_net[j]);
+                for (int k = 0; k < N_HIDDEN3; k++) error_2[j] += delta_3[k] * w_23[j][k]; 
+                delta_2[j] = error_2[j] * poly_derivative(h2_net[j]); // ReLU derivative
             }
 
             // H2 -> H1
             for (int j = 0; j < N_HIDDEN1; j++) {
                 error_1[j] = 0.0;
-                for (int k = 0; k < N_HIDDEN2; k++) error_1[j] += delta_2[k] * w_12[j][k]; // Note: w_12 is N_H1 x N_H2
-                delta_1[j] = error_1[j] * poly_derivative(h1_net[j]);
+                for (int k = 0; k < N_HIDDEN2; k++) error_1[j] += delta_2[k] * w_12[j][k]; 
+                delta_1[j] = error_1[j] * poly_derivative(h1_net[j]); // ReLU derivative
             }
 
             // 3. Accumulate Gradients (dLoss/dW = delta * input)
@@ -469,7 +440,7 @@ void train_nn() {
                 for (int i = 0; i < N_HIDDEN1; i++) grad_w_12_acc[i][j] += delta_2[j] * h1_out[i];
             }
             
-            // Input -> H1
+            // Input (256) -> H1 (16)
             for (int j = 0; j < N_HIDDEN1; j++) {
                 grad_b_1_acc[j] += delta_1[j];
                 for (int i = 0; i < N_INPUT; i++) grad_w_f1_acc[i][j] += delta_1[j] * input[i];
@@ -482,7 +453,7 @@ void train_nn() {
         } // END BATCH LOOP
 
         // --- ADAM WEIGHT UPDATE ---
-        t++; // Adam timestep
+        t++; 
         double inv_batch_size = 1.0 / BATCH_SIZE;
         
         // H4 -> Output
@@ -560,126 +531,70 @@ void train_nn() {
     END_PROFILE(PROFILE_TRAIN_NN)
 }
 
-// --- Testing and Profiling Functions (Unchanged) ---
+// Helper: Convert 512 probability bits to 64 ASCII characters
+void convert_binary_to_ascii(const double binary_prob[N_OUTPUT], char output_text[SENTENCE_LENGTH + 1]) {
+    for (int c = 0; c < SENTENCE_LENGTH; c++) {
+        unsigned char ascii_char = 0;
+        for (int b = 0; b < 8; b++) {
+            int bit_index = c * 8 + b;
+            // Round the probability (0.5 threshold)
+            int bit = (binary_prob[bit_index] > 0.5) ? 1 : 0;
+            // Set the b-th bit (MSB first)
+            ascii_char |= (bit << (7 - b));
+        }
+        output_text[c] = (char)ascii_char;
+    }
+    output_text[SENTENCE_LENGTH] = '\0';
+}
 
-void test_nn(int n_test_per_class) {
+void test_nn(int n_test_total) {
     START_PROFILE(PROFILE_TEST_NN)
-    double input[N_INPUT], target[N_OUTPUT];
-    double output_net[N_OUTPUT], output_prob[N_OUTPUT]; 
+    double input[N_INPUT], output_net[N_OUTPUT], output_prob[N_OUTPUT]; 
 
-    int correct_classification = 0;
-    int total_circle_tests = 0;
-    int accurate_circle_reg = 0;
-    int total_rect_tests = 0;
-    int accurate_rect_reg = 0;
+    int correct_sentences = 0;
     
-    int n_test_total = n_test_per_class * 3;
-    printf("\n--- TESTING PHASE START (%d cases total: %d per class) ---\n", n_test_total, n_test_per_class);
+    printf("\n--- TESTING PHASE START (%d cases total) ---\n", n_test_total);
 
     for (int i = 0; i < n_test_total; i++) {
         
-        int class_id = i % 3; 
-        double test_target[N_OUTPUT];
+        int index = rand() % NUM_TRAINING_CASES;
         
-        if (class_id == 0) { 
-            total_circle_tests++;
-            test_target[0] = 1.0; test_target[1] = 0.0; test_target[2] = 0.0;
-            int min_center = MAX_RADIUS; int max_center = GRID_SIZE - MAX_RADIUS - 1;
-            int cx = min_center + (rand() % (max_center - min_center + 1));
-            int cy = min_center + (rand() % (max_center - min_center + 1));
-            int r = (int)MIN_RADIUS + (rand() % ((int)MAX_RADIUS - (int)MIN_RADIUS + 1));
-            draw_filled_circle(input, cx, cy, r);
-            test_target[3] = NORMALIZE_COORD(cx); test_target[4] = NORMALIZE_COORD(cy); test_target[5] = NORMALIZE_RADIUS(r); 
-            for(int k = 6; k < N_OUTPUT; k++) test_target[k] = 0.0;
-        } else if (class_id == 1) { 
-            total_rect_tests++;
-            test_target[0] = 0.0; test_target[1] = 1.0; test_target[2] = 0.0;
-            int x1 = rand() % (GRID_SIZE - 2); int y1 = rand() % (GRID_SIZE - 2);
-            int x2 = x1 + (rand() % (MAX_RECT_SIZE - 1) + 2); int y2 = y1 + (rand() % (MAX_RECT_SIZE - 1) + 2);
-            if (x2 >= GRID_SIZE) x2 = GRID_SIZE - 1; if (y2 >= GRID_SIZE) y2 = GRID_SIZE - 1;
-            draw_rectangle(input, x1, y1, x2, y2);
-            for(int k = 3; k < 6; k++) test_target[k] = 0.0;
-            test_target[6] = NORMALIZE_RECT_C(x1); test_target[7] = NORMALIZE_RECT_C(y1); 
-            test_target[8] = NORMALIZE_RECT_C(x2); test_target[9] = NORMALIZE_RECT_C(y2);
-        } else { 
-            test_target[0] = 0.0; test_target[1] = 0.0; test_target[2] = 1.0;
-            draw_random_pixels(input);
-            for(int k = 3; k < N_OUTPUT; k++) test_target[k] = 0.0;
-        }
-
-        // Use reported mean/std for proper normalization
-        for (int k = 0; k < N_INPUT; k++) {
-            input[k] = (input[k] - 0.0) / 1.0;
-        }
+        // Input: One-Hot vector
+        for (int k = 0; k < N_INPUT; k++) input[k] = 0.0;
+        input[index] = 1.0;
         
         forward_pass(input, output_net, output_prob);
         
-        // Classification Check
-        double max_prob = -1.0; int pred_class = -1;
-        for (int k = 0; k < 3; k++) {
-            if (output_prob[k] > max_prob) {
-                max_prob = output_prob[k]; pred_class = k;
-            }
-        }
-        if (pred_class == class_id) {
-            correct_classification++;
-        }
+        // 1. Decode Prediction
+        char predicted_sentence[SENTENCE_LENGTH + 1];
+        convert_binary_to_ascii(output_prob, predicted_sentence);
         
-        // Regression Check
-        double error_threshold = 0.05;
-
-        if (class_id == 0) { 
-            int is_accurate = 1;
-            for (int k = 3; k < 6; k++) {
-                if (fabs(output_prob[k] - test_target[k]) > error_threshold) { 
-                    is_accurate = 0; break;
-                }
-            }
-            if (is_accurate) accurate_circle_reg++;
-        } else if (class_id == 1) { 
-            int is_accurate = 1;
-            for (int k = 6; k < 10; k++) {
-                if (fabs(output_prob[k] - test_target[k]) > error_threshold) { 
-                    is_accurate = 0; break;
-                }
-            }
-            if (is_accurate) accurate_rect_reg++;
+        // 2. Compare to Target
+        if (strcmp(predicted_sentence, sentences[index]) == 0) {
+            correct_sentences++;
         }
     }
     
-    printf("\nTEST SUMMARY:\n");
+    printf("\nTEST SUMMARY (Text Compression / Lookup):\n");
     printf("Total Test Cases: %d\n", n_test_total);
-    printf("Classification Accuracy: %d / %d (%.2f%%)\n", 
-           correct_classification, n_test_total, (double)correct_classification / n_test_total * 100.0);
-    printf("--------------------------------------------------\n");
-    printf("Circle Regression (Class 0 - %d cases):\n", total_circle_tests);
-    printf("  Accurate (5%% norm. error): %d / %d (%.2f%%)\n", 
-           accurate_circle_reg, total_circle_tests, (double)accurate_circle_reg / total_circle_tests * 100.0);
-    printf("Rectangle Regression (Class 1 - %d cases):\n", total_rect_tests);
-    printf("  Accurate (5%% norm. error): %d / %d (%.2f%%)\n", 
-           accurate_rect_reg, total_rect_tests, (double)accurate_rect_reg / total_rect_tests * 100.0);
+    printf("Full Sentence Accuracy: %d / %d (%.2f%%)\n", 
+           correct_sentences, n_test_total, (double)correct_sentences / n_test_total * 100.0);
     printf("--------------------------------------------------\n");
 
-    // Print a sample visualization (Circle)
-    printf("\nVISUALIZATION: Sample Circle Prediction\n");
-    int cx = GRID_SIZE / 2, cy = GRID_SIZE / 2, r = (int)MAX_RADIUS;
+    // Print a sample visualization
+    printf("\nVISUALIZATION: Sample Text Reconstruction\n");
+    int sample_index = 42; 
     
-    draw_filled_circle(input, cx, cy, r);
-    for (int k = 0; k < N_INPUT; k++) input[k] = (input[k] - 0.0) / 1.0;
-    
+    for (int k = 0; k < N_INPUT; k++) input[k] = 0.0;
+    input[sample_index] = 1.0;
     forward_pass(input, output_net, output_prob);
     
-    double sample_max_prob = -1.0; int sample_pred_class = -1;
-    for (int k = 0; k < 3; k++) {
-        if (output_prob[k] > sample_max_prob) {
-            sample_max_prob = output_prob[k]; sample_pred_class = k;
-        }
-    }
-    
-    printf("  Target: (CX, CY, R) = (%d, %d, %d)\n", cx, cy, r);
-    printf("  Prediction: Class %d (Prob: %.2f%%) | Circle: (CX, CY, R) = (%d, %d, %d)\n",
-           sample_pred_class, sample_max_prob * 100.0,
-           DENORMALIZE_COORD(output_prob[3]), DENORMALIZE_COORD(output_prob[4]), DENORMALIZE_RADIUS(output_prob[5]));
+    char predicted_sentence[SENTENCE_LENGTH + 1];
+    convert_binary_to_ascii(output_prob, predicted_sentence);
+
+    printf("  Input Index: %d\n", sample_index);
+    printf("  Target Sentence:   '%s'\n", sentences[sample_index]);
+    printf("  Predicted Sentence:'%s'\n", predicted_sentence);
     
     END_PROFILE(PROFILE_TEST_NN)
 }
@@ -707,17 +622,17 @@ void print_profiling_stats() {
 int main() {
     srand((unsigned int)time(NULL));
 
-    printf("--- Multi-Task Shape Recognition NN (Deep Architecture: 4x16 with ReLU) ---\n");
+    printf("--- Text Compression/Lookup NN (Deep Architecture: 4x16 FFN) ---\n");
     
     initialize_nn();
     generate_data();
-    printf("Data setup complete. %d training images generated. Input Mean: %.4f, Std: %.4f\n", NUM_IMAGES, 0.0, 1.0);
+    printf("Data setup complete. %d training text cases generated (256-in, 512-out). Input Mean: %.4f, Std: %.4f\n", NUM_TRAINING_CASES, input_mean, input_std);
 
     // 2. Train Network
     train_nn();
 
-    // 3. Test Network (100 cases per class = 300 total)
-    test_nn(100);
+    // 3. Test Network (Test on all 256 generated cases)
+    test_nn(NUM_TRAINING_CASES);
 
     // 4. Summarize Profiling
     print_profiling_stats();
