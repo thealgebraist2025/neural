@@ -8,19 +8,19 @@
 // --- Configuration ---
 
 // **Network Configuration (Text Compression / Lookup Map)**
-#define N_INPUT 128            // Index 0 to 255 (One-Hot Encoded)
+#define N_INPUT 256            // Index 0 to 255 (One-Hot Encoded)
 #define N_OUTPUT 512           // 64 characters * 8 bits/char
 #define SENTENCE_LENGTH 64     // Length of output sentence
 #define NUM_TRAINING_CASES 128 // Directly defined size of the dataset
 
 // **Hidden Layer Sizes (Single Layer Architecture)**
-#define N_HIDDEN1 128 
+#define N_HIDDEN1 64 
 // N_HIDDEN2, N_HIDDEN3, N_HIDDEN4 are removed.
 
 // **Training Parameters**
 #define TRAINING_TIME_LIMIT 160.0 
-#define BATCH_SIZE 4          
-#define REPORT_FREQ 500             
+#define BATCH_SIZE 2          
+#define REPORT_FREQ 50             
 #define INITIAL_LEARNING_RATE 0.001 
 #define REGRESSION_WEIGHT 1.0      
 
