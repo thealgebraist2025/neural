@@ -25,9 +25,9 @@
 #define N_HIDDEN 64       
 #define N_SAMPLES_FIXED 25 
 #define N_TEST_CASES_PER_LABYRINTH 10 
-#define INITIAL_LEARNING_RATE 0.0005 // ⬅️ UPDATED
+#define INITIAL_LEARNING_RATE 0.0005     // ⬅️ UPDATED: Lowered LR for stability
 #define N_EPOCHS_TRAIN 800000 
-#define COORD_WEIGHT 1.0             // ⬅️ UPDATED
+#define COORD_WEIGHT 1.0                 // ⬅️ UPDATED: Reduced from 10.0 to 1.0
 #define CLASSIFICATION_WEIGHT 1.0 
 #define MAX_STEPS 8.0 
 #define MAX_TRAINING_SECONDS 180.0 
@@ -46,8 +46,8 @@
 // --- Dynamic Globals ---
 int N_SAMPLES = N_SAMPLES_FIXED; 
 int N_EPOCHS = N_EPOCHS_TRAIN; 
-double current_learning_rate = INITIAL_LEARNING_RATE; // ⬅️ NEW Dynamic LR variable
-double last_avg_loss = DBL_MAX;                       // ⬅️ NEW for LR scheduling
+double current_learning_rate = INITIAL_LEARNING_RATE; // ⬅️ Dynamic LR variable
+double last_avg_loss = DBL_MAX;                       // ⬅️ Used for LR scheduling
  
 // Global Data & Matrices 
 double fixed_labyrinths[N_SAMPLES_FIXED][D_SIZE]; 
@@ -475,8 +475,8 @@ double clip_gradient(double grad, double max_norm) {
 
 // ⬅️ NEW: Dynamic Learning Rate Scheduler
 void update_learning_rate(double current_avg_loss) {
-    if (current_avg_loss > last_avg_loss * 1.01 || isnan(current_avg_loss)) {
-        // Loss increased or became NaN/Inf, apply aggressive decay
+    if (isnan(current_avg_loss) || current_avg_loss > last_avg_loss * 1.01) {
+        // Loss exploded or increased significantly, apply aggressive decay
         current_learning_rate *= 0.5;
         printf("\n!!! Learning Rate DECAYED aggressively to %.6f (Loss explosion/increase).\n", current_learning_rate);
     } else if (current_avg_loss > last_avg_loss * 0.99) {
@@ -485,7 +485,10 @@ void update_learning_rate(double current_avg_loss) {
     } 
     // If loss decreased significantly, keep the current rate.
     
-    last_avg_loss = current_avg_loss;
+    // Ensure last_avg_loss is updated only if it's not a catastrophic failure
+    if (!isnan(current_avg_loss) && current_avg_loss < DBL_MAX) {
+        last_avg_loss = current_avg_loss;
+    }
 }
 
 
@@ -495,7 +498,8 @@ void train_nn() {
     
     clock_t start_time = clock();
     double time_elapsed;
-    int report_interval = N_EPOCHS_TRAIN / 100; // Increased reporting frequency for better LR control
+    // Increased reporting frequency for better LR control
+    int report_interval = N_EPOCHS_TRAIN / 100; 
     if (report_interval == 0) report_interval = 1;
 
     double input[N_INPUT];
