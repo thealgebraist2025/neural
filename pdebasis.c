@@ -9,30 +9,34 @@
 
 // --- Configuration ---
 #define N_SAMPLES_MAX 52000 
-#define GRID_SIZE 32       
-#define D_SIZE (GRID_SIZE * GRID_SIZE) // 1024
-#define FEATURE_SIZE (GRID_SIZE / 4) * (GRID_SIZE / 4) // 64 (Simplified CNN output)
-#define N_INPUT FEATURE_SIZE // 64
+// **CHANGE 1: New Grid Size**
+#define GRID_SIZE 16       
+#define D_SIZE (GRID_SIZE * GRID_SIZE) // 256
+
+// **CHANGE 2: Vanilla NN Input is the whole image**
+#define N_INPUT D_SIZE // 256
 #define NUM_SEGMENTS 7
 
 // Output Structure: [Start X/Y] + 7 * [Direction(4) + Steps(1)] + [Exit X/Y]
-// 2 + 7 * (4 + 1) + 2 = 39
-#define N_DIRECTION_CLASSES 4 // UP, DOWN, LEFT, RIGHT
-#define N_OUTPUT (2 + (NUM_SEGMENTS * N_DIRECTION_CLASSES) + (NUM_SEGMENTS * 1) + 2) // 2 + 28 + 7 + 2 = 39 
+// 2 + 7 * (4 + 1) + 2 = 39 (Same as before)
+#define N_DIRECTION_CLASSES 4 
+#define N_OUTPUT (2 + (NUM_SEGMENTS * N_DIRECTION_CLASSES) + (NUM_SEGMENTS * 1) + 2) 
 
 #define N_HIDDEN 128       
 #define N_SAMPLES_TRAIN 5000 
 #define N_SAMPLES_TEST 100 
 
 // Neural Network Parameters
-#define LEARNING_RATE 0.0002 
+// **ADJUSTED LEARNING RATE**
+#define LEARNING_RATE 0.0005 
 #define N_EPOCHS_TRAIN 800000 
 #define COORD_WEIGHT 10.0      // Weight for coordinates (Start/Exit) and Steps
 #define CLASSIFICATION_WEIGHT 1.0 // Weight for direction classification
-#define MAX_STEPS 10.0 // Max steps in one instruction segment for normalization
-#define MAX_TRAINING_SECONDS 120.0 // 2 minutes
+// Max steps must be relative to the new GRID_SIZE
+#define MAX_STEPS 8.0 // Max steps in one instruction segment (roughly 16/2)
+#define MAX_TRAINING_SECONDS 300.0 // 5 minutes
 
-// Direction Encoding (Used for target index in classification, not regression value)
+// Direction Encoding
 #define DIR_UP_IDX 0
 #define DIR_DOWN_IDX 1
 #define DIR_LEFT_IDX 2
@@ -43,12 +47,12 @@ int N_SAMPLES = N_SAMPLES_TRAIN;
 int N_EPOCHS = N_EPOCHS_TRAIN; 
  
 // Global Data & Matrices 
-double dataset[N_SAMPLES_MAX][D_SIZE]; // Store raw image data
-double targets[N_SAMPLES_MAX][N_OUTPUT]; // Store complex target data
+double dataset[N_SAMPLES_MAX][D_SIZE]; 
+double targets[N_SAMPLES_MAX][N_OUTPUT]; 
 
 // Neural Network Weights and Biases 
-double w_if[D_SIZE][FEATURE_SIZE]; // Input (1024) to Feature (64) - Simplified
-double w_fh[N_INPUT][N_HIDDEN];    // Feature (64) to Hidden (128)
+// **w_if matrix (Input-to-Feature) is removed/merged into w_fh for vanilla NN**
+double w_fh[N_INPUT][N_HIDDEN];    // Input (256) to Hidden (128)
 double b_h[N_HIDDEN]; 
 double w_ho[N_HIDDEN][N_OUTPUT];   // Hidden (128) to Output (39)
 double b_o[N_OUTPUT];
@@ -76,12 +80,13 @@ void load_train_set();
 void load_test_set();
 
 void initialize_nn();
-void extract_features(const double input[D_SIZE], double feature_out[N_INPUT]);
-void train_nn(const double input_set[N_SAMPLES_MAX][D_SIZE]);
+void train_nn(const double input_set[N_SAMPLES_MAX][D_SIZE], const double target_set[N_SAMPLES_MAX][N_OUTPUT]);
+double calculate_loss(const double output[N_OUTPUT], const double target[N_OUTPUT]);
 double relu(double x);
 void softmax(double vector[N_DIRECTION_CLASSES]);
-void forward_pass(const double input[D_SIZE], double feature_out[N_INPUT], double hidden_out[N_HIDDEN], double output[N_OUTPUT]);
-void backward_pass_and_update(const double input[D_SIZE], const double feature_out[N_INPUT], const double hidden_out[N_HIDDEN], const double output[N_OUTPUT], const double target[N_OUTPUT]);
+// **FEATURE EXTRACTION IS REMOVED**
+void forward_pass(const double input[D_SIZE], double hidden_out[N_HIDDEN], double output[N_OUTPUT]);
+void backward_pass_and_update(const double input[D_SIZE], const double hidden_out[N_HIDDEN], const double output[N_OUTPUT], const double target[N_OUTPUT]);
 
 void test_labyrinth_path(int n_set_size, const double input_set[][D_SIZE], const double target_set[][N_OUTPUT]);
 
@@ -108,57 +113,39 @@ void draw_line(double image[D_SIZE], int x1, int y1, int x2, int y2, double val)
     }
 }
 
-// Generates a random, non-intersecting, mostly horizontal/vertical path
-// and sets the target data.
 void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]) {
     for (int i = 0; i < D_SIZE; i++) { image[i] = 0.0; } 
     
-    // Path value is 1.0 for easier normalization (0.0 wall, 1.0 path)
     double path_val = 1.0; 
 
-    // 1. Define 7 random intermediate points inside the image
-    int target_points[NUM_SEGMENTS + 1][2]; // [x, y]
+    int target_points[NUM_SEGMENTS + 1][2]; 
 
     // Start point (x>2, x<GRID_SIZE-3, same for y)
-    // Ensures start is well inside the grid
     target_points[0][0] = 3 + (rand() % (GRID_SIZE - 6));
     target_points[0][1] = 3 + (rand() % (GRID_SIZE - 6));
     
-    // Intermediate points (must be internal)
+    // Intermediate points (well inside the grid)
     for(int i = 1; i < NUM_SEGMENTS; i++) {
-        // Points are confined well inside the grid (e.g., 3 to 28)
         target_points[i][0] = 3 + (rand() % (GRID_SIZE - 6));
         target_points[i][1] = 3 + (rand() % (GRID_SIZE - 6));
     }
     
-    // Last point: Exit on boundary (x=0, x=31, y=0, or y=31)
-    int side = rand() % 4; // 0:Top, 1:Bottom, 2:Left, 3:Right
-    if (side == 0) { // Top (y=0)
-        target_points[NUM_SEGMENTS][0] = 1 + (rand() % (GRID_SIZE - 2));
-        target_points[NUM_SEGMENTS][1] = 0;
-    } else if (side == 1) { // Bottom (y=31)
-        target_points[NUM_SEGMENTS][0] = 1 + (rand() % (GRID_SIZE - 2));
-        target_points[NUM_SEGMENTS][1] = GRID_SIZE - 1;
-    } else if (side == 2) { // Left (x=0)
-        target_points[NUM_SEGMENTS][0] = 0;
-        target_points[NUM_SEGMENTS][1] = 1 + (rand() % (GRID_SIZE - 2));
-    } else { // Right (x=31)
-        target_points[NUM_SEGMENTS][0] = GRID_SIZE - 1;
-        target_points[NUM_SEGMENTS][1] = 1 + (rand() % (GRID_SIZE - 2));
-    }
+    // Last point: Exit on boundary
+    int side = rand() % 4; 
+    if (side == 0) { target_points[NUM_SEGMENTS][0] = 1 + (rand() % (GRID_SIZE - 2)); target_points[NUM_SEGMENTS][1] = 0; }
+    else if (side == 1) { target_points[NUM_SEGMENTS][0] = 1 + (rand() % (GRID_SIZE - 2)); target_points[NUM_SEGMENTS][1] = GRID_SIZE - 1; }
+    else if (side == 2) { target_points[NUM_SEGMENTS][0] = 0; target_points[NUM_SEGMENTS][1] = 1 + (rand() % (GRID_SIZE - 2)); }
+    else { target_points[NUM_SEGMENTS][0] = GRID_SIZE - 1; target_points[NUM_SEGMENTS][1] = 1 + (rand() % (GRID_SIZE - 2)); }
 
-    // 2. Generate non-intersecting path segments (Horizontal/Vertical moves only)
     int current_x = target_points[0][0];
     int current_y = target_points[0][1];
     
-    // Instructions (Classification: 4 neurons for Direction, Regression: 1 for Steps)
     int current_segment = 0;
     
     for (int i = 0; i < NUM_SEGMENTS; i++) {
         int next_x = target_points[i+1][0];
         int next_y = target_points[i+1][1];
         
-        // Randomly choose to move H or V first
         int move_order[2] = {0, 1}; 
         if (rand() % 2) { move_order[0] = 1; move_order[1] = 0; }
         
@@ -168,37 +155,34 @@ void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]) {
                 goto end_instruction_generation;
             }
 
-            int dir_idx = -1; // -1 means no instruction this move
+            int dir_idx = -1; 
             int steps = 0;
 
             if (move_order[m] == 0) { // Horizontal move
                 int dx = next_x - current_x;
                 if (dx != 0) {
-                    // Draw line from current to next X coordinate
                     draw_line(image, current_x, current_y, next_x, current_y, path_val);
                     dir_idx = (dx > 0) ? DIR_RIGHT_IDX : DIR_LEFT_IDX;
                     steps = abs(dx);
-                    current_x = next_x; // Update current position
+                    current_x = next_x; 
                 }
             } else { // Vertical move
                 int dy = next_y - current_y;
                 if (dy != 0) {
-                    // Draw line from current to next Y coordinate
                     draw_line(image, current_x, current_y, current_x, next_y, path_val);
                     dir_idx = (dy > 0) ? DIR_DOWN_IDX : DIR_UP_IDX;
                     steps = abs(dy);
-                    current_y = next_y; // Update current position
+                    current_y = next_y; 
                 }
             }
             
-            // Store valid instruction
             if (dir_idx != -1) {
                 // Direction (Classification)
                 int dir_start_idx = GET_DIR_OUTPUT_START_IDX(current_segment);
                 for(int k = 0; k < N_DIRECTION_CLASSES; k++) {
                     target_data[dir_start_idx + k] = 0.0;
                 }
-                target_data[dir_start_idx + dir_idx] = 1.0; // One-hot encoding
+                target_data[dir_start_idx + dir_idx] = 1.0; 
                 
                 // Steps (Regression)
                 int steps_idx = GET_STEPS_OUTPUT_IDX(current_segment);
@@ -211,22 +195,18 @@ void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]) {
 
 end_instruction_generation: 
 
-    // 3. Set Target Data
-    
-    // Start X/Y
+    // Set Target Data
     target_data[0] = NORMALIZE_COORD(target_points[0][0]);
     target_data[1] = NORMALIZE_COORD(target_points[0][1]);
     
     // Instructions: Pad remaining segments with 'no-op' (UP/0 steps)
     while (current_segment < NUM_SEGMENTS) {
-        // Direction: UP (first index in one-hot)
         int dir_start_idx = GET_DIR_OUTPUT_START_IDX(current_segment);
         for(int k = 0; k < N_DIRECTION_CLASSES; k++) {
             target_data[dir_start_idx + k] = 0.0;
         }
         target_data[dir_start_idx + DIR_UP_IDX] = 1.0; 
 
-        // Steps: 0.0
         int steps_idx = GET_STEPS_OUTPUT_IDX(current_segment);
         target_data[steps_idx] = 0.0;
         
@@ -245,7 +225,7 @@ void load_data(int n_samples, double set[][D_SIZE], double target_set[][N_OUTPUT
     }
 }
 void load_train_set() {
-    printf("Generating TRAINING dataset (%d labyrinths). N_OUTPUT=%d (Classification + Regression).\n", N_SAMPLES_TRAIN, N_OUTPUT);
+    printf("Generating TRAINING dataset (%d labyrinths of size %dx%d). N_OUTPUT=%d.\n", N_SAMPLES_TRAIN, GRID_SIZE, GRID_SIZE, N_OUTPUT);
     load_data(N_SAMPLES_TRAIN, dataset, targets);
     N_SAMPLES = N_SAMPLES_TRAIN;
 }
@@ -260,14 +240,13 @@ void load_test_set() {
 // -----------------------------------------------------------------
 
 void initialize_nn() {
-    // Initialize Input-to-Feature (Skipped, using Feature Extraction)
-    // Initialize Feature-to-Hidden
+    // Initialize Input(256)-to-Hidden(128)
     for (int i = 0; i < N_INPUT; i++) {
         for (int j = 0; j < N_HIDDEN; j++) {
-            w_fh[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * sqrt(2.0 / N_INPUT); // Kaiming/He initialization for ReLU
+            w_fh[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * sqrt(2.0 / N_INPUT); // He initialization
         }
     }
-    // Initialize Hidden-to-Output
+    // Initialize Hidden(128)-to-Output(39)
     for (int j = 0; j < N_HIDDEN; j++) {
         b_h[j] = 0.0;
         for (int k = 0; k < N_OUTPUT; k++) {
@@ -279,29 +258,43 @@ void initialize_nn() {
     }
 }
 
-// Simplified Feature Extraction (32x32 -> 8x8 by 4x4 Mean Pooling)
+// **REMOVED: Feature Extraction is no longer used for Vanilla NN**
+/*
 void extract_features(const double input[D_SIZE], double feature_out[N_INPUT]) {
-    int pool_size = 4;
-    int feature_idx = 0;
-    for (int y = 0; y < GRID_SIZE; y += pool_size) {
-        for (int x = 0; x < GRID_SIZE; x += pool_size) {
-            double sum = 0.0;
-            for (int py = 0; py < pool_size; py++) {
-                for (int px = 0; px < pool_size; px++) {
-                    sum += input[GRID_SIZE * (y + py) + (x + px)];
-                }
+    // ...
+}
+*/
+
+double calculate_loss(const double output[N_OUTPUT], const double target[N_OUTPUT]) {
+    double total_loss = 0.0;
+    
+    for (int k = 0; k < N_OUTPUT; k++) {
+        if (k >= 2 && k < (2 + NUM_SEGMENTS * N_DIRECTION_CLASSES)) {
+            // Direction Classification: Cross-Entropy Loss
+            if (target[k] > 0.5) { // Only calculate for the correct class (target is 1)
+                total_loss += -log(output[k] + 1e-9) * CLASSIFICATION_WEIGHT;
             }
-            // Mean pooling for feature output
-            feature_out[feature_idx++] = sum / (pool_size * pool_size);
+        } else { 
+            // Regression (Coords/Steps): Mean Squared Error Loss
+            double error = output[k] - target[k];
+            total_loss += error * error * COORD_WEIGHT; 
         }
     }
+    // Note: This isn't a true average, but an overall weighted loss value for monitoring
+    return total_loss; 
 }
 
-void train_nn(const double input_set[N_SAMPLES_MAX][D_SIZE]) {
-    printf("Training on %d features (simplified CNN) with %d-output (Cls + Reg).\n", N_INPUT, N_OUTPUT);
+
+void train_nn(const double input_set[N_SAMPLES_MAX][D_SIZE], const double target_set[N_SAMPLES_MAX][N_OUTPUT]) {
+    printf("Training Vanilla NN with %d inputs and %d hidden neurons.\n", N_INPUT, N_HIDDEN);
     
     clock_t start_time = clock();
     double time_elapsed;
+    int samples_per_report = N_SAMPLES_TRAIN; 
+    
+    // Determine report interval (e.g., every 10% of epochs)
+    int report_interval = N_EPOCHS_TRAIN / 10;
+    if (report_interval == 0) report_interval = 1;
 
     for (int epoch = 0; epoch < N_EPOCHS; epoch++) {
         
@@ -313,15 +306,28 @@ void train_nn(const double input_set[N_SAMPLES_MAX][D_SIZE]) {
 
         int sample_index = rand() % N_SAMPLES;
         
-        double feature_out[N_INPUT];
         double hidden_out[N_HIDDEN];
         double output[N_OUTPUT];
         
-        forward_pass(input_set[sample_index], feature_out, hidden_out, output);
-        backward_pass_and_update(input_set[sample_index], feature_out, hidden_out, output, targets[sample_index]);
+        // **FEATURE EXTRACTION STEP REMOVED**
+        forward_pass(input_set[sample_index], hidden_out, output);
+        backward_pass_and_update(input_set[sample_index], hidden_out, output, targets[sample_index]);
 
-        if (N_EPOCHS > 1000 && (epoch % (N_EPOCHS / 10) == 0) && epoch != 0) {
-            printf("  Epoch %d/%d completed. Time elapsed: %.2f s\n", epoch, N_EPOCHS, time_elapsed);
+        // **ERROR RATE REPORTING**
+        if ((epoch % report_interval == 0) && epoch != 0) {
+            double cumulative_loss = 0.0;
+            double temp_hidden[N_HIDDEN];
+            double temp_output[N_OUTPUT];
+            
+            // Calculate average loss over a subset of training data
+            for (int i = 0; i < samples_per_report; i++) {
+                int idx = rand() % N_SAMPLES;
+                forward_pass(input_set[idx], temp_hidden, temp_output);
+                cumulative_loss += calculate_loss(temp_output, target_set[idx]);
+            }
+
+            printf("  Epoch %d/%d completed. Time elapsed: %.2f s. Avg Loss (per sample): %.4f\n", 
+                   epoch, N_EPOCHS, time_elapsed, cumulative_loss / samples_per_report);
         }
     }
 }
@@ -330,7 +336,6 @@ double relu(double x) {
     return (x > 0.0) ? x : 0.0; 
 }
 
-// Apply Softmax to a 4-element vector (used for Direction Classification)
 void softmax(double vector[N_DIRECTION_CLASSES]) {
     double max_val = vector[0];
     for (int k = 1; k < N_DIRECTION_CLASSES; k++) {
@@ -339,7 +344,7 @@ void softmax(double vector[N_DIRECTION_CLASSES]) {
     
     double sum = 0.0;
     for (int k = 0; k < N_DIRECTION_CLASSES; k++) {
-        vector[k] = exp(vector[k] - max_val); // Numerical stability trick
+        vector[k] = exp(vector[k] - max_val); 
         sum += vector[k];
     }
     
@@ -348,21 +353,20 @@ void softmax(double vector[N_DIRECTION_CLASSES]) {
     }
 }
 
-void forward_pass(const double input[D_SIZE], double feature_out[N_INPUT], double hidden_out[N_HIDDEN], double output[N_OUTPUT]) {
+// **FORWARD PASS UPDATED (No feature_out array)**
+void forward_pass(const double input[D_SIZE], double hidden_out[N_HIDDEN], double output[N_OUTPUT]) {
     
-    // 1. Feature Extraction (Simplified CNN)
-    extract_features(input, feature_out);
-
-    // 2. Feature to Hidden (ReLU)
+    // 1. Input to Hidden (ReLU)
+    // input is now used directly instead of feature_out
     for (int j = 0; j < N_HIDDEN; j++) {
         double h_net = b_h[j];
         for (int i = 0; i < N_INPUT; i++) {
-            h_net += feature_out[i] * w_fh[i][j]; 
+            h_net += input[i] * w_fh[i][j]; 
         }
-        hidden_out[j] = relu(h_net); // Using ReLU
+        hidden_out[j] = relu(h_net); 
     }
     
-    // 3. Hidden to Output
+    // 2. Hidden to Output
     for (int k = 0; k < N_OUTPUT; k++) {
         double o_net = b_o[k]; 
         for (int j = 0; j < N_HIDDEN; j++) { 
@@ -371,14 +375,15 @@ void forward_pass(const double input[D_SIZE], double feature_out[N_INPUT], doubl
         output[k] = o_net; 
     }
     
-    // 4. Softmax on Direction segments (applied after all calculations)
+    // 3. Softmax on Direction segments
     for (int s = 0; s < NUM_SEGMENTS; s++) {
         int dir_start_idx = GET_DIR_OUTPUT_START_IDX(s);
         softmax(&output[dir_start_idx]);
     }
 }
 
-void backward_pass_and_update(const double input[D_SIZE], const double feature_out[N_INPUT], const double hidden_out[N_HIDDEN], const double output[N_OUTPUT], const double target[N_OUTPUT]) {
+// **BACKWARD PASS UPDATED (No feature_out array)**
+void backward_pass_and_update(const double input[D_SIZE], const double hidden_out[N_HIDDEN], const double output[N_OUTPUT], const double target[N_OUTPUT]) {
     double delta_o[N_OUTPUT];
     double delta_h[N_HIDDEN]; 
     double error_h[N_HIDDEN] = {0.0};
@@ -386,16 +391,13 @@ void backward_pass_and_update(const double input[D_SIZE], const double feature_o
     // 1. Calculate Output Delta (Classification and Regression)
     for (int k = 0; k < N_OUTPUT; k++) {
         
-        // Handle Direction Classification (Cross-Entropy Loss)
-        // Indices 2 to 29 (4 * 7 segments)
         if (k >= 2 && k < (2 + NUM_SEGMENTS * N_DIRECTION_CLASSES)) {
-            // Softmax Cross-Entropy derivative: output[k] - target[k]
+            // Softmax Cross-Entropy derivative
             delta_o[k] = (output[k] - target[k]) * CLASSIFICATION_WEIGHT; 
         } 
-        // Handle Regression (Coordinates and Steps - L2 Loss)
         else { 
+            // L2 derivative
             double error = output[k] - target[k];
-            // L2 derivative: error * 1 (error itself)
             delta_o[k] = error * COORD_WEIGHT; 
         }
     }
@@ -405,7 +407,6 @@ void backward_pass_and_update(const double input[D_SIZE], const double feature_o
         for (int k = 0; k < N_OUTPUT; k++) {
             error_h[j] += delta_o[k] * w_ho[j][k];
         }
-        // ReLU derivative is 1 or 0 (implicitly using hidden_out[j] > 0)
         delta_h[j] = error_h[j] * ((hidden_out[j] > 0.0) ? 1.0 : 0.0);
     }
     
@@ -417,10 +418,11 @@ void backward_pass_and_update(const double input[D_SIZE], const double feature_o
         b_o[k] -= LEARNING_RATE * delta_o[k];
     } 
     
-    // 4. Update Feature-to-Hidden Weights
+    // 4. Update Input-to-Hidden Weights
+    // input is used directly instead of feature_out
     for (int i = 0; i < N_INPUT; i++) { 
         for (int j = 0; j < N_HIDDEN; j++) { 
-            w_fh[i][j] -= LEARNING_RATE * delta_h[j] * feature_out[i]; 
+            w_fh[i][j] -= LEARNING_RATE * delta_h[j] * input[i]; 
         } 
     }
     // 5. Update Hidden Biases
@@ -434,14 +436,11 @@ void backward_pass_and_update(const double input[D_SIZE], const double feature_o
 // --- TESTING AND VISUALIZATION ---
 // -----------------------------------------------------------------
 
-// Helper to decode a single instruction based on classification output
 void decode_instruction_output(const double output_vec[N_OUTPUT], int segment, char *dir_char, int *steps) {
     
-    // 1. Steps (Regression)
     double steps_norm = output_vec[GET_STEPS_OUTPUT_IDX(segment)];
     *steps = DENORMALIZE_STEPS(steps_norm);
 
-    // 2. Direction (Classification) - Find Max Index
     int dir_start_idx = GET_DIR_OUTPUT_START_IDX(segment);
     int max_idx = 0;
     double max_val = output_vec[dir_start_idx];
@@ -453,7 +452,6 @@ void decode_instruction_output(const double output_vec[N_OUTPUT], int segment, c
         }
     }
     
-    // Map index back to character
     if (max_idx == DIR_UP_IDX) *dir_char = 'U';
     else if (max_idx == DIR_DOWN_IDX) *dir_char = 'D';
     else if (max_idx == DIR_LEFT_IDX) *dir_char = 'L';
@@ -461,18 +459,15 @@ void decode_instruction_output(const double output_vec[N_OUTPUT], int segment, c
     else *dir_char = '?'; 
 }
 
-// Helper to decode target instruction
 void decode_instruction_target(const double target_vec[N_OUTPUT], int segment, char *dir_char, int *steps) {
     
-    // 1. Steps (Regression)
     *steps = DENORMALIZE_STEPS(target_vec[GET_STEPS_OUTPUT_IDX(segment)]);
 
-    // 2. Direction (Classification) - Find One-Hot Index
     int dir_start_idx = GET_DIR_OUTPUT_START_IDX(segment);
     int one_hot_idx = -1;
 
     for (int k = 0; k < N_DIRECTION_CLASSES; k++) {
-        if (target_vec[dir_start_idx + k] > 0.5) { // Find the 1.0 in the one-hot
+        if (target_vec[dir_start_idx + k] > 0.5) { 
             one_hot_idx = k;
             break;
         }
@@ -539,11 +534,10 @@ void print_labyrinth_and_path(const double input_image[D_SIZE], const double tar
     
     for (int y = 0; y < GRID_SIZE; y++) {
         for (int x = 0; x < GRID_SIZE; x++) {
-            // Input image is already scaled [0, 1]
-            if (input_image[GRID_SIZE * y + x] < 0.5) { // Wall
+            if (input_image[GRID_SIZE * y + x] < 0.5) { 
                 true_path_map[y][x] = '#';
                 est_path_map[y][x] = '#';
-            } else { // Open Path
+            } else { 
                 true_path_map[y][x] = ' ';
                 est_path_map[y][x] = ' ';
             }
@@ -566,7 +560,7 @@ void print_labyrinth_and_path(const double input_image[D_SIZE], const double tar
     printf("\n--- True Path (Target) | Predicted Path (Output) ---\n");
     printf("TRUE Start: (%d, %d), Exit: (%d, %d)\n", true_start_x, true_start_y, true_exit_x, true_exit_y);
     printf("EST Start:  (%d, %d), Exit: (%d, %d)\n", est_start_x, est_start_y, est_exit_x, est_exit_y);
-    printf("--------------------------------------------------------------------------------------------------\n");
+    printf("--------------------------------------------------\n");
     
     for (int y = 0; y < GRID_SIZE; y++) {
         for (int x = 0; x < GRID_SIZE; x++) {
@@ -578,12 +572,11 @@ void print_labyrinth_and_path(const double input_image[D_SIZE], const double tar
         }
         printf("\n");
     }
-    printf("--------------------------------------------------------------------------------------------------\n");
+    printf("--------------------------------------------------\n");
 }
 
 
 void test_labyrinth_path(int n_set_size, const double input_set[][D_SIZE], const double target_set[][N_OUTPUT]) {
-    double feature_out[N_INPUT];
     double hidden_out[N_HIDDEN]; 
     double output[N_OUTPUT];
     
@@ -591,14 +584,13 @@ void test_labyrinth_path(int n_set_size, const double input_set[][D_SIZE], const
     
     for (int i = 0; i < n_set_size; i++) {
         if (i < 5) { 
-            forward_pass(input_set[i], feature_out, hidden_out, output);
+            forward_pass(input_set[i], hidden_out, output);
             print_labyrinth_and_path(input_set[i], target_set[i], output);
         }
     }
     
-    // Print example instructions for the first visualized sample
     printf("--- Example Instructions (Sample 1) ---\n");
-    forward_pass(input_set[0], feature_out, hidden_out, output);
+    forward_pass(input_set[0], hidden_out, output);
     
     printf("True Instructions:\n");
     for (int i = 0; i < NUM_SEGMENTS; i++) {
@@ -634,7 +626,8 @@ int main(int argc, char **argv) {
     load_test_set();
 
     // 2. Training
-    train_nn(dataset);
+    // Pass targets to train_nn for loss calculation
+    train_nn(dataset, targets);
     
     // 3. Testing and Visualization
     test_labyrinth_path(N_SAMPLES_TEST, test_data, test_targets);
