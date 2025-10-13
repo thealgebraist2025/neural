@@ -8,32 +8,28 @@
 #include <string.h> 
 
 // --- Configuration ---
-#define N_SAMPLES_MAX 52000 
-// **CHANGE 1: New Grid Size**
 #define GRID_SIZE 16       
 #define D_SIZE (GRID_SIZE * GRID_SIZE) // 256
-
-// **CHANGE 2: Vanilla NN Input is the whole image**
-#define N_INPUT D_SIZE // 256
+#define N_INPUT D_SIZE 
 #define NUM_SEGMENTS 7
 
 // Output Structure: [Start X/Y] + 7 * [Direction(4) + Steps(1)] + [Exit X/Y]
-// 2 + 7 * (4 + 1) + 2 = 39 (Same as before)
 #define N_DIRECTION_CLASSES 4 
 #define N_OUTPUT (2 + (NUM_SEGMENTS * N_DIRECTION_CLASSES) + (NUM_SEGMENTS * 1) + 2) 
 
 #define N_HIDDEN 128       
-#define N_SAMPLES_TRAIN 5000 
-#define N_SAMPLES_TEST 100 
+// **CHANGE 1: Fixed Dataset Size**
+#define N_SAMPLES_FIXED 100 
+#define N_SAMPLES_TRAIN N_SAMPLES_FIXED
+#define N_SAMPLES_TEST N_SAMPLES_FIXED
+#define N_TEST_CASES_PER_LABYRINTH 20 // 20 tests per fixed labyrinth
 
 // Neural Network Parameters
-// **ADJUSTED LEARNING RATE**
 #define LEARNING_RATE 0.0005 
 #define N_EPOCHS_TRAIN 800000 
-#define COORD_WEIGHT 10.0      // Weight for coordinates (Start/Exit) and Steps
-#define CLASSIFICATION_WEIGHT 1.0 // Weight for direction classification
-// Max steps must be relative to the new GRID_SIZE
-#define MAX_STEPS 8.0 // Max steps in one instruction segment (roughly 16/2)
+#define COORD_WEIGHT 10.0      
+#define CLASSIFICATION_WEIGHT 1.0 
+#define MAX_STEPS 8.0 
 #define MAX_TRAINING_SECONDS 300.0 // 5 minutes
 
 // Direction Encoding
@@ -47,19 +43,15 @@ int N_SAMPLES = N_SAMPLES_TRAIN;
 int N_EPOCHS = N_EPOCHS_TRAIN; 
  
 // Global Data & Matrices 
-double dataset[N_SAMPLES_MAX][D_SIZE]; 
-double targets[N_SAMPLES_MAX][N_OUTPUT]; 
+// **CHANGE 2: Store only 100 fixed labyrinth structures and their fixed exits**
+double fixed_labyrinths[N_SAMPLES_FIXED][D_SIZE]; 
+int fixed_exit_coords[N_SAMPLES_FIXED][2]; // [x, y] of the exit
 
 // Neural Network Weights and Biases 
-// **w_if matrix (Input-to-Feature) is removed/merged into w_fh for vanilla NN**
-double w_fh[N_INPUT][N_HIDDEN];    // Input (256) to Hidden (128)
+double w_fh[N_INPUT][N_HIDDEN];    
 double b_h[N_HIDDEN]; 
-double w_ho[N_HIDDEN][N_OUTPUT];   // Hidden (128) to Output (39)
+double w_ho[N_HIDDEN][N_OUTPUT];   
 double b_o[N_OUTPUT];
-
-// Test Data 
-double test_data[N_SAMPLES_TEST][D_SIZE];
-double test_targets[N_SAMPLES_TEST][N_OUTPUT];
 
 
 // --- Helper Macros ---
@@ -74,21 +66,16 @@ double test_targets[N_SAMPLES_TEST][N_OUTPUT];
 
 // --- Function Prototypes ---
 void draw_line(double image[D_SIZE], int x1, int y1, int x2, int y2, double val);
-void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]);
-void load_data(int n_samples, double set[][D_SIZE], double target_set[][N_OUTPUT]); 
-void load_train_set();
-void load_test_set();
+void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int start_y, int exit_x, int exit_y, double target_data[N_OUTPUT]);
+void generate_fixed_labyrinths(); 
+void load_train_case(int idx, double input[D_SIZE], double target[N_OUTPUT]);
 
-void initialize_nn();
-void train_nn(const double input_set[N_SAMPLES_MAX][D_SIZE], const double target_set[N_SAMPLES_MAX][N_OUTPUT]);
 double calculate_loss(const double output[N_OUTPUT], const double target[N_OUTPUT]);
 double relu(double x);
 void softmax(double vector[N_DIRECTION_CLASSES]);
-// **FEATURE EXTRACTION IS REMOVED**
 void forward_pass(const double input[D_SIZE], double hidden_out[N_HIDDEN], double output[N_OUTPUT]);
 void backward_pass_and_update(const double input[D_SIZE], const double hidden_out[N_HIDDEN], const double output[N_OUTPUT], const double target[N_OUTPUT]);
-
-void test_labyrinth_path(int n_set_size, const double input_set[][D_SIZE], const double target_set[][N_OUTPUT]);
+void test_nn_and_summarize();
 
 
 // -----------------------------------------------------------------
@@ -113,35 +100,54 @@ void draw_line(double image[D_SIZE], int x1, int y1, int x2, int y2, double val)
     }
 }
 
-void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]) {
-    for (int i = 0; i < D_SIZE; i++) { image[i] = 0.0; } 
-    
-    double path_val = 1.0; 
 
-    int target_points[NUM_SEGMENTS + 1][2]; 
-
-    // Start point (x>2, x<GRID_SIZE-3, same for y)
-    target_points[0][0] = 3 + (rand() % (GRID_SIZE - 6));
-    target_points[0][1] = 3 + (rand() % (GRID_SIZE - 6));
+// Finds a sequence of segments connecting start to exit within the labyrinth path.
+// The resulting path may not perfectly trace the target path drawn later, but it 
+// defines the necessary instructions.
+void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int start_y, int exit_x, int exit_y, double target_data[N_OUTPUT]) {
     
-    // Intermediate points (well inside the grid)
+    // 1. Initialize target data
+    for (int i = 0; i < N_OUTPUT; i++) { target_data[i] = 0.0; } 
+
+    // Define intermediate points (must lie on open path in the labyrinth)
+    // NOTE: This is a complex search problem (e.g., A* or Dijkstra).
+    // For simplicity and matching the previous path logic, we will define 
+    // intermediate points *assuming* a path exists and that the start/exit are on it.
+    
+    // We *must* use the target point definition logic from the original generator
+    // to ensure the path is solvable, so we need to generate new points.
+    
+    int current_x = start_x;
+    int current_y = start_y;
+    int target_points[NUM_SEGMENTS + 1][2]; // [x, y]
+    
+    // Target start/exit are fixed for this specific case
+    target_points[0][0] = start_x;
+    target_points[0][1] = start_y;
+    target_points[NUM_SEGMENTS][0] = exit_x;
+    target_points[NUM_SEGMENTS][1] = exit_y;
+
+    // Generate new internal intermediate points (must be on an open path)
+    // This simple random generation relies on the existing path structure 
+    // being simple enough that a straight line between two internal points 
+    // will stay mostly on the existing path.
     for(int i = 1; i < NUM_SEGMENTS; i++) {
-        target_points[i][0] = 3 + (rand() % (GRID_SIZE - 6));
-        target_points[i][1] = 3 + (rand() % (GRID_SIZE - 6));
+        int attempt = 0;
+        do {
+            target_points[i][0] = 1 + (rand() % (GRID_SIZE - 2));
+            target_points[i][1] = 1 + (rand() % (GRID_SIZE - 2));
+            attempt++;
+        } while (labyrinth[GRID_SIZE * target_points[i][1] + target_points[i][0]] < 0.5 && attempt < 10);
+        // If we can't find an open cell, just use the center
+        if (attempt >= 10) {
+             target_points[i][0] = GRID_SIZE / 2;
+             target_points[i][1] = GRID_SIZE / 2;
+        }
     }
-    
-    // Last point: Exit on boundary
-    int side = rand() % 4; 
-    if (side == 0) { target_points[NUM_SEGMENTS][0] = 1 + (rand() % (GRID_SIZE - 2)); target_points[NUM_SEGMENTS][1] = 0; }
-    else if (side == 1) { target_points[NUM_SEGMENTS][0] = 1 + (rand() % (GRID_SIZE - 2)); target_points[NUM_SEGMENTS][1] = GRID_SIZE - 1; }
-    else if (side == 2) { target_points[NUM_SEGMENTS][0] = 0; target_points[NUM_SEGMENTS][1] = 1 + (rand() % (GRID_SIZE - 2)); }
-    else { target_points[NUM_SEGMENTS][0] = GRID_SIZE - 1; target_points[NUM_SEGMENTS][1] = 1 + (rand() % (GRID_SIZE - 2)); }
-
-    int current_x = target_points[0][0];
-    int current_y = target_points[0][1];
     
     int current_segment = 0;
     
+    // 2. Generate instructions (based on the new random points)
     for (int i = 0; i < NUM_SEGMENTS; i++) {
         int next_x = target_points[i+1][0];
         int next_y = target_points[i+1][1];
@@ -150,10 +156,7 @@ void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]) {
         if (rand() % 2) { move_order[0] = 1; move_order[1] = 0; }
         
         for (int m = 0; m < 2; m++) {
-            
-            if (current_segment >= NUM_SEGMENTS) {
-                goto end_instruction_generation;
-            }
+            if (current_segment >= NUM_SEGMENTS) goto end_instruction_generation;
 
             int dir_idx = -1; 
             int steps = 0;
@@ -161,7 +164,6 @@ void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]) {
             if (move_order[m] == 0) { // Horizontal move
                 int dx = next_x - current_x;
                 if (dx != 0) {
-                    draw_line(image, current_x, current_y, next_x, current_y, path_val);
                     dir_idx = (dx > 0) ? DIR_RIGHT_IDX : DIR_LEFT_IDX;
                     steps = abs(dx);
                     current_x = next_x; 
@@ -169,7 +171,6 @@ void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]) {
             } else { // Vertical move
                 int dy = next_y - current_y;
                 if (dy != 0) {
-                    draw_line(image, current_x, current_y, current_x, next_y, path_val);
                     dir_idx = (dy > 0) ? DIR_DOWN_IDX : DIR_UP_IDX;
                     steps = abs(dy);
                     current_y = next_y; 
@@ -179,9 +180,6 @@ void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]) {
             if (dir_idx != -1) {
                 // Direction (Classification)
                 int dir_start_idx = GET_DIR_OUTPUT_START_IDX(current_segment);
-                for(int k = 0; k < N_DIRECTION_CLASSES; k++) {
-                    target_data[dir_start_idx + k] = 0.0;
-                }
                 target_data[dir_start_idx + dir_idx] = 1.0; 
                 
                 // Steps (Regression)
@@ -194,44 +192,89 @@ void generate_labyrinth(double image[D_SIZE], double target_data[N_OUTPUT]) {
     }
 
 end_instruction_generation: 
+    // Final Target Data assignment (for coordinates)
+    target_data[0] = NORMALIZE_COORD(start_x);
+    target_data[1] = NORMALIZE_COORD(start_y);
+    target_data[N_OUTPUT-2] = NORMALIZE_COORD(exit_x);
+    target_data[N_OUTPUT-1] = NORMALIZE_COORD(exit_y);
+}
 
-    // Set Target Data
-    target_data[0] = NORMALIZE_COORD(target_points[0][0]);
-    target_data[1] = NORMALIZE_COORD(target_points[0][1]);
-    
-    // Instructions: Pad remaining segments with 'no-op' (UP/0 steps)
-    while (current_segment < NUM_SEGMENTS) {
-        int dir_start_idx = GET_DIR_OUTPUT_START_IDX(current_segment);
-        for(int k = 0; k < N_DIRECTION_CLASSES; k++) {
-            target_data[dir_start_idx + k] = 0.0;
-        }
-        target_data[dir_start_idx + DIR_UP_IDX] = 1.0; 
 
-        int steps_idx = GET_STEPS_OUTPUT_IDX(current_segment);
-        target_data[steps_idx] = 0.0;
+// Generates the fixed set of 100 labyrinth structures
+void generate_fixed_labyrinths() {
+    printf("Generating %d fixed labyrinth structures (no path drawn).\n", N_SAMPLES_FIXED);
+
+    for (int k = 0; k < N_SAMPLES_FIXED; ++k) {
+        // Initialize with walls
+        for (int i = 0; i < D_SIZE; i++) { fixed_labyrinths[k][i] = 0.0; } 
         
-        current_segment++;
+        // 1. Define 7 random intermediate points inside the image
+        int points[NUM_SEGMENTS + 1][2]; // [x, y]
+
+        // Internal path points
+        for(int i = 0; i < NUM_SEGMENTS; i++) {
+            points[i][0] = 3 + (rand() % (GRID_SIZE - 6));
+            points[i][1] = 3 + (rand() % (GRID_SIZE - 6));
+        }
+        
+        // Last point: Exit on boundary (fixed for this structure)
+        int side = rand() % 4; 
+        if (side == 0) { points[NUM_SEGMENTS][0] = 1 + (rand() % (GRID_SIZE - 2)); points[NUM_SEGMENTS][1] = 0; }
+        else if (side == 1) { points[NUM_SEGMENTS][0] = 1 + (rand() % (GRID_SIZE - 2)); points[NUM_SEGMENTS][1] = GRID_SIZE - 1; }
+        else if (side == 2) { points[NUM_SEGMENTS][0] = 0; points[NUM_SEGMENTS][1] = 1 + (rand() % (GRID_SIZE - 2)); }
+        else { points[NUM_SEGMENTS][0] = GRID_SIZE - 1; points[NUM_SEGMENTS][1] = 1 + (rand() % (GRID_SIZE - 2)); }
+
+        // Store the exit for later use
+        fixed_exit_coords[k][0] = points[NUM_SEGMENTS][0];
+        fixed_exit_coords[k][1] = points[NUM_SEGMENTS][1];
+
+        // 2. Draw non-intersecting path segments (Horizontal/Vertical moves only)
+        int current_x = points[0][0];
+        int current_y = points[0][1];
+        
+        for (int i = 0; i < NUM_SEGMENTS; i++) {
+            int next_x = points[i+1][0];
+            int next_y = points[i+1][1];
+            
+            // Randomly choose to move H or V first
+            if (rand() % 2) { 
+                draw_line(fixed_labyrinths[k], current_x, current_y, next_x, current_y, 1.0);
+                current_x = next_x;
+                draw_line(fixed_labyrinths[k], current_x, current_y, current_x, next_y, 1.0);
+                current_y = next_y;
+            } else {
+                draw_line(fixed_labyrinths[k], current_x, current_y, current_x, next_y, 1.0);
+                current_y = next_y;
+                draw_line(fixed_labyrinths[k], current_x, current_y, next_x, current_y, 1.0);
+                current_x = next_x;
+            }
+        }
     }
-
-    // Exit X/Y
-    target_data[N_OUTPUT-2] = NORMALIZE_COORD(target_points[NUM_SEGMENTS][0]);
-    target_data[N_OUTPUT-1] = NORMALIZE_COORD(target_points[NUM_SEGMENTS][1]);
 }
 
 
-void load_data(int n_samples, double set[][D_SIZE], double target_set[][N_OUTPUT]) {
-    for (int k = 0; k < n_samples; ++k) {
-        generate_labyrinth(set[k], target_set[k]);
-    }
-}
-void load_train_set() {
-    printf("Generating TRAINING dataset (%d labyrinths of size %dx%d). N_OUTPUT=%d.\n", N_SAMPLES_TRAIN, GRID_SIZE, GRID_SIZE, N_OUTPUT);
-    load_data(N_SAMPLES_TRAIN, dataset, targets);
-    N_SAMPLES = N_SAMPLES_TRAIN;
-}
-void load_test_set() {
-    printf("Generating TEST dataset (%d labyrinths).\n", N_SAMPLES_TEST);
-    load_data(N_SAMPLES_TEST, test_data, test_targets);
+// Selects a fixed labyrinth and generates a random, valid start position 
+// along with the required path instructions (target).
+void load_train_case(int idx, double input[D_SIZE], double target[N_OUTPUT]) {
+    
+    // Copy the fixed labyrinth structure to the input
+    memcpy(input, fixed_labyrinths[idx], D_SIZE * sizeof(double));
+
+    int start_x, start_y;
+    int exit_x = fixed_exit_coords[idx][0];
+    int exit_y = fixed_exit_coords[idx][1];
+
+    // Find a random, legal start position (i.e., on an open path cell)
+    int attempts = 0;
+    do {
+        // Confine search to interior cells
+        start_x = 1 + (rand() % (GRID_SIZE - 2)); 
+        start_y = 1 + (rand() % (GRID_SIZE - 2));
+        attempts++;
+    } while (input[GRID_SIZE * start_y + start_x] < 0.5 && attempts < 100); 
+
+    // Generate the path segments and target data for this specific start/exit pair
+    generate_path_and_target(input, start_x, start_y, exit_x, exit_y, target);
 }
 
 
@@ -240,13 +283,11 @@ void load_test_set() {
 // -----------------------------------------------------------------
 
 void initialize_nn() {
-    // Initialize Input(256)-to-Hidden(128)
     for (int i = 0; i < N_INPUT; i++) {
         for (int j = 0; j < N_HIDDEN; j++) {
-            w_fh[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * sqrt(2.0 / N_INPUT); // He initialization
+            w_fh[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * sqrt(2.0 / N_INPUT); 
         }
     }
-    // Initialize Hidden(128)-to-Output(39)
     for (int j = 0; j < N_HIDDEN; j++) {
         b_h[j] = 0.0;
         for (int k = 0; k < N_OUTPUT; k++) {
@@ -258,20 +299,13 @@ void initialize_nn() {
     }
 }
 
-// **REMOVED: Feature Extraction is no longer used for Vanilla NN**
-/*
-void extract_features(const double input[D_SIZE], double feature_out[N_INPUT]) {
-    // ...
-}
-*/
-
 double calculate_loss(const double output[N_OUTPUT], const double target[N_OUTPUT]) {
     double total_loss = 0.0;
     
     for (int k = 0; k < N_OUTPUT; k++) {
         if (k >= 2 && k < (2 + NUM_SEGMENTS * N_DIRECTION_CLASSES)) {
             // Direction Classification: Cross-Entropy Loss
-            if (target[k] > 0.5) { // Only calculate for the correct class (target is 1)
+            if (target[k] > 0.5) { 
                 total_loss += -log(output[k] + 1e-9) * CLASSIFICATION_WEIGHT;
             }
         } else { 
@@ -280,21 +314,21 @@ double calculate_loss(const double output[N_OUTPUT], const double target[N_OUTPU
             total_loss += error * error * COORD_WEIGHT; 
         }
     }
-    // Note: This isn't a true average, but an overall weighted loss value for monitoring
     return total_loss; 
 }
 
 
-void train_nn(const double input_set[N_SAMPLES_MAX][D_SIZE], const double target_set[N_SAMPLES_MAX][N_OUTPUT]) {
-    printf("Training Vanilla NN with %d inputs and %d hidden neurons.\n", N_INPUT, N_HIDDEN);
+void train_nn() {
+    printf("Training Vanilla NN with %d fixed labyrinths and varying start points.\n", N_SAMPLES_FIXED);
     
     clock_t start_time = clock();
     double time_elapsed;
-    int samples_per_report = N_SAMPLES_TRAIN; 
-    
-    // Determine report interval (e.g., every 10% of epochs)
     int report_interval = N_EPOCHS_TRAIN / 10;
     if (report_interval == 0) report_interval = 1;
+
+    // Temporary storage for single training sample
+    double input[D_SIZE];
+    double target[N_OUTPUT];
 
     for (int epoch = 0; epoch < N_EPOCHS; epoch++) {
         
@@ -304,30 +338,35 @@ void train_nn(const double input_set[N_SAMPLES_MAX][D_SIZE], const double target
             break;
         }
 
-        int sample_index = rand() % N_SAMPLES;
+        // Select a random fixed labyrinth index
+        int lab_index = rand() % N_SAMPLES_FIXED;
         
+        // Generate a random start position and path instructions for this labyrinth
+        load_train_case(lab_index, input, target);
+
         double hidden_out[N_HIDDEN];
         double output[N_OUTPUT];
         
-        // **FEATURE EXTRACTION STEP REMOVED**
-        forward_pass(input_set[sample_index], hidden_out, output);
-        backward_pass_and_update(input_set[sample_index], hidden_out, output, targets[sample_index]);
+        forward_pass(input, hidden_out, output);
+        backward_pass_and_update(input, hidden_out, output, target);
 
-        // **ERROR RATE REPORTING**
+        // ERROR RATE REPORTING
         if ((epoch % report_interval == 0) && epoch != 0) {
             double cumulative_loss = 0.0;
             double temp_hidden[N_HIDDEN];
             double temp_output[N_OUTPUT];
             
-            // Calculate average loss over a subset of training data
-            for (int i = 0; i < samples_per_report; i++) {
-                int idx = rand() % N_SAMPLES;
-                forward_pass(input_set[idx], temp_hidden, temp_output);
-                cumulative_loss += calculate_loss(temp_output, target_set[idx]);
+            // Calculate average loss over 100 random training cases
+            for (int i = 0; i < 100; i++) {
+                int idx = rand() % N_SAMPLES_FIXED;
+                load_train_case(idx, input, target);
+                
+                forward_pass(input, temp_hidden, temp_output);
+                cumulative_loss += calculate_loss(temp_output, target);
             }
 
             printf("  Epoch %d/%d completed. Time elapsed: %.2f s. Avg Loss (per sample): %.4f\n", 
-                   epoch, N_EPOCHS, time_elapsed, cumulative_loss / samples_per_report);
+                   epoch, N_EPOCHS, time_elapsed, cumulative_loss / 100.0);
         }
     }
 }
@@ -353,11 +392,9 @@ void softmax(double vector[N_DIRECTION_CLASSES]) {
     }
 }
 
-// **FORWARD PASS UPDATED (No feature_out array)**
 void forward_pass(const double input[D_SIZE], double hidden_out[N_HIDDEN], double output[N_OUTPUT]) {
     
-    // 1. Input to Hidden (ReLU)
-    // input is now used directly instead of feature_out
+    // Input to Hidden (ReLU)
     for (int j = 0; j < N_HIDDEN; j++) {
         double h_net = b_h[j];
         for (int i = 0; i < N_INPUT; i++) {
@@ -366,7 +403,7 @@ void forward_pass(const double input[D_SIZE], double hidden_out[N_HIDDEN], doubl
         hidden_out[j] = relu(h_net); 
     }
     
-    // 2. Hidden to Output
+    // Hidden to Output
     for (int k = 0; k < N_OUTPUT; k++) {
         double o_net = b_o[k]; 
         for (int j = 0; j < N_HIDDEN; j++) { 
@@ -375,28 +412,25 @@ void forward_pass(const double input[D_SIZE], double hidden_out[N_HIDDEN], doubl
         output[k] = o_net; 
     }
     
-    // 3. Softmax on Direction segments
+    // Softmax on Direction segments
     for (int s = 0; s < NUM_SEGMENTS; s++) {
         int dir_start_idx = GET_DIR_OUTPUT_START_IDX(s);
         softmax(&output[dir_start_idx]);
     }
 }
 
-// **BACKWARD PASS UPDATED (No feature_out array)**
 void backward_pass_and_update(const double input[D_SIZE], const double hidden_out[N_HIDDEN], const double output[N_OUTPUT], const double target[N_OUTPUT]) {
     double delta_o[N_OUTPUT];
     double delta_h[N_HIDDEN]; 
     double error_h[N_HIDDEN] = {0.0};
     
-    // 1. Calculate Output Delta (Classification and Regression)
+    // 1. Calculate Output Delta 
     for (int k = 0; k < N_OUTPUT; k++) {
         
         if (k >= 2 && k < (2 + NUM_SEGMENTS * N_DIRECTION_CLASSES)) {
-            // Softmax Cross-Entropy derivative
             delta_o[k] = (output[k] - target[k]) * CLASSIFICATION_WEIGHT; 
         } 
         else { 
-            // L2 derivative
             double error = output[k] - target[k];
             delta_o[k] = error * COORD_WEIGHT; 
         }
@@ -419,7 +453,6 @@ void backward_pass_and_update(const double input[D_SIZE], const double hidden_ou
     } 
     
     // 4. Update Input-to-Hidden Weights
-    // input is used directly instead of feature_out
     for (int i = 0; i < N_INPUT; i++) { 
         for (int j = 0; j < N_HIDDEN; j++) { 
             w_fh[i][j] -= LEARNING_RATE * delta_h[j] * input[i]; 
@@ -437,7 +470,6 @@ void backward_pass_and_update(const double input[D_SIZE], const double hidden_ou
 // -----------------------------------------------------------------
 
 void decode_instruction_output(const double output_vec[N_OUTPUT], int segment, char *dir_char, int *steps) {
-    
     double steps_norm = output_vec[GET_STEPS_OUTPUT_IDX(segment)];
     *steps = DENORMALIZE_STEPS(steps_norm);
 
@@ -460,7 +492,6 @@ void decode_instruction_output(const double output_vec[N_OUTPUT], int segment, c
 }
 
 void decode_instruction_target(const double target_vec[N_OUTPUT], int segment, char *dir_char, int *steps) {
-    
     *steps = DENORMALIZE_STEPS(target_vec[GET_STEPS_OUTPUT_IDX(segment)]);
 
     int dir_start_idx = GET_DIR_OUTPUT_START_IDX(segment);
@@ -576,39 +607,57 @@ void print_labyrinth_and_path(const double input_image[D_SIZE], const double tar
 }
 
 
-void test_labyrinth_path(int n_set_size, const double input_set[][D_SIZE], const double target_set[][N_OUTPUT]) {
+// New testing function
+void test_nn_and_summarize() {
+    
+    printf("\n--- STEP 3: LABYRINTH PATH PREDICTION TEST SUMMARY ---\n");
+    printf("Testing %d fixed labyrinths with %d random start points each (Total %d tests).\n", 
+           N_SAMPLES_FIXED, N_TEST_CASES_PER_LABYRINTH, N_SAMPLES_FIXED * N_TEST_CASES_PER_LABYRINTH);
+    
+    double cumulative_test_loss = 0.0;
+    int total_tests = 0;
+    
+    double input[D_SIZE];
+    double target[N_OUTPUT];
     double hidden_out[N_HIDDEN]; 
     double output[N_OUTPUT];
-    
-    printf("\n--- STEP 3: LABYRINTH PATH PREDICTION TEST (%d Samples) ---\n", n_set_size);
-    
-    for (int i = 0; i < n_set_size; i++) {
-        if (i < 5) { 
-            forward_pass(input_set[i], hidden_out, output);
-            print_labyrinth_and_path(input_set[i], target_set[i], output);
+
+    // Loop through each of the 100 fixed labyrinths
+    for (int lab_idx = 0; lab_idx < N_SAMPLES_FIXED; lab_idx++) {
+        // Run 20 tests for each labyrinth
+        for (int test_run = 0; test_run < N_TEST_CASES_PER_LABYRINTH; test_run++) {
+            
+            // Generate a unique test case (labyrinth structure + random start/target path)
+            load_train_case(lab_idx, input, target); 
+            
+            forward_pass(input, hidden_out, output);
+            cumulative_test_loss += calculate_loss(output, target);
+            total_tests++;
         }
     }
     
-    printf("--- Example Instructions (Sample 1) ---\n");
-    forward_pass(input_set[0], hidden_out, output);
-    
-    printf("True Instructions:\n");
-    for (int i = 0; i < NUM_SEGMENTS; i++) {
-        char dir_char;
-        int steps;
-        decode_instruction_target(target_set[0], i, &dir_char, &steps);
-        int steps_idx = GET_STEPS_OUTPUT_IDX(i);
-        printf("  Segment %d: (%c, %d) -> Normalized Steps: %.2f\n", i+1, dir_char, steps, target_set[0][steps_idx]);
+    printf("\nTEST SUMMARY:\n");
+    printf("Total Test Cases: %d\n", total_tests);
+    printf("Average Loss per Test Case: %.4f\n", cumulative_test_loss / total_tests);
+    printf("--------------------------------------------------\n");
+
+
+    // VISUALIZATION: Show 10 random examples
+    printf("\n--- VISUALIZATION: 10 Random Test Cases ---\n");
+    int visualization_indices[10];
+    for (int i = 0; i < 10; i++) {
+        visualization_indices[i] = rand() % N_SAMPLES_FIXED;
     }
-    
-    printf("\nPredicted Instructions:\n");
-    for (int i = 0; i < NUM_SEGMENTS; i++) {
-        char dir_char;
-        int steps;
-        decode_instruction_output(output, i, &dir_char, &steps);
-        int dir_start_idx = GET_DIR_OUTPUT_START_IDX(i);
-        int steps_idx = GET_STEPS_OUTPUT_IDX(i);
-        printf("  Segment %d: (%c, %d) -> Max Dir: %.2f, Steps: %.2f\n", i+1, dir_char, steps, output[dir_start_idx + (dir_char == 'U' ? 0 : dir_char == 'D' ? 1 : dir_char == 'L' ? 2 : 3)], output[steps_idx]);
+
+    for (int i = 0; i < 10; i++) {
+        int lab_idx = visualization_indices[i];
+        
+        // Generate ONE random test path for visualization
+        load_train_case(lab_idx, input, target);
+        forward_pass(input, hidden_out, output);
+
+        printf("Labyrinth #%d (Test Case %d):\n", i + 1, lab_idx);
+        print_labyrinth_and_path(input, target, output);
     }
 }
 
@@ -620,17 +669,15 @@ void test_labyrinth_path(int n_set_size, const double input_set[][D_SIZE], const
 int main(int argc, char **argv) {
     srand(time(NULL));
 
-    // 1. Initialize and Load Data
+    // 1. Initialize, Generate Fixed Data
     initialize_nn();
-    load_train_set();
-    load_test_set();
+    generate_fixed_labyrinths();
 
-    // 2. Training
-    // Pass targets to train_nn for loss calculation
-    train_nn(dataset, targets);
+    // 2. Training (uses load_train_case dynamically)
+    train_nn();
     
-    // 3. Testing and Visualization
-    test_labyrinth_path(N_SAMPLES_TEST, test_data, test_targets);
+    // 3. Testing and Visualization (uses load_train_case dynamically)
+    test_nn_and_summarize();
 
     return 0;
 }
