@@ -9,25 +9,25 @@
 
 // --- Configuration ---
 #define GRID_SIZE 16       
-#define D_SIZE (GRID_SIZE * GRID_SIZE) // 256
+#define D_SIZE (GRID_SIZE * GRID_SIZE) 
 
 // **Input Configuration**
 #define NUM_LONGEST_PATHS 8
 #define PATH_FEATURE_SIZE (4 + 1) 
-#define N_INPUT (D_SIZE + (NUM_LONGEST_PATHS * PATH_FEATURE_SIZE)) // 256 + 40 = 296
+#define N_INPUT (D_SIZE + (NUM_LONGEST_PATHS * PATH_FEATURE_SIZE)) 
 #define N_LABYRINTH_PIXELS D_SIZE
 
 #define NUM_SEGMENTS 7
 #define N_DIRECTION_CLASSES 4 
-#define N_OUTPUT (2 + (NUM_SEGMENTS * N_DIRECTION_CLASSES) + (NUM_SEGMENTS * 1) + 2) // 39
+#define N_OUTPUT (2 + (NUM_SEGMENTS * N_DIRECTION_CLASSES) + (NUM_SEGMENTS * 1) + 2) 
 
 // **Network & Training Parameters**
 #define N_HIDDEN 64       
 #define N_SAMPLES_FIXED 25 
 #define N_TEST_CASES_PER_LABYRINTH 10 
-#define LEARNING_RATE 0.002 
+#define INITIAL_LEARNING_RATE 0.0005 // ⬅️ UPDATED
 #define N_EPOCHS_TRAIN 800000 
-#define COORD_WEIGHT 10.0      
+#define COORD_WEIGHT 1.0             // ⬅️ UPDATED
 #define CLASSIFICATION_WEIGHT 1.0 
 #define MAX_STEPS 8.0 
 #define MAX_TRAINING_SECONDS 180.0 
@@ -46,10 +46,12 @@
 // --- Dynamic Globals ---
 int N_SAMPLES = N_SAMPLES_FIXED; 
 int N_EPOCHS = N_EPOCHS_TRAIN; 
+double current_learning_rate = INITIAL_LEARNING_RATE; // ⬅️ NEW Dynamic LR variable
+double last_avg_loss = DBL_MAX;                       // ⬅️ NEW for LR scheduling
  
 // Global Data & Matrices 
 double fixed_labyrinths[N_SAMPLES_FIXED][D_SIZE]; 
-int fixed_exit_coords[N_SAMPLES_FIXED][2]; // [x, y] of the exit
+int fixed_exit_coords[N_SAMPLES_FIXED][2]; 
 
 // Neural Network Weights and Biases 
 double w_fh[N_INPUT][N_HIDDEN];    
@@ -151,7 +153,7 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
 
             if (next_x >= 0 && next_x < GRID_SIZE && next_y >= 0 && next_y < GRID_SIZE && 
                 !visited[next_y][next_x] && 
-                labyrinth[GRID_SIZE * next_y + next_x] > 0.5) // Must be an open path cell
+                labyrinth[GRID_SIZE * next_y + next_x] > 0.5) 
             {
                 visited[next_y][next_x] = 1;
                 queue[tail] = (BFSNode){next_x, next_y, head - 1};
@@ -161,7 +163,6 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
     }
 
     if (path_end_idx == -1) {
-        // Path not found - assign coordinates only
         target_data[0] = NORMALIZE_COORD(start_x);
         target_data[1] = NORMALIZE_COORD(start_y);
         target_data[N_OUTPUT-2] = NORMALIZE_COORD(exit_x);
@@ -183,8 +184,8 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
     int current_path_idx = path_length - 1;
     int last_dir = -1;
     int steps = 0;
-    int dir_start_idx; // Declared outside of the goto label to fix C23 warning
-    int steps_idx; // Declared outside of the goto label to fix C23 warning
+    int dir_start_idx; 
+    int steps_idx; 
 
     while (current_path_idx > 0 && current_segment < NUM_SEGMENTS) {
         int next_path_idx = current_path_idx - 1;
@@ -194,14 +195,12 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
         int next_x = queue[path_indices[next_path_idx]].x;
         int next_y = queue[path_indices[next_path_idx]].y;
 
-        // Determine direction of this single step
         int dir = -1;
         if (next_y < prev_y) dir = DIR_UP_IDX;
         else if (next_y > prev_y) dir = DIR_DOWN_IDX;
         else if (next_x < prev_x) dir = DIR_LEFT_IDX;
         else if (next_x > prev_x) dir = DIR_RIGHT_IDX;
         
-        // Check if segment should change
         if (last_dir == -1) {
             last_dir = dir;
             steps = 1;
@@ -217,8 +216,7 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
         current_path_idx = next_path_idx;
         continue;
         
-    finalize_segment: // FIX: Label followed by declaration moved out
-        // Encode the finished segment 
+    finalize_segment:
         dir_start_idx = GET_DIR_OUTPUT_START_IDX(current_segment);
         target_data[dir_start_idx + last_dir] = 1.0; 
         
@@ -227,13 +225,11 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
         
         current_segment++;
         
-        // Start new segment
         last_dir = dir;
         steps = 1;
         current_path_idx = next_path_idx;
     }
     
-    // Encode the final segment
     if (steps > 0 && current_segment < NUM_SEGMENTS) {
         dir_start_idx = GET_DIR_OUTPUT_START_IDX(current_segment);
         target_data[dir_start_idx + last_dir] = 1.0; 
@@ -242,7 +238,6 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
         target_data[steps_idx] = NORMALIZE_STEPS(steps);
     }
 
-    // Final Target Data assignment (for coordinates)
     target_data[0] = NORMALIZE_COORD(start_x);
     target_data[1] = NORMALIZE_COORD(start_y);
     target_data[N_OUTPUT-2] = NORMALIZE_COORD(exit_x);
@@ -478,14 +473,29 @@ double clip_gradient(double grad, double max_norm) {
     return grad;
 }
 
+// ⬅️ NEW: Dynamic Learning Rate Scheduler
+void update_learning_rate(double current_avg_loss) {
+    if (current_avg_loss > last_avg_loss * 1.01 || isnan(current_avg_loss)) {
+        // Loss increased or became NaN/Inf, apply aggressive decay
+        current_learning_rate *= 0.5;
+        printf("\n!!! Learning Rate DECAYED aggressively to %.6f (Loss explosion/increase).\n", current_learning_rate);
+    } else if (current_avg_loss > last_avg_loss * 0.99) {
+        // Loss stabilized or only slightly decreased, apply gentle decay
+        current_learning_rate *= 0.9;
+    } 
+    // If loss decreased significantly, keep the current rate.
+    
+    last_avg_loss = current_avg_loss;
+}
+
 
 void train_nn() {
-    printf("Training Vanilla NN with %d inputs and %d hidden neurons (Samples: %d, LR: %.4f, Clip: %.1f).\n", 
-           N_INPUT, N_HIDDEN, N_SAMPLES_FIXED, LEARNING_RATE, GRADIENT_CLIP_NORM);
+    printf("Training Vanilla NN with %d inputs and %d hidden neurons (Samples: %d, Initial LR: %.6f, Coords Weight: %.1f, Clip: %.1f).\n", 
+           N_INPUT, N_HIDDEN, N_SAMPLES_FIXED, INITIAL_LEARNING_RATE, COORD_WEIGHT, GRADIENT_CLIP_NORM);
     
     clock_t start_time = clock();
     double time_elapsed;
-    int report_interval = N_EPOCHS_TRAIN / 10;
+    int report_interval = N_EPOCHS_TRAIN / 100; // Increased reporting frequency for better LR control
     if (report_interval == 0) report_interval = 1;
 
     double input[N_INPUT];
@@ -537,24 +547,24 @@ void train_nn() {
         // 3. Update Hidden-to-Output Weights and Biases
         for (int k = 0; k < N_OUTPUT; k++) { 
             for (int j = 0; j < N_HIDDEN; j++) { 
-                w_ho[j][k] -= LEARNING_RATE * delta_o[k] * hidden_out[j]; 
+                w_ho[j][k] -= current_learning_rate * delta_o[k] * hidden_out[j]; 
             } 
-            b_o[k] -= LEARNING_RATE * delta_o[k];
+            b_o[k] -= current_learning_rate * delta_o[k];
         } 
         
         // 4. Update Input-to-Hidden Weights 
         for (int i = 0; i < N_INPUT; i++) { 
             for (int j = 0; j < N_HIDDEN; j++) { 
-                double gradient = LEARNING_RATE * delta_h[j] * input[i];
-                w_fh[i][j] -= clip_gradient(gradient, LEARNING_RATE * GRADIENT_CLIP_NORM);
+                double gradient = current_learning_rate * delta_h[j] * input[i];
+                w_fh[i][j] -= clip_gradient(gradient, current_learning_rate * GRADIENT_CLIP_NORM);
             } 
         }
         // 5. Update Hidden Biases
         for (int j = 0; j < N_HIDDEN; j++) { 
-            b_h[j] -= LEARNING_RATE * delta_h[j]; 
+            b_h[j] -= current_learning_rate * delta_h[j]; 
         }
 
-        // ERROR RATE REPORTING
+        // ERROR RATE REPORTING AND LR SCHEDULING
         if ((epoch % report_interval == 0) && epoch != 0) {
             double cumulative_loss = 0.0;
             double temp_hidden[N_HIDDEN];
@@ -568,8 +578,11 @@ void train_nn() {
                 cumulative_loss += calculate_loss(temp_output, target);
             }
 
-            printf("  Epoch %d/%d completed. Time elapsed: %.2f s. Avg Loss (per sample): %.4f\n", 
-                   epoch, N_EPOCHS_TRAIN, time_elapsed, cumulative_loss / 100.0);
+            double current_avg_loss = cumulative_loss / 100.0;
+            update_learning_rate(current_avg_loss); // ⬅️ Apply LR schedule
+            
+            printf("  Epoch %d/%d completed. Time elapsed: %.2f s. LR: %.6f. Avg Loss (per sample): %.4f\n", 
+                   epoch, N_EPOCHS_TRAIN, time_elapsed, current_learning_rate, current_avg_loss);
         }
     }
 }
@@ -679,7 +692,7 @@ void draw_path(char map[GRID_SIZE][GRID_SIZE], int start_x, int start_y, int exi
         
         if (i < NUM_SEGMENTS - 1) {
             if (current_x >= 0 && current_x < GRID_SIZE && current_y >= 0 && current_y < GRID_SIZE) {
-                if (map[current_y][current_x] == '*') { // Only mark turn points on open path cells
+                if (map[current_y][current_x] == '*') { 
                     map[current_y][current_x] = '1' + i; 
                 }
             }
@@ -687,18 +700,16 @@ void draw_path(char map[GRID_SIZE][GRID_SIZE], int start_x, int start_y, int exi
     }
 }
 
-// FIX: Corrected function to use output_vec and ensure coordinates come from predictions
 int is_path_legal(const double labyrinth[D_SIZE], int start_x, int start_y, const double output_vec[N_OUTPUT]) {
     
-    // The path starts at the predicted start coordinate (output_vec[0], output_vec[1])
+    // Path traversal uses predicted start coords
     int current_x = DENORMALIZE_COORD(output_vec[0]);
     int current_y = DENORMALIZE_COORD(output_vec[1]);
     
-    // The path should aim for the predicted exit coordinate
+    // Path aims for predicted exit coords
     int exit_x = DENORMALIZE_COORD(output_vec[N_OUTPUT-2]);
     int exit_y = DENORMALIZE_COORD(output_vec[N_OUTPUT-1]);
 
-    // Check predicted Start is on path/open space
     if (current_x < 0 || current_x >= GRID_SIZE || current_y < 0 || current_y >= GRID_SIZE) return 0;
     if (labyrinth[GRID_SIZE * current_y + current_x] < 0.5) return 0;
     
@@ -718,10 +729,7 @@ int is_path_legal(const double labyrinth[D_SIZE], int start_x, int start_y, cons
             else if (dir_char == 'L') next_x--;
             else if (dir_char == 'R') next_x++;
             
-            // Boundary Check
             if (next_x < 0 || next_x >= GRID_SIZE || next_y < 0 || next_y >= GRID_SIZE) return 0;
-
-            // Wall Check (Must be on a path cell, which is >= 0.5 in the input)
             if (labyrinth[GRID_SIZE * next_y + next_x] < 0.5) return 0;
             
             current_x = next_x;
@@ -729,7 +737,6 @@ int is_path_legal(const double labyrinth[D_SIZE], int start_x, int start_y, cons
         }
     }
 
-    // Check if the final position is reasonably close to the predicted exit
     return (abs(current_x - exit_x) + abs(current_y - exit_y) < 2); 
 }
 
@@ -808,17 +815,14 @@ void test_nn_and_summarize() {
     for (int lab_idx = 0; lab_idx < total_fixed_labyrinths; lab_idx++) {
         for (int test_run = 0; test_run < N_TEST_CASES_PER_LABYRINTH; test_run++) {
             
-            // Generate the training case (which becomes a test case here)
             load_train_case(lab_idx, input, target); 
             
             forward_pass(input, hidden_out, output);
             cumulative_test_loss += calculate_loss(output, target);
             
-            // Get actual start coords for the legality check (since load_train_case knows them)
             int true_start_x = DENORMALIZE_COORD(target[0]);
             int true_start_y = DENORMALIZE_COORD(target[1]);
 
-            // Check legality and accuracy (using the predicted output vector)
             int legal_path = is_path_legal(input, true_start_x, true_start_y, output);
             
             int coords_accurate = 1;
@@ -839,7 +843,6 @@ void test_nn_and_summarize() {
                 }
             }
 
-            // A solution is counted only if coordinates are accurate AND the path is legal (doesn't hit a wall)
             if (legal_path && coords_accurate) {
                  solved_count++;
             }
