@@ -23,11 +23,9 @@
 
 // **Network & Training Parameters**
 #define N_HIDDEN 64       
-// **CHANGE 1: Reduced Samples**
-#define N_SAMPLES_FIXED 25 
+#define N_SAMPLES_FIXED 25 // ⬅️ UPDATED
 #define N_TEST_CASES_PER_LABYRINTH 10 
-// **CHANGE 2: Increased Learning Rate**
-#define LEARNING_RATE 0.002 
+#define LEARNING_RATE 0.002 // ⬅️ UPDATED
 #define N_EPOCHS_TRAIN 800000 
 #define COORD_WEIGHT 10.0      
 #define CLASSIFICATION_WEIGHT 1.0 
@@ -35,8 +33,8 @@
 #define MAX_TRAINING_SECONDS 180.0 
 #define SOLVED_ERROR_THRESHOLD 0.1 
 
-// **CHANGE 3: Gradient Clipping Parameter**
-#define GRADIENT_CLIP_NORM 1.0 
+// **Gradient Clipping Parameter**
+#define GRADIENT_CLIP_NORM 1.0 // ⬅️ NEW
 
 // Direction Encoding
 #define DIR_UP_IDX 0
@@ -94,13 +92,14 @@ double calculate_loss(const double output[N_OUTPUT], const double target[N_OUTPU
 double relu(double x);
 void softmax(double vector[N_DIRECTION_CLASSES]);
 void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], double output[N_OUTPUT]);
-void backward_pass_and_update(const double input[N_INPUT], const double hidden_out[N_HIDDEN], const double output[N_OUTPUT], const double target[N_OUTPUT]);
+void train_nn();
 void test_nn_and_summarize();
 int is_path_legal(const double labyrinth[D_SIZE], int start_x, int start_y, const double output_vec[N_OUTPUT]);
+void print_labyrinth_and_path(const double input_vec[N_INPUT], const double target_output[N_OUTPUT], const double estimated_output[N_OUTPUT]);
 
 
 // -----------------------------------------------------------------
-// --- DATA GENERATION FUNCTIONS (Logic unchanged from last step) ---
+// --- DATA GENERATION FUNCTIONS ---
 // -----------------------------------------------------------------
 
 void draw_line(double image[D_SIZE], int x1, int y1, int x2, int y2, double val) {
@@ -121,24 +120,23 @@ void draw_line(double image[D_SIZE], int x1, int y1, int x2, int y2, double val)
     }
 }
 
+// Generates a legal path using BFS and encodes the instructions.
 void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int start_y, int exit_x, int exit_y, double target_data[N_OUTPUT]) {
     
     for (int i = 0; i < N_OUTPUT; i++) { target_data[i] = 0.0; } 
     
-    // BFS implementation to find the shortest path
+    // BFS implementation
     BFSNode queue[D_SIZE];
     int visited[GRID_SIZE][GRID_SIZE];
     memset(visited, 0, sizeof(visited));
     int head = 0, tail = 0;
 
-    // Start node
     queue[tail++] = (BFSNode){start_x, start_y, -1};
     visited[start_y][start_x] = 1;
 
     int path_end_idx = -1;
     int dx[] = {0, 0, -1, 1}; // U, D, L, R
     int dy[] = {-1, 1, 0, 0};
-    // int dir_indices[] = {DIR_UP_IDX, DIR_DOWN_IDX, DIR_LEFT_IDX, DIR_RIGHT_IDX}; // Not needed here
 
     while (head < tail) {
         BFSNode current = queue[head++];
@@ -154,7 +152,7 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
 
             if (next_x >= 0 && next_x < GRID_SIZE && next_y >= 0 && next_y < GRID_SIZE && 
                 !visited[next_y][next_x] && 
-                labyrinth[GRID_SIZE * next_y + next_x] > 0.5) 
+                labyrinth[GRID_SIZE * next_y + next_x] > 0.5) // Must be an open path cell
             {
                 visited[next_y][next_x] = 1;
                 queue[tail] = (BFSNode){next_x, next_y, head - 1};
@@ -164,7 +162,7 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
     }
 
     if (path_end_idx == -1) {
-        // Path not found 
+        // Path not found - assign coordinates only
         target_data[0] = NORMALIZE_COORD(start_x);
         target_data[1] = NORMALIZE_COORD(start_y);
         target_data[N_OUTPUT-2] = NORMALIZE_COORD(exit_x);
@@ -219,7 +217,7 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
         continue;
         
     finalize_segment:
-        // Encode the finished segment 
+        // Encode the finished segment
         int dir_start_idx = GET_DIR_OUTPUT_START_IDX(current_segment);
         target_data[dir_start_idx + last_dir] = 1.0; 
         
@@ -241,7 +239,6 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
         
         int steps_idx = GET_STEPS_OUTPUT_IDX(current_segment);
         target_data[steps_idx] = NORMALIZE_STEPS(steps);
-        // current_segment++; // Don't need to increment, we are done
     }
 
     // Final Target Data assignment (for coordinates)
@@ -474,7 +471,6 @@ void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], doub
     }
 }
 
-// Helper function for gradient clipping
 double clip_gradient(double grad, double max_norm) {
     if (grad > max_norm) return max_norm;
     if (grad < -max_norm) return -max_norm;
@@ -524,7 +520,7 @@ void train_nn() {
                 double error = output[k] - target[k];
                 delta_o[k] = error * COORD_WEIGHT; 
             }
-            // **CHANGE 4: Clip Output Delta**
+            // ➡️ Gradient Clipping
             delta_o[k] = clip_gradient(delta_o[k], GRADIENT_CLIP_NORM);
         }
         
@@ -548,7 +544,6 @@ void train_nn() {
         // 4. Update Input-to-Hidden Weights 
         for (int i = 0; i < N_INPUT; i++) { 
             for (int j = 0; j < N_HIDDEN; j++) { 
-                // **CHANGE 4: Clip Input-to-Hidden gradient (optional but safer)**
                 double gradient = LEARNING_RATE * delta_h[j] * input[i];
                 w_fh[i][j] -= clip_gradient(gradient, LEARNING_RATE * GRADIENT_CLIP_NORM);
             } 
@@ -583,10 +578,12 @@ double calculate_loss(const double output[N_OUTPUT], const double target[N_OUTPU
     
     for (int k = 0; k < N_OUTPUT; k++) {
         if (k >= 2 && k < (2 + NUM_SEGMENTS * N_DIRECTION_CLASSES)) {
+            // Cross-Entropy Loss for Classification
             if (target[k] > 0.5) { 
                 total_loss += -log(output[k] + 1e-9) * CLASSIFICATION_WEIGHT;
             }
         } else { 
+            // Squared Error Loss for Regression (Coordinates)
             double error = output[k] - target[k];
             total_loss += error * error * COORD_WEIGHT; 
         }
@@ -595,7 +592,276 @@ double calculate_loss(const double output[N_OUTPUT], const double target[N_OUTPU
 }
 
 
-// (Visualization and testing functions are not listed again for brevity, as their logic remains the same.)
+// -----------------------------------------------------------------
+// --- TESTING AND VISUALIZATION FUNCTIONS ---
+// -----------------------------------------------------------------
+
+void decode_instruction_output(const double output_vec[N_OUTPUT], int segment, char *dir_char, int *steps) {
+    double steps_norm = output_vec[GET_STEPS_OUTPUT_IDX(segment)];
+    *steps = DENORMALIZE_STEPS(steps_norm);
+
+    int dir_start_idx = GET_DIR_OUTPUT_START_IDX(segment);
+    int max_idx = 0;
+    double max_val = output_vec[dir_start_idx];
+
+    for (int k = 1; k < N_DIRECTION_CLASSES; k++) {
+        if (output_vec[dir_start_idx + k] > max_val) {
+            max_val = output_vec[dir_start_idx + k];
+            max_idx = k;
+        }
+    }
+    
+    if (max_idx == DIR_UP_IDX) *dir_char = 'U';
+    else if (max_idx == DIR_DOWN_IDX) *dir_char = 'D';
+    else if (max_idx == DIR_LEFT_IDX) *dir_char = 'L';
+    else if (max_idx == DIR_RIGHT_IDX) *dir_char = 'R';
+    else *dir_char = '?'; 
+}
+
+void decode_instruction_target(const double target_vec[N_OUTPUT], int segment, char *dir_char, int *steps) {
+    *steps = DENORMALIZE_STEPS(target_vec[GET_STEPS_OUTPUT_IDX(segment)]);
+
+    int dir_start_idx = GET_DIR_OUTPUT_START_IDX(segment);
+    int one_hot_idx = -1;
+
+    for (int k = 0; k < N_DIRECTION_CLASSES; k++) {
+        if (target_vec[dir_start_idx + k] > 0.5) { 
+            one_hot_idx = k;
+            break;
+        }
+    }
+    
+    if (one_hot_idx == DIR_UP_IDX) *dir_char = 'U';
+    else if (one_hot_idx == DIR_DOWN_IDX) *dir_char = 'D';
+    else if (one_hot_idx == DIR_LEFT_IDX) *dir_char = 'L';
+    else if (one_hot_idx == DIR_RIGHT_IDX) *dir_char = 'R';
+    else *dir_char = '?';
+}
+
+void draw_path(char map[GRID_SIZE][GRID_SIZE], int start_x, int start_y, int exit_x, int exit_y, const double output_vec[N_OUTPUT], int is_target) {
+    int current_x = start_x;
+    int current_y = start_y;
+    
+    if (current_x >= 0 && current_x < GRID_SIZE && current_y >= 0 && current_y < GRID_SIZE) {
+        map[current_y][current_x] = '0';
+    }
+    if (exit_x >= 0 && exit_x < GRID_SIZE && exit_y >= 0 && exit_y < GRID_SIZE) {
+        if (map[exit_y][exit_x] != '0') {
+             map[exit_y][exit_x] = 'E';
+        }
+    }
+    
+    for (int i = 0; i < NUM_SEGMENTS; i++) {
+        char dir_char;
+        int steps;
+        
+        if (is_target) {
+            decode_instruction_target(output_vec, i, &dir_char, &steps);
+        } else {
+            decode_instruction_output(output_vec, i, &dir_char, &steps);
+        }
+        
+        if (steps == 0) continue; 
+
+        for (int s = 1; s <= steps; s++) {
+            if (dir_char == 'U') current_y--;
+            else if (dir_char == 'D') current_y++;
+            else if (dir_char == 'L') current_x--;
+            else if (dir_char == 'R') current_x++;
+            
+            if (current_x >= 0 && current_x < GRID_SIZE && current_y >= 0 && current_y < GRID_SIZE) {
+                if (map[current_y][current_x] == ' ') {
+                    map[current_y][current_x] = '*';
+                }
+            }
+        }
+        
+        if (i < NUM_SEGMENTS - 1) {
+            if (current_x >= 0 && current_x < GRID_SIZE && current_y >= 0 && current_y < GRID_SIZE) {
+                if (map[current_y][current_x] == '*') { // Only mark turn points on open path cells
+                    map[current_y][current_x] = '1' + i; 
+                }
+            }
+        }
+    }
+}
+
+int is_path_legal(const double labyrinth[D_SIZE], int start_x, int start_y, const double output_vec[N_OUTPUT]) {
+    int current_x = DENORMALIZE_COORD(output_vec[0]);
+    int current_y = DENORMALIZE_COORD(output[1]);
+    int exit_x = DENORMALIZE_COORD(output_vec[N_OUTPUT-2]);
+    int exit_y = DENORMALIZE_COORD(output_vec[N_OUTPUT-1]);
+
+    // Check Start is on path/open space
+    if (current_x < 0 || current_x >= GRID_SIZE || current_y < 0 || current_y >= GRID_SIZE) return 0;
+    if (labyrinth[GRID_SIZE * current_y + current_x] < 0.5) return 0;
+    
+    for (int i = 0; i < NUM_SEGMENTS; i++) {
+        char dir_char;
+        int steps;
+        
+        decode_instruction_output(output_vec, i, &dir_char, &steps);
+        if (steps == 0) continue; 
+
+        for (int s = 1; s <= steps; s++) {
+            int next_x = current_x;
+            int next_y = current_y;
+
+            if (dir_char == 'U') next_y--;
+            else if (dir_char == 'D') next_y++;
+            else if (dir_char == 'L') next_x--;
+            else if (dir_char == 'R') next_x++;
+            
+            // Boundary Check
+            if (next_x < 0 || next_x >= GRID_SIZE || next_y < 0 || next_y >= GRID_SIZE) return 0;
+
+            // Wall Check (Must be on a path cell, which is >= 0.5 in the input)
+            if (labyrinth[GRID_SIZE * next_y + next_x] < 0.5) return 0;
+            
+            current_x = next_x;
+            current_y = next_y;
+        }
+    }
+
+    // Check if the final position is reasonably close to the predicted exit
+    return (abs(current_x - exit_x) + abs(current_y - exit_y) < 2); 
+}
+
+
+void print_labyrinth_and_path(const double input_vec[N_INPUT], const double target_output[N_OUTPUT], const double estimated_output[N_OUTPUT]) {
+    
+    const double* input_image = input_vec;
+    
+    char true_path_map[GRID_SIZE][GRID_SIZE];
+    char est_path_map[GRID_SIZE][GRID_SIZE];
+    
+    for (int y = 0; y < GRID_SIZE; y++) {
+        for (int x = 0; x < GRID_SIZE; x++) {
+            if (input_image[GRID_SIZE * y + x] < 0.5) { 
+                true_path_map[y][x] = '#';
+                est_path_map[y][x] = '#';
+            } else { 
+                true_path_map[y][x] = ' ';
+                est_path_map[y][x] = ' ';
+            }
+        }
+    }
+    
+    int true_start_x = DENORMALIZE_COORD(target_output[0]);
+    int true_start_y = DENORMALIZE_COORD(target_output[1]);
+    int true_exit_x = DENORMALIZE_COORD(target_output[N_OUTPUT-2]);
+    int true_exit_y = DENORMALIZE_COORD(target_output[N_OUTPUT-1]);
+
+    int est_start_x = DENORMALIZE_COORD(estimated_output[0]);
+    int est_start_y = DENORMALIZE_COORD(estimated_output[1]);
+    int est_exit_x = DENORMALIZE_COORD(estimated_output[N_OUTPUT-2]);
+    int est_exit_y = DENORMALIZE_COORD(estimated_output[N_OUTPUT-1]);
+    
+    draw_path(true_path_map, true_start_x, true_start_y, true_exit_x, true_exit_y, target_output, 1);
+    draw_path(est_path_map, est_start_x, est_start_y, est_exit_x, est_exit_y, estimated_output, 0);
+    
+    printf("\n--- True Path (Target) | Predicted Path (Output) ---\n");
+    printf("TRUE Start: (%d, %d), Exit: (%d, %d)\n", true_start_x, true_start_y, true_exit_x, true_exit_y);
+    printf("EST Start:  (%d, %d), Exit: (%d, %d)\n", est_start_x, est_start_y, est_exit_x, est_exit_y);
+    printf("--------------------------------------------------\n");
+    
+    for (int y = 0; y < GRID_SIZE; y++) {
+        for (int x = 0; x < GRID_SIZE; x++) {
+            printf("%c", true_path_map[y][x]);
+        }
+        printf(" | ");
+        for (int x = 0; x < GRID_SIZE; x++) {
+            printf("%c", est_path_map[y][x]);
+        }
+        printf("\n");
+    }
+    printf("--------------------------------------------------\n");
+}
+
+
+void test_nn_and_summarize() {
+    
+    int total_fixed_labyrinths = N_SAMPLES_FIXED;
+    int total_test_runs = N_SAMPLES_FIXED * N_TEST_CASES_PER_LABYRINTH;
+
+    printf("\n--- STEP 3: LABYRINTH PATH PREDICTION TEST SUMMARY ---\n");
+    printf("Testing %d fixed labyrinths with %d random start points each (Total %d tests).\n", 
+           total_fixed_labyrinths, N_TEST_CASES_PER_LABYRINTH, total_test_runs);
+    
+    double cumulative_test_loss = 0.0;
+    int solved_count = 0;
+    
+    double input[N_INPUT];
+    double target[N_OUTPUT];
+    double hidden_out[N_HIDDEN]; 
+    double output[N_OUTPUT];
+
+    // Resetting random seed for consistent visualization on test set
+    srand(12345); 
+
+    for (int lab_idx = 0; lab_idx < total_fixed_labyrinths; lab_idx++) {
+        for (int test_run = 0; test_run < N_TEST_CASES_PER_LABYRINTH; test_run++) {
+            
+            // Generate the training case (which becomes a test case here)
+            // Note: This loads the labyrinth and generates a random start point and its target path.
+            load_train_case(lab_idx, input, target); 
+            
+            forward_pass(input, hidden_out, output);
+            cumulative_test_loss += calculate_loss(output, target);
+            
+            // Check legality and accuracy
+            int legal_path = is_path_legal(input, DENORMALIZE_COORD(output[0]), DENORMALIZE_COORD(output[1]), output);
+            
+            int coords_accurate = 1;
+            
+            // Check Start/Exit/Step coordinates (Regression outputs)
+            for (int k = 0; k < 2; k++) { 
+                if (fabs(output[k] - target[k]) > SOLVED_ERROR_THRESHOLD) { coords_accurate = 0; break; }
+            }
+            if (coords_accurate) {
+                for (int k = N_OUTPUT - 2; k < N_OUTPUT; k++) { 
+                    if (fabs(output[k] - target[k]) > SOLVED_ERROR_THRESHOLD) { coords_accurate = 0; break; }
+                }
+            }
+            if (coords_accurate) {
+                for (int s = 0; s < NUM_SEGMENTS; s++) {
+                    int steps_idx = GET_STEPS_OUTPUT_IDX(s);
+                     if (fabs(output[steps_idx] - target[steps_idx]) > SOLVED_ERROR_THRESHOLD) { coords_accurate = 0; break; }
+                }
+            }
+
+            // A solution is counted only if coordinates are accurate AND the path is legal (doesn't hit a wall)
+            if (legal_path && coords_accurate) {
+                 solved_count++;
+            }
+        }
+    }
+    
+    printf("\nTEST SUMMARY:\n");
+    printf("Total Test Cases: %d\n", total_test_runs);
+    printf("Average Loss per Test Case: %.4f\n", cumulative_test_loss / total_test_runs);
+    printf("Labyrinths Solved (Accurate Coords + Legal Path): %d / %d (%.2f%%)\n", 
+           solved_count, total_test_runs, (double)solved_count / total_test_runs * 100.0);
+    printf("--------------------------------------------------\n");
+
+
+    // VISUALIZATION: Show 10 random examples
+    printf("\n--- VISUALIZATION: 10 Random Test Cases ---\n");
+    
+    // Resetting random seed again for test case selection
+    srand(time(NULL)); 
+
+    for (int i = 0; i < 10; i++) {
+        int lab_idx = rand() % N_SAMPLES_FIXED;
+        
+        load_train_case(lab_idx, input, target);
+        forward_pass(input, hidden_out, output);
+
+        printf("Labyrinth #%d (Fixed ID: %d):\n", i + 1, lab_idx);
+        print_labyrinth_and_path(input, target, output);
+    }
+}
+
 
 // -----------------------------------------------------------------
 // --- MAIN PROGRAM ---
