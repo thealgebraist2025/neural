@@ -1,3 +1,5 @@
+#define _XOPEN_SOURCE // Define this to ensure math constants like M_PI are available
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -8,21 +10,21 @@
 // --- Configuration ---
 #define N_SAMPLES_MAX 10000 
 #define GRID_SIZE 32       // Image grid size 
-#define D_SIZE (GRID_SIZE * GRID_SIZE) // 32*32 = 1024 raw inputs
+#define D_SIZE (GRID_SIZE * GRID_SIZE) 
 #define N_INPUT D_SIZE     // NN Input Dimension
 #define N_OUTPUT 6         // NN Output: [Classification, x, y, w, h, rotation]
-#define N_HIDDEN 256       // INCREASED: Larger hidden layer for rotation task
+#define N_HIDDEN 256       // Larger hidden layer for rotation task
 #define N_TEST_SAMPLES 500 
 #define N_REGRESSION_TESTS 50 
 
 // Neural Network Parameters
-#define LEARNING_RATE 0.0005 // REDUCED for stability with increased complexity
+#define LEARNING_RATE 0.0005 
 #define N_EPOCHS_TRAIN 100000 
 #define TARGET_RECTANGLE 1.0
 #define TARGET_LINE_SET 0.0
 #define CLASSIFICATION_WEIGHT 1.0 
-#define REGRESSION_WEIGHT 5.0     // INCREASED: Heavily prioritize coordinates and rotation
-#define MAX_ROTATION_DEGREE 180.0 // Max rotation range (0 to 180 degrees)
+#define REGRESSION_WEIGHT 5.0     
+#define MAX_ROTATION_DEGREE 180.0 
 // ---------------------
 
 // --- Dynamic Globals ---
@@ -64,19 +66,17 @@ void test_regression();
 void generate_test_rectangle(double image[D_SIZE], double target_data[N_OUTPUT]);
 
 // -----------------------------------------------------------------
-// --- DATA GENERATION FUNCTIONS (UPDATED for Rotation and Bounding Box) ---
+// --- DATA GENERATION FUNCTIONS ---
 // -----------------------------------------------------------------
 
 void generate_rectangle(double image[D_SIZE], double target_data[N_OUTPUT]) {
     // 1. Initial Rectangle Parameters
     int rect_w = 8 + (rand() % (GRID_SIZE - 12)); 
     int rect_h = 8 + (rand() % (GRID_SIZE - 12)); 
-    // Center the rectangle roughly in the middle half of the grid
     int center_x = GRID_SIZE / 2;
     int center_y = GRID_SIZE / 2;
-    // Rotation degree: 0 to 180
     double rotation_deg = (double)(rand() % 180);
-    double rotation_rad = rotation_deg * M_PI / 180.0;
+    double rotation_rad = rotation_deg * M_PI / 180.0; // M_PI is now available
     double cos_r = cos(rotation_rad);
     double sin_r = sin(rotation_rad);
     
@@ -90,15 +90,12 @@ void generate_rectangle(double image[D_SIZE], double target_data[N_OUTPUT]) {
 
     for (int dy = 0; dy < rect_h; ++dy) {
         for (int dx = 0; dx < rect_w; ++dx) {
-            // Unrotated point relative to center of the rectangle
             double x_rel = dx - (rect_w / 2.0);
             double y_rel = dy - (rect_h / 2.0);
 
-            // Apply Rotation
             double x_rot = x_rel * cos_r - y_rel * sin_r;
             double y_rot = x_rel * sin_r + y_rel * cos_r;
 
-            // Translate back to grid coordinates
             int x_grid = (int)(center_x + x_rot + 0.5);
             int y_grid = (int)(center_y + y_rot + 0.5);
 
@@ -106,7 +103,6 @@ void generate_rectangle(double image[D_SIZE], double target_data[N_OUTPUT]) {
                 int index = GRID_SIZE * y_grid + x_grid;
                 image[index] = value;
                 
-                // Update Minimal Bounding Box
                 if (x_grid < min_x) min_x = x_grid;
                 if (y_grid < min_y) min_y = y_grid;
                 if (x_grid > max_x) max_x = x_grid;
@@ -121,21 +117,18 @@ void generate_rectangle(double image[D_SIZE], double target_data[N_OUTPUT]) {
     int final_w = (int)(max_x - min_x + 1);
     int final_h = (int)(max_y - min_y + 1);
 
-    // Clamp dimensions to the grid size
     if (final_start_x < 0 || final_start_x >= GRID_SIZE) final_start_x = 0;
     if (final_start_y < 0 || final_start_y >= GRID_SIZE) final_start_y = 0;
     final_w = CLAMP(final_w, 1, GRID_SIZE - final_start_x);
     final_h = CLAMP(final_h, 1, GRID_SIZE - final_start_y);
 
     // 5. Set Targets (6 outputs)
-    target_data[0] = TARGET_RECTANGLE; // Classification
-    // Bounding Box (based on minimal axis-aligned box)
-    target_data[1] = (double)final_start_x / GRID_SIZE; // x_norm
-    target_data[2] = (double)final_start_y / GRID_SIZE; // y_norm
-    target_data[3] = (double)final_w / GRID_SIZE;       // w_norm
-    target_data[4] = (double)final_h / GRID_SIZE;       // h_norm
-    // Rotation Degree (Normalized)
-    target_data[5] = rotation_deg / MAX_ROTATION_DEGREE; // rotation_norm
+    target_data[0] = TARGET_RECTANGLE; 
+    target_data[1] = (double)final_start_x / GRID_SIZE; 
+    target_data[2] = (double)final_start_y / GRID_SIZE; 
+    target_data[3] = (double)final_w / GRID_SIZE;       
+    target_data[4] = (double)final_h / GRID_SIZE;       
+    target_data[5] = rotation_deg / MAX_ROTATION_DEGREE; 
 }
 
 void generate_random_lines(double image[D_SIZE], double target_data[N_OUTPUT]) {
@@ -158,8 +151,7 @@ void generate_random_lines(double image[D_SIZE], double target_data[N_OUTPUT]) {
         }
     }
     
-    // Set Targets for Non-Rectangle (6 placeholder values)
-    target_data[0] = TARGET_LINE_SET; // Classification
+    target_data[0] = TARGET_LINE_SET; 
     target_data[1] = target_data[2] = target_data[3] = target_data[4] = target_data[5] = 0.0; 
 }
 
@@ -193,7 +185,7 @@ void generate_test_rectangle(double image[D_SIZE], double target_data[N_OUTPUT])
 }
 
 // -----------------------------------------------------------------
-// --- PROFILING FUNCTIONS (Simplified/Removed Time Limit) ---
+// --- PROFILING FUNCTIONS ---
 // -----------------------------------------------------------------
 
 void estimate_nn_epochs() {
@@ -202,7 +194,7 @@ void estimate_nn_epochs() {
 }
 
 // -----------------------------------------------------------------
-// --- NN CORE FUNCTIONS (Updated for N_OUTPUT=6 and N_HIDDEN=256) ---
+// --- NN CORE FUNCTIONS ---
 // -----------------------------------------------------------------
 
 void initialize_nn() {
@@ -260,11 +252,9 @@ void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], doub
             o_net += hidden_out[j] * w_ho[j][k]; 
         } 
         
-        // Output[0] (Classification) uses Sigmoid
         if (k == 0) {
             output[k] = sigmoid(o_net);
         } else {
-            // Outputs [1..5] (Regression: x, y, w, h, rotation) use identity (linear)
             output[k] = o_net;
         }
     }
@@ -283,7 +273,6 @@ void backward_pass_and_update(const double input[N_INPUT], const double hidden_o
         if (k == 0) { 
             delta_o[k] = error * output[k] * (1.0 - output[k]) * weight;
         } else {
-            // Regression loss applied to outputs 1 through 5
             if (fabs(target[0] - TARGET_RECTANGLE) < DBL_EPSILON) {
                 weight = REGRESSION_WEIGHT; 
             } else {
@@ -339,7 +328,7 @@ double test_on_set_cls(int n_set_size, const double input_set[][N_INPUT]) {
 }
 
 // -----------------------------------------------------------------
-// --- REGRESSION TESTING (Updated for Rotation) ---
+// --- REGRESSION TESTING ---
 // -----------------------------------------------------------------
 
 void test_regression() {
@@ -360,15 +349,13 @@ void test_regression() {
         
         forward_pass(test_image, hidden_out, output);
         
-        // Clamping estimated normalized outputs to [0.0, 1.0] for valid pixel/degree conversion
         double est_x_norm = CLAMP(output[1], 0.0, 1.0);
         double est_y_norm = CLAMP(output[2], 0.0, 1.0);
         double est_w_norm = CLAMP(output[3], 0.0, 1.0);
         double est_h_norm = CLAMP(output[4], 0.0, 1.0);
-        double est_rot_norm = CLAMP(output[5], 0.0, 1.0); // Clamped Rotation Norm
+        double est_rot_norm = CLAMP(output[5], 0.0, 1.0); 
 
         
-        // Denormalize known and estimated dimensions 
         int known_x = (int)(known_target[1] * GRID_SIZE + 0.5);
         int known_y = (int)(known_target[2] * GRID_SIZE + 0.5);
         int known_w = (int)(known_target[3] * GRID_SIZE + 0.5);
@@ -380,7 +367,6 @@ void test_regression() {
         int est_w = (int)(est_w_norm * GRID_SIZE + 0.5);
         int est_h = (int)(est_h_norm * GRID_SIZE + 0.5);
         
-        // Rotation in Degrees
         double known_rot_deg = known_rot_norm * MAX_ROTATION_DEGREE;
         double est_rot_deg = est_rot_norm * MAX_ROTATION_DEGREE;
         
@@ -400,11 +386,7 @@ void test_regression() {
 // -----------------------------------------------------------------
 int main() {
     srand(time(NULL));
-    // Use M_PI if it's not defined by default
-    #ifndef M_PI
-        #define M_PI 3.14159265358979323846
-    #endif
-
+    
     clock_t start_total, end_total;
     start_total = clock();
 
