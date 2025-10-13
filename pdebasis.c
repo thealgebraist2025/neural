@@ -22,13 +22,13 @@
 #define N_HIDDEN4 16 
 
 // **Training Parameters**
-#define NUM_IMAGES 1000        
-#define TRAINING_TIME_LIMIT 120.0 // Resetting to 60s
-#define BATCH_SIZE 32          
+#define NUM_IMAGES 500        
+#define TRAINING_TIME_LIMIT 180.0 // Resetting to 60s
+#define BATCH_SIZE 16          
 #define REPORT_FREQ 500             
 #define INITIAL_LEARNING_RATE 0.0001 
 #define CLASSIFICATION_WEIGHT 1.0  
-#define REGRESSION_WEIGHT 1.0      
+#define REGRESSION_WEIGHT 5.0      
 #define MIN_RADIUS 3           
 #define MAX_RADIUS 10.0    
 #define MAX_RECT_SIZE (GRID_SIZE - 2) 
