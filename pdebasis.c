@@ -12,7 +12,7 @@
 #define D_SIZE (GRID_SIZE * GRID_SIZE) 
 
 // **Labyrinth Configuration**
-#define NUM_LABYRINTHS 2
+#define NUM_LABYRINTHS 1
 #define NUM_LONGEST_PATHS 8
 #define PATH_FEATURE_SIZE (4 + 1) 
 #define N_LABYRINTH_PIXELS D_SIZE
@@ -22,14 +22,14 @@
 #define N_OUTPUT (2 + (NUM_SEGMENTS * N_DIRECTION_CLASSES) + (NUM_SEGMENTS * 1) + 2) 
 
 // **Network & Training Parameters**
-#define N_HIDDEN 128       
+#define N_HIDDEN 256       
 #define N_TEST_CASES_PER_LABYRINTH 10 
-#define INITIAL_LEARNING_RATE 0.00001 
+#define INITIAL_LEARNING_RATE 0.0001 
 #define N_EPOCHS_MAX 1000000 
 #define COORD_WEIGHT 1.0                 
 #define CLASSIFICATION_WEIGHT 1.0 
 #define MAX_STEPS 16.0 
-#define MAX_TRAINING_SECONDS 60
+#define MAX_TRAINING_SECONDS 160
 #define WARMUP_EPOCHS 10
 #define REPORT_SECONDS 1
 #define SOLVED_ERROR_THRESHOLD 0.1 
