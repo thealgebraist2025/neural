@@ -14,12 +14,12 @@
 #define NUM_TRAINING_CASES 128 // Directly defined size of the dataset
 
 // **Hidden Layer Sizes (Single Layer Architecture)**
-#define N_HIDDEN1 64 
+#define N_HIDDEN1 4 
 // N_HIDDEN2, N_HIDDEN3, N_HIDDEN4 are removed.
 
 // **Training Parameters**
 #define TRAINING_TIME_LIMIT 160.0 
-#define BATCH_SIZE 2          
+#define BATCH_SIZE 32          
 #define REPORT_FREQ 50             
 #define INITIAL_LEARNING_RATE 0.001 
 #define REGRESSION_WEIGHT 1.0      
