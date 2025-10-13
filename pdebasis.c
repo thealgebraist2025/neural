@@ -12,7 +12,7 @@
 #define D_SIZE (GRID_SIZE * GRID_SIZE) 
 
 // **Labyrinth Configuration**
-#define NUM_LABYRINTHS 2 // <-- EXPANDED TO TWO LABYRINTHS
+#define NUM_LABYRINTHS 2 // Expanded to two labyrinths
 
 // **Input Configuration**
 #define NUM_LONGEST_PATHS 8
@@ -25,19 +25,17 @@
 // Output = (Start X, Start Y) + (7 * Direction Class) + (7 * Steps) + (Exit X, Exit Y)
 #define N_OUTPUT (2 + (NUM_SEGMENTS * N_DIRECTION_CLASSES) + (NUM_SEGMENTS * 1) + 2) 
 
-// **Network & Training Parameters**
+// **Network & Training Parameters (Minimal)**
 #define N_HIDDEN 64       
-#define N_TEST_CASES_PER_LABYRINTH 10 
-#define INITIAL_LEARNING_RATE 0.0001 
-#define N_EPOCHS_MAX 1000 
+#define N_TRAINING_EPOCHS 1000      // Minimal fixed training epochs
+#define N_TOTAL_TEST_CASES 20       // Minimal fixed test cases
+#define REPORT_FREQ 100             // Report frequency in epochs
+
+#define INITIAL_LEARNING_RATE 0.00001 
+#define N_EPOCHS_MAX 1000000 
 #define COORD_WEIGHT 1.0                 
 #define CLASSIFICATION_WEIGHT 1.0 
 #define MAX_STEPS 16.0 
-
-// CRITICAL FIX CONFIGURATION (2-minute limit)
-#define MAX_TRAINING_SECONDS 120 // Target: Max 2 minutes
-#define WARMUP_EPOCHS 10 // Epochs used for timing estimation
-#define REPORT_SECONDS 1 // Report frequency (every second)
 
 #define SOLVED_ERROR_THRESHOLD 0.1 
 #define GRADIENT_CLIP_NORM 1.0 
@@ -57,7 +55,7 @@ double last_avg_loss = DBL_MAX;
 double single_labyrinths[NUM_LABYRINTHS][D_SIZE]; // Array to hold two labyrinths
 int fixed_exit_coords[NUM_LABYRINTHS][2]; // Array to hold two exit coordinates
 
-// Neural Network Weights and Biases (No change needed)
+// Neural Network Weights and Biases 
 double w_fh[N_INPUT][N_HIDDEN];    
 double b_h[N_HIDDEN]; 
 double w_ho[N_HIDDEN][N_OUTPUT];   
@@ -94,8 +92,6 @@ void update_learning_rate(double current_avg_loss);
 double clip_gradient(double grad, double max_norm); 
 
 void forward_pass(const double input[N_INPUT], double hidden_net[N_HIDDEN], double hidden_out[N_HIDDEN], double output_net[N_OUTPUT], double output[N_OUTPUT]);
-
-int estimate_epochs_per_second(double input[N_INPUT], double target[N_OUTPUT]);
 
 void train_nn();
 void test_nn_and_summarize();
@@ -168,7 +164,7 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
     
     for (int i = 0; i < N_OUTPUT; i++) { target_data[i] = 0.0; } 
     
-    // BFS implementation (pathfinding logic remains the same)
+    // BFS implementation
     typedef struct { int x, y, prev_idx; } BFSNode;
     BFSNode queue[D_SIZE];
     int visited[GRID_SIZE][GRID_SIZE];
@@ -404,7 +400,7 @@ void load_train_case(double input[N_INPUT], double target[N_OUTPUT]) {
     const double *current_labyrinth = single_labyrinths[lab_idx];
     const int *current_exit_coord = fixed_exit_coords[lab_idx];
     
-    printf("[DEBUG] Loading train case for Labyrinth %d\n", lab_idx);
+    // printf("[DEBUG] Loading train case for Labyrinth %d\n", lab_idx); // Removed for cleaner minimal output
 
     // Part 1: Copy Labyrinth Pixels
     memcpy(input, current_labyrinth, D_SIZE * sizeof(double));
@@ -525,65 +521,17 @@ void update_learning_rate(double current_avg_loss) {
 }
 
 
-int estimate_epochs_per_second(double input[N_INPUT], double target[N_OUTPUT]) {
-    printf("[DEBUG] --- Timing Warmup: Running %d epochs to estimate performance. ---\n", WARMUP_EPOCHS);
-    
-    double hidden_net[N_HIDDEN], hidden_out[N_HIDDEN], output_net[N_OUTPUT], output[N_OUTPUT];
-    
-    double w_fh_copy[N_INPUT][N_HIDDEN];
-    memcpy(w_fh_copy, w_fh, sizeof(w_fh)); 
-    
-    time_t start_time = time(NULL);
-    
-    for (int i = 0; i < WARMUP_EPOCHS; i++) {
-        load_train_case(input, target);
-        forward_pass(input, hidden_net, hidden_out, output_net, output);
-        
-        double error = calculate_loss(output, target);
-        
-        double delta_o[N_OUTPUT] = {0.0};
-        delta_o[0] = (output[0] - target[0]) * sigmoid_derivative(output[0]);
-        for(int j=0; j<N_HIDDEN; j++) {
-            double delta_h = delta_o[0] * w_ho[j][0] * tanh_derivative(hidden_out[j]);
-            w_fh[0][j] -= 0.0 * delta_h * input[0]; 
-        }
-    }
-    
-    time_t end_time = time(NULL);
-    double elapsed_time = difftime(end_time, start_time);
-    
-    memcpy(w_fh, w_fh_copy, sizeof(w_fh));
-
-    if (elapsed_time < 1.0) {
-        printf("[DEBUG] Warmup too fast (%.2f s). Defaulting to 1000 epochs/second guess.\n", elapsed_time);
-        return 1000;
-    }
-
-    int epochs_per_second = (int)round((double)WARMUP_EPOCHS / elapsed_time);
-    printf("[DEBUG] --- Warmup finished: %.2f seconds for %d epochs. Estimated %d epochs per second. ---\n", 
-           elapsed_time, WARMUP_EPOCHS, epochs_per_second);
-           
-    return epochs_per_second;
-}
-
-
 void train_nn() {
     
     printf("\n--- STEP 2: STARTING TRAINING PHASE ---\n");
     double input[N_INPUT];
     double target[N_OUTPUT];
     
-    int epochs_per_sec = estimate_epochs_per_second(input, target);
-    int max_epochs_to_run = (int)((double)epochs_per_sec * MAX_TRAINING_SECONDS * 0.98); 
+    int max_epochs_to_run = N_TRAINING_EPOCHS;
     
-    if (max_epochs_to_run > N_EPOCHS_MAX) max_epochs_to_run = N_EPOCHS_MAX;
+    printf("Training Vanilla NN. Running for a minimum of %d epochs (Report every %d epochs).\n", 
+           max_epochs_to_run, REPORT_FREQ);
     
-    printf("Training Vanilla NN. Time Limit: %d seconds. Epoch Limit (Estimated): %d.\n", 
-           MAX_TRAINING_SECONDS, max_epochs_to_run);
-    
-    time_t start_time = time(NULL);
-    time_t next_report_time = start_time + REPORT_SECONDS;
-
     double hidden_net[N_HIDDEN]; 
     double hidden_out[N_HIDDEN];
     double output_net[N_OUTPUT]; 
@@ -591,28 +539,20 @@ void train_nn() {
     
     double cumulative_loss_report = 0.0;
     int samples_processed_in_report = 0;
-    int total_samples_processed = 0;
 
     for (int epoch = 0; epoch < max_epochs_to_run; epoch++) {
         
-        if (epoch >= max_epochs_to_run) {
-            double time_elapsed = difftime(time(NULL), start_time);
-            printf("\n--- Training stopped: Estimated epoch limit (%d) reached. Time elapsed: %.2f s. ---\n", 
-                   max_epochs_to_run, time_elapsed);
-            break;
-        }
-
         load_train_case(input, target);
 
         forward_pass(input, hidden_net, hidden_out, output_net, output);
         cumulative_loss_report += calculate_loss(output, target);
         samples_processed_in_report++;
-        total_samples_processed++;
         
         double delta_o[N_OUTPUT];
         double delta_h[N_HIDDEN]; 
         double error_h[N_HIDDEN] = {0.0};
         
+        // Backpropagation and Update
         for (int k = 0; k < N_OUTPUT; k++) {
             if (k >= 2 && k < (2 + NUM_SEGMENTS * N_DIRECTION_CLASSES)) {
                 delta_o[k] = (output[k] - target[k]); 
@@ -649,22 +589,26 @@ void train_nn() {
             b_h[j] -= current_learning_rate * delta_h[j]; 
         }
         
-        if (time(NULL) >= next_report_time) {
+        // Epoch-based reporting
+        if ((epoch + 1) % REPORT_FREQ == 0) {
             double current_avg_loss = cumulative_loss_report / samples_processed_in_report;
             update_learning_rate(current_avg_loss); 
             
-            double time_elapsed = difftime(time(NULL), start_time);
-            int epochs_remaining = max_epochs_to_run - (epoch + 1);
-            double estimated_end_time = time_elapsed + (double)epochs_remaining / epochs_per_sec;
-
-            printf("  Time: %3.0f s | Epoch: %6d / %6d | Avg Loss: %7.4f | LR: %.2e | Est. End: %4.0f s\n", 
-                   time_elapsed, epoch + 1, max_epochs_to_run, current_avg_loss, current_learning_rate, estimated_end_time);
+            printf("  Epoch: %6d / %6d | Avg Loss: %7.4f | LR: %.2e\n", 
+                   epoch + 1, max_epochs_to_run, current_avg_loss, current_learning_rate);
             
             cumulative_loss_report = 0.0;
             samples_processed_in_report = 0;
-            next_report_time = time(NULL) + REPORT_SECONDS;
         }
     }
+
+    // Final report if epochs were not a multiple of REPORT_FREQ
+    if (samples_processed_in_report > 0) {
+        double current_avg_loss = cumulative_loss_report / samples_processed_in_report;
+        printf("  Epoch: %6d / %6d | Avg Loss: %7.4f | LR: %.2e (Final)\n", 
+               max_epochs_to_run, max_epochs_to_run, current_avg_loss, current_learning_rate);
+    }
+    
     printf("--- TRAINING PHASE COMPLETE ---\n");
 }
 
@@ -886,11 +830,11 @@ void print_labyrinth_and_path(const double input_vec[N_INPUT], const double targ
 
 void test_nn_and_summarize() {
     
-    int total_test_runs = N_TEST_CASES_PER_LABYRINTH * NUM_LABYRINTHS * 5; 
+    int total_test_runs = N_TOTAL_TEST_CASES; 
 
     printf("\n--- STEP 3: STARTING TEST AND SUMMARY PHASE ---\n");
-    printf("Testing on %d fixed labyrinths with %d random start points (Total %d tests).\n", 
-           NUM_LABYRINTHS, total_test_runs / NUM_LABYRINTHS, total_test_runs);
+    printf("Testing on a total of %d random test cases drawn from %d labyrinths.\n", 
+           total_test_runs, NUM_LABYRINTHS);
     
     double cumulative_test_loss = 0.0;
     int solved_count = 0;
@@ -918,6 +862,7 @@ void test_nn_and_summarize() {
         
         int coords_accurate = 1;
         
+        // Check coordinate predictions
         for (int k = 0; k < 2; k++) { 
             if (fabs(output[k] - target[k]) > SOLVED_ERROR_THRESHOLD) { coords_accurate = 0; break; }
         }
@@ -926,6 +871,7 @@ void test_nn_and_summarize() {
                 if (fabs(output[k] - target[k]) > SOLVED_ERROR_THRESHOLD) { coords_accurate = 0; break; }
             }
         }
+        // Check steps predictions
         if (coords_accurate) {
             for (int s = 0; s < NUM_SEGMENTS; s++) {
                 int steps_idx = GET_STEPS_OUTPUT_IDX(s);
@@ -947,17 +893,17 @@ void test_nn_and_summarize() {
     printf("--------------------------------------------------\n");
 
 
-    // VISUALIZATION: Show 10 random examples
-    printf("\n--- VISUALIZATION: 10 Random Test Cases (from Labyrinth 0 or 1) ---\n");
+    // VISUALIZATION: Show 2 random examples (minimal visualization)
+    printf("\n--- VISUALIZATION: 2 Random Test Cases (from Labyrinth 0 or 1) ---\n");
     
     srand(time(NULL)); 
 
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 2; i++) {
         
         load_train_case(input, target); 
         forward_pass(input, hidden_net, hidden_out, output_net, output);
 
-        printf("Test Case #%d (Labyrinth ID determined in load_train_case):\n", i + 1);
+        printf("Test Case #%d:\n", i + 1);
         print_labyrinth_and_path(input, target, output);
     }
     printf("--- TEST PHASE COMPLETE ---\n");
@@ -980,7 +926,7 @@ int main(int argc, char **argv) {
         generate_labyrinth(i); 
     }
 
-    // 2. Training (Time limited to 2 minutes)
+    // 2. Training
     train_nn();
     
     // 3. Testing and Visualization
