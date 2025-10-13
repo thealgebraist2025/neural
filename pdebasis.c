@@ -335,7 +335,6 @@ void load_train_case(double input[N_INPUT], double target[N_OUTPUT]) {
     int lab_idx = rand() % NUM_LABYRINTHS;
     const double *current_labyrinth = single_labyrinths[lab_idx];
     const int *current_exit_coord = fixed_exit_coords[lab_idx];
-    printf("[DEBUG] Loading train case for Labyrinth %d\n", lab_idx);
     memcpy(input, current_labyrinth, D_SIZE * sizeof(double));
     int start_x, start_y;
     int exit_x = current_exit_coord[0];
