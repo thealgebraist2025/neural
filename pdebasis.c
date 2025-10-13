@@ -19,15 +19,16 @@
 
 #define NUM_SEGMENTS 7
 #define N_DIRECTION_CLASSES 4 
+// Output = (Start X, Start Y) + (7 * Direction Class) + (7 * Steps) + (Exit X, Exit Y)
 #define N_OUTPUT (2 + (NUM_SEGMENTS * N_DIRECTION_CLASSES) + (NUM_SEGMENTS * 1) + 2) 
 
 // **Network & Training Parameters**
 #define N_HIDDEN 64       
 #define N_SAMPLES_FIXED 25 
 #define N_TEST_CASES_PER_LABYRINTH 10 
-#define INITIAL_LEARNING_RATE 0.0005     // ⬅️ UPDATED: Lowered LR for stability
+#define INITIAL_LEARNING_RATE 0.000005 // ⬅️ UPDATED: Very low starting LR
 #define N_EPOCHS_TRAIN 800000 
-#define COORD_WEIGHT 1.0                 // ⬅️ UPDATED: Reduced from 10.0 to 1.0
+#define COORD_WEIGHT 1.0                 
 #define CLASSIFICATION_WEIGHT 1.0 
 #define MAX_STEPS 8.0 
 #define MAX_TRAINING_SECONDS 180.0 
@@ -46,8 +47,8 @@
 // --- Dynamic Globals ---
 int N_SAMPLES = N_SAMPLES_FIXED; 
 int N_EPOCHS = N_EPOCHS_TRAIN; 
-double current_learning_rate = INITIAL_LEARNING_RATE; // ⬅️ Dynamic LR variable
-double last_avg_loss = DBL_MAX;                       // ⬅️ Used for LR scheduling
+double current_learning_rate = INITIAL_LEARNING_RATE; 
+double last_avg_loss = DBL_MAX;                       
  
 // Global Data & Matrices 
 double fixed_labyrinths[N_SAMPLES_FIXED][D_SIZE]; 
@@ -58,19 +59,6 @@ double w_fh[N_INPUT][N_HIDDEN];
 double b_h[N_HIDDEN]; 
 double w_ho[N_HIDDEN][N_OUTPUT];   
 double b_o[N_OUTPUT];
-
-
-// --- Path Feature Structure ---
-typedef struct {
-    int length;
-    int direction; 
-} PathFeature;
-
-// BFS node structure
-typedef struct {
-    int x, y;
-    int prev_idx;
-} BFSNode;
 
 
 // --- Helper Macros ---
@@ -91,9 +79,15 @@ void extract_longest_paths(const double labyrinth[D_SIZE], double feature_output
 void load_train_case(int idx, double input[N_INPUT], double target[N_OUTPUT]);
 
 double calculate_loss(const double output[N_OUTPUT], const double target[N_OUTPUT]);
-double relu(double x);
+// ⬅️ Tanh Activation
+double tanh_activation(double x);
+double tanh_derivative(double x);
+// ⬅️ Sigmoid Activation
+double sigmoid(double x);
+double sigmoid_derivative(double x);
+
 void softmax(double vector[N_DIRECTION_CLASSES]);
-void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], double output[N_OUTPUT]);
+void forward_pass(const double input[N_INPUT], double hidden_net[N_HIDDEN], double hidden_out[N_HIDDEN], double output_net[N_OUTPUT], double output[N_OUTPUT]);
 void train_nn();
 void test_nn_and_summarize();
 int is_path_legal(const double labyrinth[D_SIZE], int start_x, int start_y, const double output_vec[N_OUTPUT]);
@@ -101,7 +95,47 @@ void print_labyrinth_and_path(const double input_vec[N_INPUT], const double targ
 
 
 // -----------------------------------------------------------------
-// --- DATA GENERATION FUNCTIONS ---
+// --- NN CORE ACTIVATION FUNCTIONS ---
+// -----------------------------------------------------------------
+
+// ⬅️ Tanh Activation
+double tanh_activation(double x) {
+    return tanh(x);
+}
+
+double tanh_derivative(double tanh_out) {
+    return 1.0 - (tanh_out * tanh_out);
+}
+
+// ⬅️ Sigmoid Activation
+double sigmoid(double x) {
+    return 1.0 / (1.0 + exp(-x));
+}
+
+double sigmoid_derivative(double sigmoid_out) {
+    return sigmoid_out * (1.0 - sigmoid_out);
+}
+
+void softmax(double vector[N_DIRECTION_CLASSES]) {
+    double max_val = vector[0];
+    for (int k = 1; k < N_DIRECTION_CLASSES; k++) {
+        if (vector[k] > max_val) max_val = vector[k];
+    }
+    
+    double sum = 0.0;
+    for (int k = 0; k < N_DIRECTION_CLASSES; k++) {
+        // Use exp(x - max_val) for numerical stability
+        vector[k] = exp(vector[k] - max_val); 
+        sum += vector[k];
+    }
+    
+    for (int k = 0; k < N_DIRECTION_CLASSES; k++) {
+        vector[k] /= sum;
+    }
+}
+
+// -----------------------------------------------------------------
+// --- DATA GENERATION FUNCTIONS (Unchanged from previous revision) ---
 // -----------------------------------------------------------------
 
 void draw_line(double image[D_SIZE], int x1, int y1, int x2, int y2, double val) {
@@ -118,7 +152,7 @@ void draw_line(double image[D_SIZE], int x1, int y1, int x2, int y2, double val)
         if (x1 == x2 && y1 == y2) break;
         int e2 = 2 * err;
         if (e2 > -dy) { err -= dy; x1 += sx; }
-        if (e2 < dx) { err += dx; y1 += sy; }
+        if (e2 < dx) { err += dy; y1 += sy; }
     }
 }
 
@@ -126,7 +160,8 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
     
     for (int i = 0; i < N_OUTPUT; i++) { target_data[i] = 0.0; } 
     
-    // BFS implementation
+    // BFS implementation (pathfinding logic remains the same)
+    typedef struct { int x, y, prev_idx; } BFSNode;
     BFSNode queue[D_SIZE];
     int visited[GRID_SIZE][GRID_SIZE];
     memset(visited, 0, sizeof(visited));
@@ -136,16 +171,12 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
     visited[start_y][start_x] = 1;
 
     int path_end_idx = -1;
-    int dx[] = {0, 0, -1, 1}; // U, D, L, R
+    int dx[] = {0, 0, -1, 1}; 
     int dy[] = {-1, 1, 0, 0};
 
     while (head < tail) {
         BFSNode current = queue[head++];
-
-        if (current.x == exit_x && current.y == exit_y) {
-            path_end_idx = head - 1;
-            break;
-        }
+        if (current.x == exit_x && current.y == exit_y) { path_end_idx = head - 1; break; }
 
         for (int i = 0; i < 4; i++) {
             int next_x = current.x + dx[i];
@@ -162,7 +193,7 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
         }
     }
 
-    if (path_end_idx == -1) {
+    if (path_end_idx == -1) { // No path found
         target_data[0] = NORMALIZE_COORD(start_x);
         target_data[1] = NORMALIZE_COORD(start_y);
         target_data[N_OUTPUT-2] = NORMALIZE_COORD(exit_x);
@@ -170,7 +201,7 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
         return;
     }
 
-    // Reconstruct the path (End -> Start)
+    // Path encoding (Start -> End)
     int path_indices[D_SIZE];
     int path_length = 0;
     int current_idx = path_end_idx;
@@ -179,17 +210,13 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
         current_idx = queue[current_idx].prev_idx;
     }
 
-    // Path encoding (Start -> End)
     int current_segment = 0;
     int current_path_idx = path_length - 1;
     int last_dir = -1;
     int steps = 0;
-    int dir_start_idx; 
-    int steps_idx; 
-
+    
     while (current_path_idx > 0 && current_segment < NUM_SEGMENTS) {
         int next_path_idx = current_path_idx - 1;
-        
         int prev_x = queue[path_indices[current_path_idx]].x;
         int prev_y = queue[path_indices[current_path_idx]].y;
         int next_x = queue[path_indices[next_path_idx]].x;
@@ -206,9 +233,7 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
             steps = 1;
         } else if (dir == last_dir) {
             steps++;
-            if (steps >= MAX_STEPS) { 
-                goto finalize_segment;
-            }
+            if (steps >= MAX_STEPS) { goto finalize_segment; }
         } else {
             goto finalize_segment;
         }
@@ -217,25 +242,17 @@ void generate_path_and_target(const double labyrinth[D_SIZE], int start_x, int s
         continue;
         
     finalize_segment:
-        dir_start_idx = GET_DIR_OUTPUT_START_IDX(current_segment);
-        target_data[dir_start_idx + last_dir] = 1.0; 
-        
-        steps_idx = GET_STEPS_OUTPUT_IDX(current_segment);
-        target_data[steps_idx] = NORMALIZE_STEPS(steps);
-        
+        target_data[GET_DIR_OUTPUT_START_IDX(current_segment) + last_dir] = 1.0; 
+        target_data[GET_STEPS_OUTPUT_IDX(current_segment)] = NORMALIZE_STEPS(steps);
         current_segment++;
-        
         last_dir = dir;
         steps = 1;
         current_path_idx = next_path_idx;
     }
     
     if (steps > 0 && current_segment < NUM_SEGMENTS) {
-        dir_start_idx = GET_DIR_OUTPUT_START_IDX(current_segment);
-        target_data[dir_start_idx + last_dir] = 1.0; 
-        
-        steps_idx = GET_STEPS_OUTPUT_IDX(current_segment);
-        target_data[steps_idx] = NORMALIZE_STEPS(steps);
+        target_data[GET_DIR_OUTPUT_START_IDX(current_segment) + last_dir] = 1.0; 
+        target_data[GET_STEPS_OUTPUT_IDX(current_segment)] = NORMALIZE_STEPS(steps);
     }
 
     target_data[0] = NORMALIZE_COORD(start_x);
@@ -292,52 +309,45 @@ void generate_fixed_labyrinths() {
 
 void extract_longest_paths(const double labyrinth[D_SIZE], double feature_output[NUM_LONGEST_PATHS * PATH_FEATURE_SIZE]) {
     
+    typedef struct { int length, direction; } PathFeature;
     PathFeature all_paths[GRID_SIZE * GRID_SIZE]; 
     int path_count = 0;
 
-    // 1. Scan Horizontal Segments
+    // Scan Horizontal Segments
     for (int y = 0; y < GRID_SIZE; y++) {
         int current_length = 0;
         for (int x = 0; x < GRID_SIZE; x++) {
             if (labyrinth[y * GRID_SIZE + x] > 0.5) { current_length++; } 
             else { 
                 if (current_length >= 2) { 
-                    all_paths[path_count].length = current_length;
-                    all_paths[path_count].direction = DIR_RIGHT_IDX; 
-                    path_count++;
+                    all_paths[path_count++] = (PathFeature){current_length, DIR_RIGHT_IDX};
                 }
                 current_length = 0;
             }
         }
         if (current_length >= 2) {
-            all_paths[path_count].length = current_length;
-            all_paths[path_count].direction = DIR_RIGHT_IDX; 
-            path_count++;
+            all_paths[path_count++] = (PathFeature){current_length, DIR_RIGHT_IDX};
         }
     }
 
-    // 2. Scan Vertical Segments
+    // Scan Vertical Segments
     for (int x = 0; x < GRID_SIZE; x++) {
         int current_length = 0;
         for (int y = 0; y < GRID_SIZE; y++) {
             if (labyrinth[y * GRID_SIZE + x] > 0.5) { current_length++; } 
             else { 
                 if (current_length >= 2) { 
-                    all_paths[path_count].length = current_length;
-                    all_paths[path_count].direction = DIR_DOWN_IDX; 
-                    path_count++;
+                    all_paths[path_count++] = (PathFeature){current_length, DIR_DOWN_IDX};
                 }
                 current_length = 0;
             }
         }
         if (current_length >= 2) {
-            all_paths[path_count].length = current_length;
-            all_paths[path_count].direction = DIR_DOWN_IDX; 
-            path_count++;
+            all_paths[path_count++] = (PathFeature){current_length, DIR_DOWN_IDX};
         }
     }
 
-    // 3. Sort paths by length
+    // Sort paths by length (Insertion Sort)
     for (int i = 1; i < path_count; i++) {
         PathFeature key = all_paths[i];
         int j = i - 1;
@@ -348,7 +358,7 @@ void extract_longest_paths(const double labyrinth[D_SIZE], double feature_output
         all_paths[j + 1] = key;
     }
 
-    // 4. Encode the Top 8
+    // Encode the Top 8
     for (int i = 0; i < NUM_LONGEST_PATHS; i++) {
         int start_idx = i * PATH_FEATURE_SIZE;
         
@@ -372,7 +382,7 @@ void extract_longest_paths(const double labyrinth[D_SIZE], double feature_output
 
 void load_train_case(int idx, double input[N_INPUT], double target[N_OUTPUT]) {
     
-    // Part 1: Copy Labyrinth Pixels (256 values)
+    // Part 1: Copy Labyrinth Pixels
     memcpy(input, fixed_labyrinths[idx], D_SIZE * sizeof(double));
 
     // Part 2: Path Instructions (Target) generation
@@ -394,26 +404,33 @@ void load_train_case(int idx, double input[N_INPUT], double target[N_OUTPUT]) {
     
     generate_path_and_target(input, start_x, start_y, exit_x, exit_y, target);
 
-    // Part 3: Extract Longest Path Features (40 values)
+    // Part 3: Extract Longest Path Features 
     double* feature_start = input + N_LABYRINTH_PIXELS; 
     extract_longest_paths(fixed_labyrinths[idx], feature_start);
 }
 
 
 // -----------------------------------------------------------------
-// --- NN CORE FUNCTIONS ---
+// --- NN CORE FUNCTIONS (UPDATED) ---
 // -----------------------------------------------------------------
 
 void initialize_nn() {
+    // Xavier Initialization (for Tanh)
+    double fan_in_h = (double)N_INPUT;
+    double fan_in_o = (double)N_HIDDEN;
+    
+    double limit_h = sqrt(1.0 / fan_in_h); // ⬅️ Changed from sqrt(2.0/N_INPUT)
+    double limit_o = sqrt(1.0 / fan_in_o); // ⬅️ Changed from sqrt(2.0/N_HIDDEN)
+
     for (int i = 0; i < N_INPUT; i++) {
         for (int j = 0; j < N_HIDDEN; j++) {
-            w_fh[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * sqrt(2.0 / N_INPUT); 
+            w_fh[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * limit_h; 
         }
     }
     for (int j = 0; j < N_HIDDEN; j++) {
         b_h[j] = 0.0;
         for (int k = 0; k < N_OUTPUT; k++) {
-            w_ho[j][k] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * sqrt(2.0 / N_HIDDEN);
+            w_ho[j][k] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * limit_o;
         }
     }
     for (int k = 0; k < N_OUTPUT; k++) {
@@ -421,34 +438,16 @@ void initialize_nn() {
     }
 }
 
-double relu(double x) { return (x > 0.0) ? x : 0.0; }
-
-void softmax(double vector[N_DIRECTION_CLASSES]) {
-    double max_val = vector[0];
-    for (int k = 1; k < N_DIRECTION_CLASSES; k++) {
-        if (vector[k] > max_val) max_val = vector[k];
-    }
+void forward_pass(const double input[N_INPUT], double hidden_net[N_HIDDEN], double hidden_out[N_HIDDEN], double output_net[N_OUTPUT], double output[N_OUTPUT]) {
     
-    double sum = 0.0;
-    for (int k = 0; k < N_DIRECTION_CLASSES; k++) {
-        vector[k] = exp(vector[k] - max_val); 
-        sum += vector[k];
-    }
-    
-    for (int k = 0; k < N_DIRECTION_CLASSES; k++) {
-        vector[k] /= sum;
-    }
-}
-
-void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], double output[N_OUTPUT]) {
-    
-    // 1. Input (296) to Hidden (ReLU)
+    // 1. Input (296) to Hidden (Tanh)
     for (int j = 0; j < N_HIDDEN; j++) {
         double h_net = b_h[j];
         for (int i = 0; i < N_INPUT; i++) {
             h_net += input[i] * w_fh[i][j]; 
         }
-        hidden_out[j] = relu(h_net); 
+        hidden_net[j] = h_net;
+        hidden_out[j] = tanh_activation(h_net); // ⬅️ Tanh Activation
     }
     
     // 2. Hidden to Output
@@ -457,12 +456,23 @@ void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], doub
         for (int j = 0; j < N_HIDDEN; j++) { 
             o_net += hidden_out[j] * w_ho[j][k]; 
         } 
-        output[k] = o_net; 
+        output_net[k] = o_net;
     }
     
-    // 3. Softmax on Direction segments
+    // 3. Activation on Output Layer
+    for (int k = 0; k < N_OUTPUT; k++) {
+        // Coordinate/Step outputs are Regression targets (Sigmoid)
+        if (k < 2 || k >= (2 + NUM_SEGMENTS * N_DIRECTION_CLASSES)) {
+             output[k] = sigmoid(output_net[k]); // ⬅️ Sigmoid Activation for Regression
+        } else {
+             output[k] = output_net[k]; // Linear for Softmax inputs
+        }
+    }
+    
+    // 4. Softmax on Direction segments
     for (int s = 0; s < NUM_SEGMENTS; s++) {
         int dir_start_idx = GET_DIR_OUTPUT_START_IDX(s);
+        // Softmax operates on the linear output (output_net is copied to output for Softmax)
         softmax(&output[dir_start_idx]);
     }
 }
@@ -473,37 +483,44 @@ double clip_gradient(double grad, double max_norm) {
     return grad;
 }
 
-// ⬅️ NEW: Dynamic Learning Rate Scheduler
+
 void update_learning_rate(double current_avg_loss) {
-    if (isnan(current_avg_loss) || current_avg_loss > last_avg_loss * 1.01) {
-        // Loss exploded or increased significantly, apply aggressive decay
+    // Only aggressively decay if loss explodes (very large) or increases substantially
+    if (isnan(current_avg_loss) || current_avg_loss > last_avg_loss * 1.5 || current_avg_loss > 100000.0) {
         current_learning_rate *= 0.5;
-        printf("\n!!! Learning Rate DECAYED aggressively to %.6f (Loss explosion/increase).\n", current_learning_rate);
-    } else if (current_avg_loss > last_avg_loss * 0.99) {
-        // Loss stabilized or only slightly decreased, apply gentle decay
+        if (current_learning_rate < 1e-10) current_learning_rate = 1e-10; 
+
+        printf("\n!!! Learning Rate DECAYED aggressively to %.6e (Loss explosion/major increase).\n", current_learning_rate);
+        
+    } else if (current_avg_loss > last_avg_loss * 1.001) {
+        // Minor increase/plateau: gentle decay
         current_learning_rate *= 0.9;
     } 
-    // If loss decreased significantly, keep the current rate.
     
-    // Ensure last_avg_loss is updated only if it's not a catastrophic failure
     if (!isnan(current_avg_loss) && current_avg_loss < DBL_MAX) {
-        last_avg_loss = current_avg_loss;
+        // To prevent the scheduler from immediately triggering decay again after a crash
+        if (current_avg_loss < last_avg_loss) { 
+            last_avg_loss = current_avg_loss;
+        }
     }
 }
 
 
 void train_nn() {
-    printf("Training Vanilla NN with %d inputs and %d hidden neurons (Samples: %d, Initial LR: %.6f, Coords Weight: %.1f, Clip: %.1f).\n", 
+    printf("Training Vanilla NN with %d inputs and %d hidden neurons (Samples: %d, Initial LR: %.6e, Coords Weight: %.1f, Clip: %.1f, Hidden: Tanh, Reg Output: Sigmoid).\n", 
            N_INPUT, N_HIDDEN, N_SAMPLES_FIXED, INITIAL_LEARNING_RATE, COORD_WEIGHT, GRADIENT_CLIP_NORM);
     
     clock_t start_time = clock();
     double time_elapsed;
-    // Increased reporting frequency for better LR control
     int report_interval = N_EPOCHS_TRAIN / 100; 
     if (report_interval == 0) report_interval = 1;
 
     double input[N_INPUT];
     double target[N_OUTPUT];
+    double hidden_net[N_HIDDEN]; // Net input to hidden neurons
+    double hidden_out[N_HIDDEN];
+    double output_net[N_OUTPUT]; // Net input to output neurons
+    double output[N_OUTPUT];
 
     for (int epoch = 0; epoch < N_EPOCHS_TRAIN; epoch++) {
         
@@ -517,10 +534,7 @@ void train_nn() {
         
         load_train_case(lab_index, input, target);
 
-        double hidden_out[N_HIDDEN];
-        double output[N_OUTPUT];
-        
-        forward_pass(input, hidden_out, output);
+        forward_pass(input, hidden_net, hidden_out, output_net, output);
         
         // **Backpropagation and Update**
         double delta_o[N_OUTPUT];
@@ -530,22 +544,27 @@ void train_nn() {
         // 1. Calculate Output Delta 
         for (int k = 0; k < N_OUTPUT; k++) {
             if (k >= 2 && k < (2 + NUM_SEGMENTS * N_DIRECTION_CLASSES)) {
+                // Softmax + Cross-Entropy: Delta is simply (Output - Target)
                 delta_o[k] = (output[k] - target[k]) * CLASSIFICATION_WEIGHT; 
             } else { 
+                // Sigmoid + Squared Error: Delta includes Sigmoid derivative
                 double error = output[k] - target[k];
-                delta_o[k] = error * COORD_WEIGHT; 
+                double sig_deriv = sigmoid_derivative(output[k]); // Use output[k] (sigmoid output)
+                
+                delta_o[k] = error * COORD_WEIGHT * sig_deriv; // ⬅️ Sigmoid Derivative
             }
             // ➡️ Gradient Clipping
             delta_o[k] = clip_gradient(delta_o[k], GRADIENT_CLIP_NORM);
         }
         
-        // 2. Calculate Hidden Delta (ReLU)
+        // 2. Calculate Hidden Delta (Tanh)
         for (int j = 0; j < N_HIDDEN; j++) { 
             for (int k = 0; k < N_OUTPUT; k++) {
                 error_h[j] += delta_o[k] * w_ho[j][k];
             }
-            double relu_deriv = (hidden_out[j] > 0.0) ? 1.0 : 0.0;
-            delta_h[j] = error_h[j] * relu_deriv;
+            // ⬅️ Tanh Derivative
+            double tanh_deriv = tanh_derivative(hidden_out[j]); // Use hidden_out[j] (tanh output)
+            delta_h[j] = error_h[j] * tanh_deriv;
         }
         
         // 3. Update Hidden-to-Output Weights and Biases
@@ -559,8 +578,8 @@ void train_nn() {
         // 4. Update Input-to-Hidden Weights 
         for (int i = 0; i < N_INPUT; i++) { 
             for (int j = 0; j < N_HIDDEN; j++) { 
-                double gradient = current_learning_rate * delta_h[j] * input[i];
-                w_fh[i][j] -= clip_gradient(gradient, current_learning_rate * GRADIENT_CLIP_NORM);
+                double gradient = delta_h[j] * input[i];
+                w_fh[i][j] -= current_learning_rate * clip_gradient(gradient, GRADIENT_CLIP_NORM);
             } 
         }
         // 5. Update Hidden Biases
@@ -571,21 +590,23 @@ void train_nn() {
         // ERROR RATE REPORTING AND LR SCHEDULING
         if ((epoch % report_interval == 0) && epoch != 0) {
             double cumulative_loss = 0.0;
-            double temp_hidden[N_HIDDEN];
+            double temp_hidden_net[N_HIDDEN];
+            double temp_hidden_out[N_HIDDEN];
+            double temp_output_net[N_OUTPUT];
             double temp_output[N_OUTPUT];
             
             for (int i = 0; i < 100; i++) {
                 int idx = rand() % N_SAMPLES_FIXED;
                 load_train_case(idx, input, target);
                 
-                forward_pass(input, temp_hidden, temp_output);
+                forward_pass(input, temp_hidden_net, temp_hidden_out, temp_output_net, temp_output);
                 cumulative_loss += calculate_loss(temp_output, target);
             }
 
             double current_avg_loss = cumulative_loss / 100.0;
-            update_learning_rate(current_avg_loss); // ⬅️ Apply LR schedule
+            update_learning_rate(current_avg_loss); 
             
-            printf("  Epoch %d/%d completed. Time elapsed: %.2f s. LR: %.6f. Avg Loss (per sample): %.4f\n", 
+            printf("  Epoch %d/%d completed. Time elapsed: %.2f s. LR: %.6e. Avg Loss (per sample): %.4f\n", 
                    epoch, N_EPOCHS_TRAIN, time_elapsed, current_learning_rate, current_avg_loss);
         }
     }
@@ -601,7 +622,7 @@ double calculate_loss(const double output[N_OUTPUT], const double target[N_OUTPU
                 total_loss += -log(output[k] + 1e-9) * CLASSIFICATION_WEIGHT;
             }
         } else { 
-            // Squared Error Loss for Regression (Coordinates)
+            // Squared Error Loss for Regression (Coordinates/Steps)
             double error = output[k] - target[k];
             total_loss += error * error * COORD_WEIGHT; 
         }
@@ -611,7 +632,7 @@ double calculate_loss(const double output[N_OUTPUT], const double target[N_OUTPU
 
 
 // -----------------------------------------------------------------
-// --- TESTING AND VISUALIZATION FUNCTIONS ---
+// --- TESTING AND VISUALIZATION FUNCTIONS (Minimal changes) ---
 // -----------------------------------------------------------------
 
 void decode_instruction_output(const double output_vec[N_OUTPUT], int segment, char *dir_char, int *steps) {
@@ -629,6 +650,10 @@ void decode_instruction_output(const double output_vec[N_OUTPUT], int segment, c
         }
     }
     
+    if (*steps > 0 && max_val < 0.25) { // If the prediction is too uniform, treat as no movement
+         *steps = 0;
+    }
+
     if (max_idx == DIR_UP_IDX) *dir_char = 'U';
     else if (max_idx == DIR_DOWN_IDX) *dir_char = 'D';
     else if (max_idx == DIR_LEFT_IDX) *dir_char = 'L';
@@ -706,11 +731,9 @@ void draw_path(char map[GRID_SIZE][GRID_SIZE], int start_x, int start_y, int exi
 
 int is_path_legal(const double labyrinth[D_SIZE], int start_x, int start_y, const double output_vec[N_OUTPUT]) {
     
-    // Path traversal uses predicted start coords
     int current_x = DENORMALIZE_COORD(output_vec[0]);
     int current_y = DENORMALIZE_COORD(output_vec[1]);
     
-    // Path aims for predicted exit coords
     int exit_x = DENORMALIZE_COORD(output_vec[N_OUTPUT-2]);
     int exit_y = DENORMALIZE_COORD(output_vec[N_OUTPUT-1]);
 
@@ -810,10 +833,11 @@ void test_nn_and_summarize() {
     
     double input[N_INPUT];
     double target[N_OUTPUT];
+    double hidden_net[N_HIDDEN];
     double hidden_out[N_HIDDEN]; 
+    double output_net[N_OUTPUT];
     double output[N_OUTPUT];
 
-    // Resetting random seed for consistent visualization on test set
     srand(12345); 
 
     for (int lab_idx = 0; lab_idx < total_fixed_labyrinths; lab_idx++) {
@@ -821,7 +845,7 @@ void test_nn_and_summarize() {
             
             load_train_case(lab_idx, input, target); 
             
-            forward_pass(input, hidden_out, output);
+            forward_pass(input, hidden_net, hidden_out, output_net, output);
             cumulative_test_loss += calculate_loss(output, target);
             
             int true_start_x = DENORMALIZE_COORD(target[0]);
@@ -864,14 +888,13 @@ void test_nn_and_summarize() {
     // VISUALIZATION: Show 10 random examples
     printf("\n--- VISUALIZATION: 10 Random Test Cases ---\n");
     
-    // Resetting random seed again for test case selection
     srand(time(NULL)); 
 
     for (int i = 0; i < 10; i++) {
         int lab_idx = rand() % N_SAMPLES_FIXED;
         
         load_train_case(lab_idx, input, target);
-        forward_pass(input, hidden_out, output);
+        forward_pass(input, hidden_net, hidden_out, output_net, output);
 
         printf("Labyrinth #%d (Fixed ID: %d):\n", i + 1, lab_idx);
         print_labyrinth_and_path(input, target, output);
