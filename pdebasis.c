@@ -28,15 +28,15 @@
 // **Network & Training Parameters**
 #define N_HIDDEN 64       
 #define N_TEST_CASES_PER_LABYRINTH 10 
-#define INITIAL_LEARNING_RATE 0.00001 
-#define N_EPOCHS_MAX 1000000 
+#define INITIAL_LEARNING_RATE 0.0001 
+#define N_EPOCHS_MAX 1000 
 #define COORD_WEIGHT 1.0                 
 #define CLASSIFICATION_WEIGHT 1.0 
 #define MAX_STEPS 16.0 
 
 // CRITICAL FIX CONFIGURATION (2-minute limit)
 #define MAX_TRAINING_SECONDS 120 // Target: Max 2 minutes
-#define WARMUP_EPOCHS 100 // Epochs used for timing estimation
+#define WARMUP_EPOCHS 10 // Epochs used for timing estimation
 #define REPORT_SECONDS 1 // Report frequency (every second)
 
 #define SOLVED_ERROR_THRESHOLD 0.1 
