@@ -17,13 +17,13 @@
 #define N_OUTPUT 10            // 3 Class + 3 Circle Params + 4 Rectangle Params
 
 // **Training Parameters**
-#define NUM_IMAGES 3000        // 1000 Circles + 1000 Rectangles + 1000 Other
-#define TRAINING_TIME_LIMIT 60.0 // **NEW: Stop training after 60 seconds**
+#define NUM_IMAGES 3000        
+#define TRAINING_TIME_LIMIT 60.0 // Stop training after 60 seconds
 #define BATCH_SIZE 32          
 #define REPORT_FREQ 500             
 #define INITIAL_LEARNING_RATE 0.0001 
 #define CLASSIFICATION_WEIGHT 1.0  
-#define REGRESSION_WEIGHT 0.1      
+#define REGRESSION_WEIGHT 1.0      // **FIX 1: Increased from 0.1 to 1.0**
 #define MIN_RADIUS 3           
 #define MAX_RADIUS 10.0    
 #define MAX_RECT_SIZE (GRID_SIZE - 2) 
@@ -80,8 +80,13 @@ clock_t func_times[NUM_FUNCTIONS] = {0};
 #define NORMALIZE_RECT_C(c) ((double)(c) / (GRID_SIZE - 1.0))
 
 // --- Activation Functions ---
+
 double poly_activation(double z_net) { return z_net * z_net; } 
 double poly_derivative(double z_net) { return 2.0 * z_net; }
+
+// Sigmoid and its derivative for Regression Head (FIX 2)
+double sigmoid(double z) { return 1.0 / (1.0 + exp(-z)); }
+double sigmoid_derivative(double z, double output) { return output * (1.0 - output); }
 
 // Softmax for the first 3 outputs (Classes 0-2)
 void softmax(const double input[N_OUTPUT], double output[3]) {
@@ -99,7 +104,7 @@ void softmax(const double input[N_OUTPUT], double output[3]) {
     }
 }
 
-// --- Drawing Functions (omitted detailed implementation for brevity, logic unchanged) ---
+// --- Drawing Functions (omitted for brevity, logic unchanged) ---
 
 void draw_random_pixels(double image[D_SIZE]) {
     START_PROFILE(PROFILE_DRAW_OTHER)
@@ -178,6 +183,7 @@ void generate_data() {
             int y2 = y1 + (rand() % (MAX_RECT_SIZE - 1) + 2);
             if (x2 >= GRID_SIZE) x2 = GRID_SIZE - 1; if (y2 >= GRID_SIZE) y2 = GRID_SIZE - 1;
             draw_rectangle(image, x1, y1, x2, y2);
+            for(int k = 3; k < 6; k++) target[k] = 0.0;
             target[6] = NORMALIZE_RECT_C(x1); target[7] = NORMALIZE_RECT_C(y1); 
             target[8] = NORMALIZE_RECT_C(x2); target[9] = NORMALIZE_RECT_C(y2); 
         }
@@ -212,7 +218,7 @@ void load_train_case(double input[N_INPUT], double target[N_OUTPUT]) {
     END_PROFILE(PROFILE_LOAD_TRAIN_CASE)
 }
 
-// --- NN Core Functions (unchanged logic) ---
+// --- NN Core Functions (Updated Forward Pass) ---
 
 void initialize_nn() {
     double fan_in_h = (double)N_INPUT;
@@ -235,25 +241,28 @@ void initialize_nn() {
 
 void forward_pass(const double input[N_INPUT], double hidden_net[N_HIDDEN], double hidden_out[N_HIDDEN], double output_net[N_OUTPUT], double output_prob[N_OUTPUT]) {
     START_PROFILE(PROFILE_FORWARD_PASS)
+    // 1. Hidden Layer
     for (int j = 0; j < N_HIDDEN; j++) {
         double h_net = b_h[j];
         for (int i = 0; i < N_INPUT; i++) h_net += input[i] * w_fh[i][j]; 
         hidden_net[j] = h_net;
         hidden_out[j] = poly_activation(h_net);
     }
+    // 2. Output Layer (Net)
     for (int k = 0; k < N_OUTPUT; k++) {
         double o_net = b_o[k]; 
         for (int j = 0; j < N_HIDDEN; j++) o_net += hidden_out[j] * w_ho[j][k]; 
         output_net[k] = o_net;
     }
-    softmax(output_net, output_prob); 
+    // 3. Output Layer (Probabilities/Sigmoid)
+    softmax(output_net, output_prob); // Classification head (0, 1, 2)
     for (int k = 3; k < N_OUTPUT; k++) {
-        output_prob[k] = output_net[k]; 
+        output_prob[k] = sigmoid(output_net[k]); // **FIX 2: Sigmoid for Regression Heads**
     }
     END_PROFILE(PROFILE_FORWARD_PASS)
 }
 
-// --- Training Function with Time Limit ---
+// --- Training Function (Updated Backpropagation) ---
 
 void adam_update(double *param, double *grad, double *m, double *v, int t, double lr) {
     double beta1_t = pow(BETA1, t);
@@ -284,12 +293,11 @@ void train_nn() {
     int t = 0; // Adam time step
     int epoch = 0;
     
-    // **Start Timer**
     clock_t start_time = clock();
     
-    printf("--- TRAINING PHASE START (Adam, Time Limit: %.1f s, Batch: %d) ---\n", TRAINING_TIME_LIMIT, BATCH_SIZE);
+    printf("--- TRAINING PHASE START (Adam, Time Limit: %.1f s, Batch: %d, Regression Weight: %.1f) ---\n", 
+           TRAINING_TIME_LIMIT, BATCH_SIZE, REGRESSION_WEIGHT);
     
-    // **Loop until time runs out**
     while ((double)(clock() - start_time) / CLOCKS_PER_SEC < TRAINING_TIME_LIMIT) {
         
         for (int batch = 0; batch < BATCH_SIZE; batch++) {
@@ -304,17 +312,24 @@ void train_nn() {
             double error_h[N_HIDDEN];
             double total_sample_loss = 0.0;
 
-            // 1. Output Delta & Loss Calculation
+            // --- 1. Output Delta & Loss Calculation ---
+            
+            // Classification Head (0, 1, 2): Cross-Entropy derivative
             for (int k = 0; k < 3; k++) {
                 delta_o[k] = (output_prob[k] - target[k]) * CLASSIFICATION_WEIGHT; 
                 if (target[k] > 0.5) { 
                     total_sample_loss += -log(output_prob[k] > 1e-12 ? output_prob[k] : 1e-12) * CLASSIFICATION_WEIGHT;
                 }
             }
+            
+            // Regression Heads (3-9): L2 derivative * Sigmoid derivative
             for (int k = 3; k < N_OUTPUT; k++) {
                 if (target[k] != 0.0) { 
-                    delta_o[k] = (output_net[k] - target[k]) * REGRESSION_WEIGHT; 
-                    total_sample_loss += 0.5 * (output_net[k] - target[k]) * (output_net[k] - target[k]) * REGRESSION_WEIGHT;
+                    // Delta = (Error) * (Sigmoid Derivative) * (Loss Weight)
+                    delta_o[k] = (output_prob[k] - target[k]) * sigmoid_derivative(output_net[k], output_prob[k]) * REGRESSION_WEIGHT; 
+                    
+                    // L2 Loss: 0.5 * (Error)^2 * Weight
+                    total_sample_loss += 0.5 * (output_prob[k] - target[k]) * (output_prob[k] - target[k]) * REGRESSION_WEIGHT;
                 } else {
                     delta_o[k] = 0.0;
                 }
@@ -347,7 +362,7 @@ void train_nn() {
         t++; // Adam timestep
         double inv_batch_size = 1.0 / BATCH_SIZE;
         
-        // Output Layer (W_ho, b_o)
+        // Update W_ho, b_o
         for (int k = 0; k < N_OUTPUT; k++) {
             double grad_b_o = grad_b_o_acc[k] * inv_batch_size;
             adam_update(&b_o[k], &grad_b_o, &m_b_o[k], &v_b_o[k], t, INITIAL_LEARNING_RATE);
@@ -360,7 +375,7 @@ void train_nn() {
             }
         }
         
-        // Hidden Layer (W_fh, b_h)
+        // Update W_fh, b_h
         for (int j = 0; j < N_HIDDEN; j++) {
             double grad_b_h = grad_b_h_acc[j] * inv_batch_size;
             adam_update(&b_h[j], &grad_b_h, &m_b_h[j], &v_b_h[j], t, INITIAL_LEARNING_RATE);
@@ -373,7 +388,7 @@ void train_nn() {
             }
         }
         
-        epoch++; // Increment epoch outside the batch loop
+        epoch++; 
         
         if (epoch % REPORT_FREQ == 0) {
             double time_elapsed = (double)(clock() - start_time) / CLOCKS_PER_SEC;
@@ -388,13 +403,13 @@ void train_nn() {
     END_PROFILE(PROFILE_TRAIN_NN)
 }
 
-// --- Testing Function (unchanged logic) ---
+// --- Testing Function (Updated to use output_prob[k] which is Sigmoid output) ---
 
 void test_nn(int n_test_per_class) {
     START_PROFILE(PROFILE_TEST_NN)
     double input[N_INPUT], target[N_OUTPUT];
     double hidden_net[N_HIDDEN], hidden_out[N_HIDDEN];
-    double output_net[N_OUTPUT], output_prob[N_OUTPUT];
+    double output_net[N_OUTPUT], output_prob[N_OUTPUT]; // output_prob[3-9] now holds Sigmoid(net)
 
     int correct_classification = 0;
     int total_circle_tests = 0;
@@ -410,7 +425,7 @@ void test_nn(int n_test_per_class) {
         int class_id = i % 3; 
         double test_target[N_OUTPUT];
         
-        if (class_id == 0) { 
+        if (class_id == 0) { // Circle
             total_circle_tests++;
             test_target[0] = 1.0; test_target[1] = 0.0; test_target[2] = 0.0;
             int min_center = MAX_RADIUS;
@@ -421,7 +436,7 @@ void test_nn(int n_test_per_class) {
             draw_filled_circle(input, cx, cy, r);
             test_target[3] = NORMALIZE_COORD(cx); test_target[4] = NORMALIZE_COORD(cy); test_target[5] = NORMALIZE_RADIUS(r); 
             for(int k = 6; k < N_OUTPUT; k++) test_target[k] = 0.0;
-        } else if (class_id == 1) { 
+        } else if (class_id == 1) { // Rectangle
             total_rect_tests++;
             test_target[0] = 0.0; test_target[1] = 1.0; test_target[2] = 0.0;
             int x1 = rand() % (GRID_SIZE - 2); int y1 = rand() % (GRID_SIZE - 2);
@@ -432,7 +447,7 @@ void test_nn(int n_test_per_class) {
             for(int k = 3; k < 6; k++) test_target[k] = 0.0;
             test_target[6] = NORMALIZE_RECT_C(x1); test_target[7] = NORMALIZE_RECT_C(y1); 
             test_target[8] = NORMALIZE_RECT_C(x2); test_target[9] = NORMALIZE_RECT_C(y2);
-        } else { 
+        } else { // Other
             test_target[0] = 0.0; test_target[1] = 0.0; test_target[2] = 1.0;
             draw_random_pixels(input);
             for(int k = 3; k < N_OUTPUT; k++) test_target[k] = 0.0;
@@ -457,13 +472,13 @@ void test_nn(int n_test_per_class) {
             correct_classification++;
         }
         
-        // Regression Check
+        // Regression Check (Using output_prob[k] for regression result, as it's the Sigmoid output)
         double error_threshold = 0.05;
 
         if (class_id == 0) { 
             int is_accurate = 1;
             for (int k = 3; k < 6; k++) {
-                if (fabs(output_net[k] - test_target[k]) > error_threshold) {
+                if (fabs(output_prob[k] - test_target[k]) > error_threshold) { // Use output_prob[k]
                     is_accurate = 0;
                     break;
                 }
@@ -472,7 +487,7 @@ void test_nn(int n_test_per_class) {
         } else if (class_id == 1) { 
             int is_accurate = 1;
             for (int k = 6; k < 10; k++) {
-                if (fabs(output_net[k] - test_target[k]) > error_threshold) {
+                if (fabs(output_prob[k] - test_target[k]) > error_threshold) { // Use output_prob[k]
                     is_accurate = 0;
                     break;
                 }
@@ -513,9 +528,10 @@ void test_nn(int n_test_per_class) {
     }
     
     printf("  Target: (CX, CY, R) = (%d, %d, %d)\n", cx, cy, r);
+    // Use output_prob[k] for the denormalized prediction
     printf("  Prediction: Class %d (Prob: %.2f%%) | Circle: (CX, CY, R) = (%d, %d, %d)\n",
            sample_pred_class, sample_max_prob * 100.0,
-           DENORMALIZE_COORD(output_net[3]), DENORMALIZE_COORD(output_net[4]), DENORMALIZE_RADIUS(output_net[5]));
+           DENORMALIZE_COORD(output_prob[3]), DENORMALIZE_COORD(output_prob[4]), DENORMALIZE_RADIUS(output_prob[5]));
     
     END_PROFILE(PROFILE_TEST_NN)
 }
@@ -543,7 +559,7 @@ void print_profiling_stats() {
 int main() {
     srand((unsigned int)time(NULL));
 
-    printf("--- Multi-Task Shape Recognition NN (Time-Limited Training) ---\n");
+    printf("--- Multi-Task Shape Recognition NN (Fixed Regression Weights & Sigmoid) ---\n");
     
     initialize_nn();
     generate_data();
