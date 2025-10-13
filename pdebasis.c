@@ -13,11 +13,9 @@
 #define SENTENCE_LENGTH 64     // Length of output sentence
 #define NUM_TRAINING_CASES 256 // Directly defined size of the dataset
 
-// **Hidden Layer Sizes**
-#define N_HIDDEN1 16 
-#define N_HIDDEN2 16 
-#define N_HIDDEN3 16 
-#define N_HIDDEN4 16 
+// **Hidden Layer Sizes (Single Layer Architecture)**
+#define N_HIDDEN1 256 
+// N_HIDDEN2, N_HIDDEN3, N_HIDDEN4 are removed.
 
 // **Training Parameters**
 #define TRAINING_TIME_LIMIT 60.0 
@@ -31,30 +29,18 @@
 #define BETA2 0.999
 #define EPSILON 1e-8
 
-// --- Global Data & Matrices (4 Layers) ---
+// --- Global Data & Matrices (Single Layer) ---
 
-// Weights and Biases 
-double w_f1[N_INPUT][N_HIDDEN1];    
+// Weights and Biases (N_INPUT=256 -> H1=256 -> N_OUTPUT=512)
+double w_f1[N_INPUT][N_HIDDEN1];    // Input to H1
 double b_1[N_HIDDEN1]; 
-double w_12[N_HIDDEN1][N_HIDDEN2];  
-double b_2[N_HIDDEN2];
-double w_23[N_HIDDEN2][N_HIDDEN3];  
-double b_3[N_HIDDEN3];
-double w_34[N_HIDDEN3][N_HIDDEN4];  
-double b_4[N_HIDDEN4];
-double w_4o[N_HIDDEN4][N_OUTPUT];   
+double w_1o[N_HIDDEN1][N_OUTPUT];   // H1 to Output
 double b_o[N_OUTPUT];
 
 // Adam State Variables
 double m_w_f1[N_INPUT][N_HIDDEN1], v_w_f1[N_INPUT][N_HIDDEN1];
 double m_b_1[N_HIDDEN1], v_b_1[N_HIDDEN1];
-double m_w_12[N_HIDDEN1][N_HIDDEN2], v_w_12[N_HIDDEN1][N_HIDDEN2];
-double m_b_2[N_HIDDEN2], v_b_2[N_HIDDEN2];
-double m_w_23[N_HIDDEN2][N_HIDDEN3], v_w_23[N_HIDDEN2][N_HIDDEN3];
-double m_b_3[N_HIDDEN3], v_b_3[N_HIDDEN3];
-double m_w_34[N_HIDDEN3][N_HIDDEN4], v_w_34[N_HIDDEN3][N_HIDDEN4];
-double m_b_4[N_HIDDEN4], v_b_4[N_HIDDEN4];
-double m_w_4o[N_HIDDEN4][N_OUTPUT], v_w_4o[N_HIDDEN4][N_OUTPUT];
+double m_w_1o[N_HIDDEN1][N_OUTPUT], v_w_1o[N_HIDDEN1][N_OUTPUT];
 double m_b_o[N_OUTPUT], v_b_o[N_OUTPUT];
 
 // Input Normalization Stats
@@ -233,53 +219,40 @@ void load_train_case(double input[N_INPUT], double target[N_OUTPUT]) {
 void initialize_nn() {
     #define XAVIER_LIMIT(Nin, Nout) sqrt(6.0 / ((double)(Nin) + (Nout)))
     
-    // Input (256) -> H1 (16)
+    // Input (256) -> H1 (256)
     double limit_f1 = XAVIER_LIMIT(N_INPUT, N_HIDDEN1);
-    for (int i = 0; i < N_INPUT; i++) for (int j = 0; j < N_HIDDEN1; j++) w_f1[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * limit_f1; 
+    for (int i = 0; i < N_INPUT; i++) {
+        for (int j = 0; j < N_HIDDEN1; j++) {
+            w_f1[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * limit_f1; 
+        }
+    }
     for (int j = 0; j < N_HIDDEN1; j++) b_1[j] = 0.0; 
     
-    // H1 (16) -> H2 (16)
-    double limit_12 = XAVIER_LIMIT(N_HIDDEN1, N_HIDDEN2);
-    for (int i = 0; i < N_HIDDEN1; i++) for (int j = 0; j < N_HIDDEN2; j++) w_12[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * limit_12; 
-    // FIXED: Corrected syntax error b_2[j] = 0.0;
-    for (int j = 0; j < N_HIDDEN2; j++) b_2[j] = 0.0; 
-
-    // H2 (16) -> H3 (16)
-    double limit_23 = XAVIER_LIMIT(N_HIDDEN2, N_HIDDEN3);
-    for (int i = 0; i < N_HIDDEN2; i++) for (int j = 0; j < N_HIDDEN3; j++) w_23[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * limit_23; 
-    for (int j = 0; j < N_HIDDEN3; j++) b_3[j] = 0.0; 
-    
-    // H3 (16) -> H4 (16)
-    double limit_34 = XAVIER_LIMIT(N_HIDDEN3, N_HIDDEN4);
-    for (int i = 0; i < N_HIDDEN3; i++) for (int j = 0; j < N_HIDDEN4; j++) w_34[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * limit_34; 
-    for (int j = 0; j < N_HIDDEN4; j++) b_4[j] = 0.0; 
-    
-    // H4 (16) -> Output (512)
-    double limit_4o = XAVIER_LIMIT(N_HIDDEN4, N_OUTPUT);
-    for (int i = 0; i < N_HIDDEN4; i++) for (int j = 0; j < N_OUTPUT; j++) w_4o[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * limit_4o; 
+    // H1 (256) -> Output (512)
+    double limit_1o = XAVIER_LIMIT(N_HIDDEN1, N_OUTPUT);
+    for (int i = 0; i < N_HIDDEN1; i++) {
+        for (int k = 0; k < N_OUTPUT; k++) {
+            w_1o[i][k] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * limit_1o; 
+        }
+    }
     for (int k = 0; k < N_OUTPUT; k++) b_o[k] = 0.0;
     
     // Initialize Adam states to zero
     memset(m_w_f1, 0, sizeof(m_w_f1)); memset(v_w_f1, 0, sizeof(v_w_f1)); memset(m_b_1, 0, sizeof(m_b_1)); memset(v_b_1, 0, sizeof(v_b_1));
-    memset(m_w_12, 0, sizeof(m_w_12)); memset(v_w_12, 0, sizeof(v_w_12)); memset(m_b_2, 0, sizeof(m_b_2)); memset(v_b_2, 0, sizeof(v_b_2));
-    memset(m_w_23, 0, sizeof(m_w_23)); memset(v_w_23, 0, sizeof(v_w_23)); memset(m_b_3, 0, sizeof(m_b_3)); memset(v_b_3, 0, sizeof(v_b_3));
-    memset(m_w_34, 0, sizeof(m_w_34)); memset(v_w_34, 0, sizeof(v_w_34)); memset(m_b_4, 0, sizeof(m_b_4)); memset(v_b_4, 0, sizeof(v_b_4));
-    memset(m_w_4o, 0, sizeof(m_w_4o)); memset(v_w_4o, 0, sizeof(v_w_4o)); memset(m_b_o, 0, sizeof(m_b_o)); memset(v_b_o, 0, sizeof(v_b_o));
+    memset(m_w_1o, 0, sizeof(m_w_1o)); memset(v_w_1o, 0, sizeof(v_w_1o)); memset(m_b_o, 0, sizeof(m_b_o)); memset(v_b_o, 0, sizeof(v_b_o));
 
     #undef XAVIER_LIMIT
 }
 
 // Global activation and net buffers 
 double h1_net[N_HIDDEN1], h1_out[N_HIDDEN1];
-double h2_net[N_HIDDEN2], h2_out[N_HIDDEN2];
-double h3_net[N_HIDDEN3], h3_out[N_HIDDEN3];
-double h4_net[N_HIDDEN4], h4_out[N_HIDDEN4];
+// h2, h3, h4 buffers are removed
 
 void forward_pass(const double input[N_INPUT], 
                   double output_net[N_OUTPUT], double output_prob[N_OUTPUT]) {
     START_PROFILE(PROFILE_FORWARD_PASS)
     
-    // --- Layer 1: Input (256) to H1 (16) ---
+    // --- Layer 1: Input (256) to H1 (256) ---
     for (int j = 0; j < N_HIDDEN1; j++) {
         double h_net = b_1[j];
         for (int i = 0; i < N_INPUT; i++) h_net += input[i] * w_f1[i][j]; 
@@ -287,34 +260,10 @@ void forward_pass(const double input[N_INPUT],
         h1_out[j] = poly_activation(h_net); // ReLU
     }
     
-    // --- Layer 2: H1 to H2 (16 -> 16) ---
-    for (int j = 0; j < N_HIDDEN2; j++) {
-        double h_net = b_2[j];
-        for (int i = 0; i < N_HIDDEN1; i++) h_net += h1_out[i] * w_12[i][j]; 
-        h2_net[j] = h_net;
-        h2_out[j] = poly_activation(h_net); // ReLU
-    }
-
-    // --- Layer 3: H2 to H3 (16 -> 16) ---
-    for (int j = 0; j < N_HIDDEN3; j++) {
-        double h_net = b_3[j];
-        for (int i = 0; i < N_HIDDEN2; i++) h_net += h2_out[i] * w_23[i][j]; 
-        h3_net[j] = h_net;
-        h3_out[j] = poly_activation(h_net); // ReLU
-    }
-    
-    // --- Layer 4: H3 to H4 (16 -> 16) ---
-    for (int j = 0; j < N_HIDDEN4; j++) {
-        double h_net = b_4[j];
-        for (int i = 0; i < N_HIDDEN3; i++) h_net += h3_out[i] * w_34[i][j]; 
-        h4_net[j] = h_net;
-        h4_out[j] = poly_activation(h_net); // ReLU
-    }
-
-    // --- Output Layer: H4 to Output (16 -> 512) ---
+    // --- Output Layer: H1 to Output (256 -> 512) ---
     for (int k = 0; k < N_OUTPUT; k++) {
         double o_net = b_o[k]; 
-        for (int j = 0; j < N_HIDDEN4; j++) o_net += h4_out[j] * w_4o[j][k]; 
+        for (int j = 0; j < N_HIDDEN1; j++) o_net += h1_out[j] * w_1o[j][k]; 
         output_net[k] = o_net;
         // Final Activation: Sigmoid for 512 binary bits
         output_prob[k] = sigmoid(o_net); 
@@ -341,16 +290,10 @@ void train_nn() {
     double input[N_INPUT], target[N_OUTPUT];
     double output_net[N_OUTPUT], output_prob[N_OUTPUT];
     
-    // Gradient Accumulators for 4 layers
+    // Gradient Accumulators for the single layer
     double grad_w_f1_acc[N_INPUT][N_HIDDEN1] = {0.0};
     double grad_b_1_acc[N_HIDDEN1] = {0.0};
-    double grad_w_12_acc[N_HIDDEN1][N_HIDDEN2] = {0.0};
-    double grad_b_2_acc[N_HIDDEN2] = {0.0};
-    double grad_w_23_acc[N_HIDDEN2][N_HIDDEN3] = {0.0};
-    double grad_b_3_acc[N_HIDDEN3] = {0.0};
-    double grad_w_34_acc[N_HIDDEN3][N_HIDDEN4] = {0.0};
-    double grad_b_4_acc[N_HIDDEN4] = {0.0};
-    double grad_w_4o_acc[N_HIDDEN4][N_OUTPUT] = {0.0};
+    double grad_w_1o_acc[N_HIDDEN1][N_OUTPUT] = {0.0};
     double grad_b_o_acc[N_OUTPUT] = {0.0};
     
     double cumulative_loss_report = 0.0;
@@ -360,7 +303,7 @@ void train_nn() {
     
     clock_t start_time = clock();
     
-    printf("--- TRAINING PHASE START (Adam, Deep Net: 4x16, Task: Text Compression, Time Limit: %.1f s) ---\n", 
+    printf("--- TRAINING PHASE START (Adam, Single Layer Net: 256, Task: Text Compression, Time Limit: %.1f s) ---\n", 
            TRAINING_TIME_LIMIT);
     
     while ((double)(clock() - start_time) / CLOCKS_PER_SEC < TRAINING_TIME_LIMIT) {
@@ -373,9 +316,6 @@ void train_nn() {
             START_PROFILE(PROFILE_BACKPROP_UPDATE)
             
             double delta_o[N_OUTPUT];
-            double delta_4[N_HIDDEN4], error_4[N_HIDDEN4];
-            double delta_3[N_HIDDEN3], error_3[N_HIDDEN3];
-            double delta_2[N_HIDDEN2], error_2[N_HIDDEN2];
             double delta_1[N_HIDDEN1], error_1[N_HIDDEN1];
             double total_sample_loss = 0.0;
 
@@ -387,61 +327,22 @@ void train_nn() {
                 total_sample_loss += 0.5 * error * error * REGRESSION_WEIGHT;
             }
             
-            // 2. Backpropagate Errors (Output -> H4)
-            for (int j = 0; j < N_HIDDEN4; j++) {
-                error_4[j] = 0.0;
-                for (int k = 0; k < N_OUTPUT; k++) error_4[j] += delta_o[k] * w_4o[j][k];
-                delta_4[j] = error_4[j] * poly_derivative(h4_net[j]); // ReLU derivative
-            }
-            
-            // H4 -> H3
-            for (int j = 0; j < N_HIDDEN3; j++) {
-                error_3[j] = 0.0;
-                for (int k = 0; k < N_HIDDEN4; k++) error_3[j] += delta_4[k] * w_34[j][k]; 
-                delta_3[j] = error_3[j] * poly_derivative(h3_net[j]); // ReLU derivative
-            }
-            
-            // H3 -> H2
-            for (int j = 0; j < N_HIDDEN2; j++) {
-                error_2[j] = 0.0;
-                for (int k = 0; k < N_HIDDEN3; k++) error_2[j] += delta_3[k] * w_23[j][k]; 
-                delta_2[j] = error_2[j] * poly_derivative(h2_net[j]); // ReLU derivative
-            }
-
-            // H2 -> H1
+            // 2. Backpropagate Errors (Output -> H1)
             for (int j = 0; j < N_HIDDEN1; j++) {
                 error_1[j] = 0.0;
-                for (int k = 0; k < N_HIDDEN2; k++) error_1[j] += delta_2[k] * w_12[j][k]; 
+                for (int k = 0; k < N_OUTPUT; k++) error_1[j] += delta_o[k] * w_1o[j][k];
                 delta_1[j] = error_1[j] * poly_derivative(h1_net[j]); // ReLU derivative
             }
-
+            
             // 3. Accumulate Gradients (dLoss/dW = delta * input)
 
-            // H4 -> Output
+            // H1 -> Output
             for (int k = 0; k < N_OUTPUT; k++) {
                 grad_b_o_acc[k] += delta_o[k];
-                for (int j = 0; j < N_HIDDEN4; j++) grad_w_4o_acc[j][k] += delta_o[k] * h4_out[j];
-            }
-
-            // H3 -> H4
-            for (int j = 0; j < N_HIDDEN4; j++) {
-                grad_b_4_acc[j] += delta_4[j];
-                for (int i = 0; i < N_HIDDEN3; i++) grad_w_34_acc[i][j] += delta_4[j] * h3_out[i];
+                for (int j = 0; j < N_HIDDEN1; j++) grad_w_1o_acc[j][k] += delta_o[k] * h1_out[j];
             }
             
-            // H2 -> H3
-            for (int j = 0; j < N_HIDDEN3; j++) {
-                grad_b_3_acc[j] += delta_3[j];
-                for (int i = 0; i < N_HIDDEN2; i++) grad_w_23_acc[i][j] += delta_3[j] * h2_out[i];
-            }
-
-            // H1 -> H2
-            for (int j = 0; j < N_HIDDEN2; j++) {
-                grad_b_2_acc[j] += delta_2[j];
-                for (int i = 0; i < N_HIDDEN1; i++) grad_w_12_acc[i][j] += delta_2[j] * h1_out[i];
-            }
-            
-            // Input (256) -> H1 (16)
+            // Input (256) -> H1 (256)
             for (int j = 0; j < N_HIDDEN1; j++) {
                 grad_b_1_acc[j] += delta_1[j];
                 for (int i = 0; i < N_INPUT; i++) grad_w_f1_acc[i][j] += delta_1[j] * input[i];
@@ -457,54 +358,18 @@ void train_nn() {
         t++; 
         double inv_batch_size = 1.0 / BATCH_SIZE;
         
-        // H4 -> Output
+        // H1 -> Output
         for (int k = 0; k < N_OUTPUT; k++) {
             double grad_b_o = grad_b_o_acc[k] * inv_batch_size;
             adam_update(&b_o[k], &grad_b_o, &m_b_o[k], &v_b_o[k], t, INITIAL_LEARNING_RATE);
             grad_b_o_acc[k] = 0.0; 
-            for (int j = 0; j < N_HIDDEN4; j++) {
-                double grad_w_4o = grad_w_4o_acc[j][k] * inv_batch_size;
-                adam_update(&w_4o[j][k], &grad_w_4o, &m_w_4o[j][k], &v_w_4o[j][k], t, INITIAL_LEARNING_RATE);
-                grad_w_4o_acc[j][k] = 0.0; 
+            for (int j = 0; j < N_HIDDEN1; j++) {
+                double grad_w_1o = grad_w_1o_acc[j][k] * inv_batch_size;
+                adam_update(&w_1o[j][k], &grad_w_1o, &m_w_1o[j][k], &v_w_1o[j][k], t, INITIAL_LEARNING_RATE);
+                grad_w_1o_acc[j][k] = 0.0; 
             }
         }
         
-        // H3 -> H4
-        for (int j = 0; j < N_HIDDEN4; j++) {
-            double grad_b_4 = grad_b_4_acc[j] * inv_batch_size;
-            adam_update(&b_4[j], &grad_b_4, &m_b_4[j], &v_b_4[j], t, INITIAL_LEARNING_RATE);
-            grad_b_4_acc[j] = 0.0; 
-            for (int i = 0; i < N_HIDDEN3; i++) {
-                double grad_w_34 = grad_w_34_acc[i][j] * inv_batch_size;
-                adam_update(&w_34[i][j], &grad_w_34, &m_w_34[i][j], &v_w_34[i][j], t, INITIAL_LEARNING_RATE);
-                grad_w_34_acc[i][j] = 0.0; 
-            }
-        }
-
-        // H2 -> H3
-        for (int j = 0; j < N_HIDDEN3; j++) {
-            double grad_b_3 = grad_b_3_acc[j] * inv_batch_size;
-            adam_update(&b_3[j], &grad_b_3, &m_b_3[j], &v_b_3[j], t, INITIAL_LEARNING_RATE);
-            grad_b_3_acc[j] = 0.0; 
-            for (int i = 0; i < N_HIDDEN2; i++) {
-                double grad_w_23 = grad_w_23_acc[i][j] * inv_batch_size;
-                adam_update(&w_23[i][j], &grad_w_23, &m_w_23[i][j], &v_w_23[i][j], t, INITIAL_LEARNING_RATE);
-                grad_w_23_acc[i][j] = 0.0; 
-            }
-        }
-        
-        // H1 -> H2
-        for (int j = 0; j < N_HIDDEN2; j++) {
-            double grad_b_2 = grad_b_2_acc[j] * inv_batch_size;
-            adam_update(&b_2[j], &grad_b_2, &m_b_2[j], &v_b_2[j], t, INITIAL_LEARNING_RATE);
-            grad_b_2_acc[j] = 0.0; 
-            for (int i = 0; i < N_HIDDEN1; i++) {
-                double grad_w_12 = grad_w_12_acc[i][j] * inv_batch_size;
-                adam_update(&w_12[i][j], &grad_w_12, &m_w_12[i][j], &v_w_12[i][j], t, INITIAL_LEARNING_RATE);
-                grad_w_12_acc[i][j] = 0.0; 
-            }
-        }
-
         // Input -> H1
         for (int j = 0; j < N_HIDDEN1; j++) {
             double grad_b_1 = grad_b_1_acc[j] * inv_batch_size;
@@ -591,7 +456,7 @@ void test_nn(int n_test_total) {
     forward_pass(input, output_net, output_prob);
     
     char predicted_sentence[SENTENCE_LENGTH + 1];
-    convert_binary_to_ascii(output_prob, predicted_sentence);
+    convert_binary_to_ascii(output_prob, predicted_prob);
 
     printf("  Input Index: %d\n", sample_index);
     printf("  Target Sentence:   '%s'\n", sentences[sample_index]);
@@ -623,7 +488,7 @@ void print_profiling_stats() {
 int main() {
     srand((unsigned int)time(NULL));
 
-    printf("--- Text Compression/Lookup NN (Deep Architecture: 4x16 FFN) ---\n");
+    printf("--- Text Compression/Lookup NN (Single Hidden Layer: 256 FFN) ---\n");
     
     initialize_nn();
     generate_data();
