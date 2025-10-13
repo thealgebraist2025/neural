@@ -61,7 +61,7 @@ double m_b_o[N_OUTPUT], v_b_o[N_OUTPUT];
 double input_mean = 0.0;
 double input_std = 1.0;
 
-// Data Storage (NUM_TRAINING_CASES used instead of NUM_IMAGES)
+// Data Storage 
 char sentences[NUM_TRAINING_CASES][SENTENCE_LENGTH + 1]; 
 double target_properties[NUM_TRAINING_CASES][N_OUTPUT];  
 double single_images[NUM_TRAINING_CASES][N_INPUT];       
@@ -241,7 +241,8 @@ void initialize_nn() {
     // H1 (16) -> H2 (16)
     double limit_12 = XAVIER_LIMIT(N_HIDDEN1, N_HIDDEN2);
     for (int i = 0; i < N_HIDDEN1; i++) for (int j = 0; j < N_HIDDEN2; j++) w_12[i][j] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * limit_12; 
-    for (int j = 0; j < N_HIDDEN2; j++) b_2[j = 0.0; 
+    // FIXED: Corrected syntax error b_2[j] = 0.0;
+    for (int j = 0; j < N_HIDDEN2; j++) b_2[j] = 0.0; 
 
     // H2 (16) -> H3 (16)
     double limit_23 = XAVIER_LIMIT(N_HIDDEN2, N_HIDDEN3);
