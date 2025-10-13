@@ -17,9 +17,9 @@
 #define N_OUTPUT 10            // 3 Class + 3 Circle Params + 4 Rectangle Params
 
 // **Training Parameters**
-#define NUM_IMAGES 1000        
-#define TRAINING_TIME_LIMIT 160.0 // Stop training after 60 seconds
-#define BATCH_SIZE 32          
+#define NUM_IMAGES 500        
+#define TRAINING_TIME_LIMIT 180.0 // Stop training after 60 seconds
+#define BATCH_SIZE 16          
 #define REPORT_FREQ 500             
 #define INITIAL_LEARNING_RATE 0.0001 
 #define CLASSIFICATION_WEIGHT 1.0  
