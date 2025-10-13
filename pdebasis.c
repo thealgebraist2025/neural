@@ -8,28 +8,29 @@
 #include <string.h> 
 
 // --- Configuration ---
-#define N_SAMPLES_MAX 40000 // Increased samples for 3 classes
+#define N_SAMPLES_MAX 12000 
 #define GRID_SIZE 32       
 #define D_SIZE (GRID_SIZE * GRID_SIZE) 
 #define N_INPUT D_SIZE     
 #define N_OUTPUT 14        // [Cls, x, y, w, h, rotation, P1x, P1y, P2x, P2y, P3x, P3y, P4x, P4y]
-#define N_HIDDEN 128       
-#define N_TEST_SAMPLES 16000 // Increased test samples
-#define N_REGRESSION_TESTS 90 // 10 samples per class for regression test
+#define N_HIDDEN 256       
+#define N_TEST_SAMPLES 600 
+#define N_REGRESSION_TESTS 30 
+#define N_VISUAL_TESTS 20  // 10 Rectangles, 10 Splines
 
 // Neural Network Parameters
-#define LEARNING_RATE 0.0006 
-#define N_EPOCHS_TRAIN 700000 
+#define LEARNING_RATE 0.0005 
+#define N_EPOCHS_TRAIN 100000 
 #define TARGET_LINE_SET 0.0
 #define TARGET_RECTANGLE 1.0
-#define TARGET_SPLINE 2.0 // New target for 4-point spline
+#define TARGET_SPLINE 2.0 
 #define CLASSIFICATION_WEIGHT 1.0 
 #define REGRESSION_WEIGHT 5.0     
-#define MAX_ROTATION_DEGREE 90.0 
-// ---------------------
+#define MAX_ROTATION_DEGREE 180.0 
+#define MAX_PIXEL_VALUE 250.0 // Max pixel value for normalization to 0..9
 
 // --- Dynamic Globals ---
-int N_SAMPLES = 32000; 
+int N_SAMPLES = 12000; 
 int N_EPOCHS = N_EPOCHS_TRAIN; 
  
 // Global Data & Matrices 
@@ -65,16 +66,16 @@ double sigmoid(double x);
 void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], double output[N_OUTPUT]);
 void backward_pass_and_update(const double input[N_INPUT], const double hidden_out[N_HIDDEN], const double output[N_OUTPUT], const double target[N_OUTPUT]);
 
-void test_regression();
-// FIX: ADDED MISSING PROTOTYPE
 void estimate_nn_epochs();
+void test_regression();
+void print_image_and_overlay(const double input_image[D_SIZE], const double estimated_output[N_OUTPUT]);
 
 
 // -----------------------------------------------------------------
 // --- DATA GENERATION FUNCTIONS ---
 // -----------------------------------------------------------------
 
-// Helper function to draw a line for the spline rendering
+// Helper function to draw a line for rendering
 void draw_line(double image[D_SIZE], int x1, int y1, int x2, int y2, double val) {
     int dx = abs(x2 - x1);
     int dy = abs(y2 - y1);
@@ -93,25 +94,19 @@ void draw_line(double image[D_SIZE], int x1, int y1, int x2, int y2, double val)
     }
 }
 
-// Function to generate a 4-point Cubic Bézier Spline
 void generate_4_point_spline(double image[D_SIZE], double target_data[N_OUTPUT]) {
-    // 1. Clear image
     for (int i = 0; i < D_SIZE; i++) { image[i] = 0.0; } 
     
-    // 2. Define 4 random control points (P1 to P4)
     double points[4][2];
     for(int i = 0; i < 4; i++) {
-        // Points are restricted to middle 3/4 of grid to ensure visibility
         points[i][0] = 4.0 + (double)(rand() % (GRID_SIZE - 8));
         points[i][1] = 4.0 + (double)(rand() % (GRID_SIZE - 8));
     }
     
-    // 3. Draw Spline (Bézier curve approximation)
     double value = 200.0 + (double)(rand() % 50);
     int prev_x = (int)points[0][0];
     int prev_y = (int)points[0][1];
     
-    // Use 100 segments for smooth curve
     for (int i = 1; i <= 100; i++) {
         double t = (double)i / 100.0;
         double t2 = t * t;
@@ -120,7 +115,6 @@ void generate_4_point_spline(double image[D_SIZE], double target_data[N_OUTPUT])
         double one_minus_t2 = one_minus_t * one_minus_t;
         double one_minus_t3 = one_minus_t2 * one_minus_t;
         
-        // Cubic Bézier formula: B(t) = P1*(1-t)^3 + P2*3t(1-t)^2 + P3*3t^2(1-t) + P4*t^3
         double x = points[0][0] * one_minus_t3 + 
                    points[1][0] * 3 * t * one_minus_t2 + 
                    points[2][0] * 3 * t2 * one_minus_t + 
@@ -133,28 +127,22 @@ void generate_4_point_spline(double image[D_SIZE], double target_data[N_OUTPUT])
         int curr_x = (int)(x + 0.5);
         int curr_y = (int)(y + 0.5);
         
-        // Draw segment between previous point and current point
         draw_line(image, prev_x, prev_y, curr_x, curr_y, value);
         prev_x = curr_x;
         prev_y = curr_y;
     }
 
-    // 4. Set Targets (14 outputs)
-    target_data[0] = TARGET_SPLINE; // Classification
-
-    // Bounding Box and Rotation are irrelevant/zero for lines/splines
+    target_data[0] = TARGET_SPLINE; 
     target_data[1] = target_data[2] = target_data[3] = target_data[4] = 0.0; 
-    target_data[5] = 0.0; // Rotation
+    target_data[5] = 0.0; 
 
-    // Spline Points (P1x, P1y, ..., P4y)
     for(int i = 0; i < 4; i++) {
-        target_data[6 + 2*i + 0] = NORMALIZE_COORD(points[i][0]); // Px
-        target_data[6 + 2*i + 1] = NORMALIZE_COORD(points[i][1]); // Py
+        target_data[6 + 2*i + 0] = NORMALIZE_COORD(points[i][0]); 
+        target_data[6 + 2*i + 1] = NORMALIZE_COORD(points[i][1]); 
     }
 }
 
 void generate_rectangle(double image[D_SIZE], double target_data[N_OUTPUT]) {
-    // 1. Initial Rectangle Parameters
     int rect_w = 8 + (rand() % (GRID_SIZE - 12)); 
     int rect_h = 8 + (rand() % (GRID_SIZE - 12)); 
     int center_x = GRID_SIZE / 2;
@@ -164,12 +152,10 @@ void generate_rectangle(double image[D_SIZE], double target_data[N_OUTPUT]) {
     double cos_r = cos(rotation_rad);
     double sin_r = sin(rotation_rad);
     
-    // 2. Clear Image and Initialize Bounding Box extremes
     for (int i = 0; i < D_SIZE; i++) { image[i] = 0.0; } 
     double min_x = DBL_MAX, min_y = DBL_MAX;
     double max_x = DBL_MIN, max_y = DBL_MIN;
     
-    // 3. Draw Rotated Rectangle and Calculate Minimal Bounding Box
     double value = 200.0 + (double)(rand() % 50);
 
     for (int dy = 0; dy < rect_h; ++dy) {
@@ -195,7 +181,6 @@ void generate_rectangle(double image[D_SIZE], double target_data[N_OUTPUT]) {
         }
     }
     
-    // 4. Calculate Final Bounding Box Dimensions
     int final_start_x = (int)min_x;
     int final_start_y = (int)min_y;
     int final_w = (int)(max_x - min_x + 1);
@@ -206,15 +191,12 @@ void generate_rectangle(double image[D_SIZE], double target_data[N_OUTPUT]) {
     final_w = CLAMP(final_w, 1, GRID_SIZE - final_start_x);
     final_h = CLAMP(final_h, 1, GRID_SIZE - final_start_y);
 
-    // 5. Set Targets (14 outputs)
-    target_data[0] = TARGET_RECTANGLE; // Classification
-    // Bounding Box and Rotation
+    target_data[0] = TARGET_RECTANGLE; 
     target_data[1] = NORMALIZE_COORD(final_start_x); 
     target_data[2] = NORMALIZE_COORD(final_start_y); 
     target_data[3] = NORMALIZE_COORD(final_w);       
     target_data[4] = NORMALIZE_COORD(final_h);       
     target_data[5] = rotation_deg / MAX_ROTATION_DEGREE; 
-    // Spline Points (irrelevant/zero)
     for(int i = 6; i < N_OUTPUT; i++) { target_data[i] = 0.0; }
 }
 
@@ -238,8 +220,7 @@ void generate_random_lines(double image[D_SIZE], double target_data[N_OUTPUT]) {
         }
     }
     
-    // Set Targets for Line (14 placeholder values)
-    target_data[0] = TARGET_LINE_SET; // Classification
+    target_data[0] = TARGET_LINE_SET; 
     for(int i = 1; i < N_OUTPUT; i++) { target_data[i] = 0.0; }
 }
 
@@ -276,7 +257,7 @@ void generate_test_set() {
 
 
 // -----------------------------------------------------------------
-// --- NN CORE FUNCTIONS (UPDATED for N_OUTPUT=14) ---
+// --- NN CORE FUNCTIONS ---
 // -----------------------------------------------------------------
 
 void initialize_nn() {
@@ -318,7 +299,6 @@ double sigmoid(double x) {
 }
 
 void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], double output[N_OUTPUT]) {
-    // Input to Hidden Layer (Sigmoid activation)
     for (int j = 0; j < N_HIDDEN; j++) {
         double h_net = b_h[j];
         for (int i = 0; i < N_INPUT; i++) {
@@ -327,14 +307,11 @@ void forward_pass(const double input[N_INPUT], double hidden_out[N_HIDDEN], doub
         hidden_out[j] = sigmoid(h_net);
     }
     
-    // Hidden to Output Layer
     for (int k = 0; k < N_OUTPUT; k++) {
         double o_net = b_o[k]; 
         for (int j = 0; j < N_HIDDEN; j++) { 
             o_net += hidden_out[j] * w_ho[j][k]; 
         } 
-        
-        // Output[0] (Classification) and Regression outputs [1..13] use identity (linear)
         output[k] = o_net; 
     }
 }
@@ -344,47 +321,39 @@ void backward_pass_and_update(const double input[N_INPUT], const double hidden_o
     double delta_h[N_HIDDEN]; 
     double error_h[N_HIDDEN] = {0.0};
     
-    // 1. Output Layer Deltas 
     for (int k = 0; k < N_OUTPUT; k++) {
         double error = output[k] - target[k];
-        double weight = REGRESSION_WEIGHT; // Default weight for all regression outputs
+        double weight = REGRESSION_WEIGHT; 
 
         if (k == 0) { 
-            // Classification output: Use Classification Weight
             weight = CLASSIFICATION_WEIGHT;
         } else {
-            // Regression outputs (1..13): Apply loss only if the shape is RELEVANT
             double target_cls = target[0];
             
-            // Outputs [1..5] (Rect: x, y, w, h, rotation) relevant only for TARGET_RECTANGLE (1.0)
-            if (k >= 1 && k <= 5) {
+            if (k >= 1 && k <= 5) { // Rect: x, y, w, h, rotation
                 if (fabs(target_cls - TARGET_RECTANGLE) > DBL_EPSILON) {
                     weight = 0.0;
                 }
             }
-            // Outputs [6..13] (Spline: Px, Py...) relevant only for TARGET_SPLINE (2.0)
-            else if (k >= 6 && k <= 13) {
+            else if (k >= 6 && k <= 13) { // Spline: Px, Py...
                 if (fabs(target_cls - TARGET_SPLINE) > DBL_EPSILON) {
                     weight = 0.0;
                 }
+            } else {
+                weight = 0.0; // Lines or irrelevant outputs
             }
-            // Lines (0.0) have no active regression outputs, weight remains 0.0 after check
         }
         
-        // Output layer uses linear activation, so derivative is 1.0
         delta_o[k] = error * weight; 
     }
     
-    // 2. Hidden Layer Deltas 
     for (int j = 0; j < N_HIDDEN; j++) { 
         for (int k = 0; k < N_OUTPUT; k++) {
             error_h[j] += delta_o[k] * w_ho[j][k];
         }
-        // Sigmoid derivative for hidden layer
         delta_h[j] = error_h[j] * hidden_out[j] * (1.0 - hidden_out[j]);
     }
     
-    // 3. Update Weights and Biases (Hidden-to-Output)
     for (int k = 0; k < N_OUTPUT; k++) { 
         for (int j = 0; j < N_HIDDEN; j++) { 
             w_ho[j][k] -= LEARNING_RATE * delta_o[k] * hidden_out[j]; 
@@ -392,7 +361,6 @@ void backward_pass_and_update(const double input[N_INPUT], const double hidden_o
         b_o[k] -= LEARNING_RATE * delta_o[k];
     } 
     
-    // 4. Update Weights and Biases (Input-to-Hidden)
     for (int i = 0; i < N_INPUT; i++) { 
         for (int j = 0; j < N_HIDDEN; j++) { 
             w_ih[i][j] -= LEARNING_RATE * delta_h[j] * input[i]; 
@@ -403,7 +371,6 @@ void backward_pass_and_update(const double input[N_INPUT], const double hidden_o
     }
 }
 
-// Multi-class classification test (nearest target)
 double test_on_set_cls(int n_set_size, const double input_set[][N_INPUT]) {
     int correct_predictions = 0; 
     double hidden_out[N_HIDDEN]; 
@@ -415,7 +382,6 @@ double test_on_set_cls(int n_set_size, const double input_set[][N_INPUT]) {
         double cls_score = output[0];
         double actual = test_targets_cls[i];
         
-        // Find nearest target class (0.0, 1.0, or 2.0)
         double prediction = round(cls_score);
         prediction = CLAMP(prediction, TARGET_LINE_SET, TARGET_SPLINE);
 
@@ -435,11 +401,138 @@ void estimate_nn_epochs() {
     printf("Setting fixed epochs to N_EPOCHS=%d for convergence of complex regression task.\n", N_EPOCHS);
 }
 
+
 // -----------------------------------------------------------------
-// --- REGRESSION TESTING ---
+// --- VISUALIZATION FUNCTION (NEW) ---
 // -----------------------------------------------------------------
 
-// Helper function to print a known class name based on its target value
+/**
+ * Renders the input image and the estimated shape side-by-side.
+ */
+void print_image_and_overlay(const double input_image[D_SIZE], const double estimated_output[N_OUTPUT]) {
+    // 1. Prepare the Estimated Shape Image (Blank grid)
+    char est_image[GRID_SIZE][GRID_SIZE];
+    for (int y = 0; y < GRID_SIZE; y++) {
+        for (int x = 0; x < GRID_SIZE; x++) {
+            est_image[y][x] = '.'; // Empty background
+        }
+    }
+    
+    // 2. Determine and Draw Estimated Shape
+    double cls_score = estimated_output[0];
+    double estimated_cls = round(CLAMP(cls_score, TARGET_LINE_SET, TARGET_SPLINE));
+    
+    if (fabs(estimated_cls - TARGET_RECTANGLE) < DBL_EPSILON) {
+        // Draw Estimated ROTATED RECTANGLE (Simplified: draw bounding box for visualization)
+        int x = (int)(CLAMP(estimated_output[1], 0.0, 1.0) * GRID_SIZE);
+        int y = (int)(CLAMP(estimated_output[2], 0.0, 1.0) * GRID_SIZE);
+        int w = (int)(CLAMP(estimated_output[3], 0.0, 1.0) * GRID_SIZE);
+        int h = (int)(CLAMP(estimated_output[4], 0.0, 1.0) * GRID_SIZE);
+        
+        for (int j = 0; j < h; j++) {
+            for (int i = 0; i < w; i++) {
+                int px = x + i;
+                int py = y + j;
+                if (px >= 0 && px < GRID_SIZE && py >= 0 && py < GRID_SIZE) {
+                    // Draw outer border and center 'X'
+                    if (i == 0 || i == w - 1 || j == 0 || j == h - 1 || (i == w/2 && j == h/2)) {
+                        est_image[py][px] = '@';
+                    } else if (w < 4 && h < 4) { // Small box fill
+                        est_image[py][px] = '@';
+                    }
+                }
+            }
+        }
+        
+    } else if (fabs(estimated_cls - TARGET_SPLINE) < DBL_EPSILON) {
+        // Draw Estimated SPLINE (Cubic Bézier Curve)
+        double points[4][2];
+        for(int i = 0; i < 4; i++) {
+            points[i][0] = CLAMP(estimated_output[6 + 2*i + 0], 0.0, 1.0) * GRID_SIZE; 
+            points[i][1] = CLAMP(estimated_output[7 + 2*i + 0], 0.0, 1.0) * GRID_SIZE; 
+            
+            // Mark control points
+            int px = (int)points[i][0];
+            int py = (int)points[i][1];
+            if (px >= 0 && px < GRID_SIZE && py >= 0 && py < GRID_SIZE) {
+                 est_image[py][px] = '#'; // Use '#' for control points
+            }
+        }
+        
+        int prev_x = (int)points[0][0];
+        int prev_y = (int)points[0][1];
+        for (int i = 1; i <= 100; i++) {
+            double t = (double)i / 100.0;
+            double t2 = t * t;
+            double t3 = t2 * t;
+            double one_minus_t = 1.0 - t;
+            double one_minus_t2 = one_minus_t * one_minus_t;
+            double one_minus_t3 = one_minus_t2 * one_minus_t;
+            
+            double x = points[0][0] * one_minus_t3 + 
+                       points[1][0] * 3 * t * one_minus_t2 + 
+                       points[2][0] * 3 * t2 * one_minus_t + 
+                       points[3][0] * t3;
+            double y = points[0][1] * one_minus_t3 + 
+                       points[1][1] * 3 * t * one_minus_t2 + 
+                       points[2][1] * 3 * t2 * one_minus_t + 
+                       points[3][1] * t3;
+                       
+            int curr_x = (int)(x + 0.5);
+            int curr_y = (int)(y + 0.5);
+            
+            // Draw line segment and mark pixels with '@'
+            int dx = abs(curr_x - prev_x);
+            int dy = abs(curr_y - prev_y);
+            int sx = prev_x < curr_x ? 1 : -1;
+            int sy = prev_y < curr_y ? 1 : -1;
+            int err = dx - dy;
+
+            int line_x = prev_x;
+            int line_y = prev_y;
+
+            while (1) {
+                if (line_x >= 0 && line_x < GRID_SIZE && line_y >= 0 && line_y < GRID_SIZE) {
+                    est_image[line_y][line_x] = '@';
+                }
+                if (line_x == curr_x && line_y == curr_y) break;
+                int e2 = 2 * err;
+                if (e2 > -dy) { err -= dy; line_x += sx; }
+                if (e2 < dx) { err += dx; line_y += sy; }
+            }
+            prev_x = curr_x;
+            prev_y = curr_y;
+        }
+    }
+    // Lines (0.0) are not rendered here.
+    
+    // 3. Print Side-by-Side
+    printf("     Input Image (0-9)  | Estimated Shape ('@' or '#')\n");
+    for (int y = 0; y < GRID_SIZE; y++) {
+        // Print Input Image
+        printf(" ");
+        for (int x = 0; x < GRID_SIZE; x++) {
+            // Scale pixel value (0.0-250.0) to character ('0'-'9')
+            int pixel_val = (int)(input_image[GRID_SIZE * y + x] * 9.0 / MAX_PIXEL_VALUE + 0.5);
+            printf("%d", CLAMP(pixel_val, 0, 9));
+        }
+        
+        // Separator
+        printf(" | ");
+        
+        // Print Estimated Shape Image
+        for (int x = 0; x < GRID_SIZE; x++) {
+            printf("%c", est_image[y][x]);
+        }
+        printf("\n");
+    }
+}
+
+
+// -----------------------------------------------------------------
+// --- REGRESSION TESTING (Updated for Visual Tests) ---
+// -----------------------------------------------------------------
+
 const char* get_class_name(double target_cls) {
     if (fabs(target_cls - TARGET_RECTANGLE) < DBL_EPSILON) return "RECTANGLE";
     if (fabs(target_cls - TARGET_SPLINE) < DBL_EPSILON) return "SPLINE";
@@ -456,52 +549,45 @@ void test_regression() {
     double hidden_out[N_HIDDEN];
     double output[N_OUTPUT];
     
+    int rect_visual_count = 0;
+    int spline_visual_count = 0;
+    
     // Test 10 lines, 10 rectangles, 10 splines (since N_REGRESSION_TESTS=30)
     for (int i = 0; i < N_REGRESSION_TESTS; i++) {
         double test_image[D_SIZE];
         double known_target[N_OUTPUT];
         
         // Generate test data for 3 classes
-        if (i < N_REGRESSION_TESTS/3) {
-             generate_random_lines(test_image, known_target); // Lines
-        } else if (i < 2 * N_REGRESSION_TESTS/3) {
-            // Note: generate_rectangle takes a target_data[N_OUTPUT] 
-            double temp_target[N_OUTPUT];
-            generate_rectangle(test_image, temp_target); 
-            memcpy(known_target, temp_target, N_OUTPUT * sizeof(double));
-        } else {
-            // Note: generate_4_point_spline takes a target_data[N_OUTPUT]
-            double temp_target[N_OUTPUT];
-            generate_4_point_spline(test_image, temp_target);
-            memcpy(known_target, temp_target, N_OUTPUT * sizeof(double));
+        if (i < N_REGRESSION_TESTS/3) { // Lines (Index 0-9)
+             generate_random_lines(test_image, known_target); 
+        } else if (i < 2 * N_REGRESSION_TESTS/3) { // Rectangles (Index 10-19)
+            generate_rectangle(test_image, known_target); 
+        } else { // Splines (Index 20-29)
+            generate_4_point_spline(test_image, known_target);
         }
         
         forward_pass(test_image, hidden_out, output);
         
         double target_cls = known_target[0];
-
-        // Clamp outputs for display
+        
+        // --- PRINT STATS ROW ---
         int est_x = (int)(CLAMP(output[1], 0.0, 1.0) * GRID_SIZE + 0.5);
         int est_y = (int)(CLAMP(output[2], 0.0, 1.0) * GRID_SIZE + 0.5);
         int est_w = (int)(CLAMP(output[3], 0.0, 1.0) * GRID_SIZE + 0.5);
         int est_h = (int)(CLAMP(output[4], 0.0, 1.0) * GRID_SIZE + 0.5);
         
-        double est_rot_norm = CLAMP(output[5], 0.0, 1.0);
-        double est_rot_deg = est_rot_norm * MAX_ROTATION_DEGREE;
+        double est_rot_deg = CLAMP(output[5], 0.0, 1.0) * MAX_ROTATION_DEGREE;
 
-        // Known values (denormalized)
         int known_x = (int)(known_target[1] * GRID_SIZE + 0.5);
         int known_y = (int)(known_target[2] * GRID_SIZE + 0.5);
         int known_w = (int)(known_target[3] * GRID_SIZE + 0.5);
         int known_h = (int)(known_target[4] * GRID_SIZE + 0.5);
         double known_rot_deg = known_target[5] * MAX_ROTATION_DEGREE;
         
-        // Spline Points
         char est_spline_str[64];
         char known_spline_str[64];
         
         if (fabs(target_cls - TARGET_SPLINE) < DBL_EPSILON) {
-            // Only print if it's actually a spline
             snprintf(est_spline_str, 64, "%2d,%2d %2d,%2d %2d,%2d %2d,%2d",
                      (int)(CLAMP(output[6], 0.0, 1.0) * GRID_SIZE + 0.5), (int)(CLAMP(output[7], 0.0, 1.0) * GRID_SIZE + 0.5),
                      (int)(CLAMP(output[8], 0.0, 1.0) * GRID_SIZE + 0.5), (int)(CLAMP(output[9], 0.0, 1.0) * GRID_SIZE + 0.5),
@@ -513,7 +599,6 @@ void test_regression() {
                      (int)(known_target[10] * GRID_SIZE + 0.5), (int)(known_target[11] * GRID_SIZE + 0.5),
                      (int)(known_target[12] * GRID_SIZE + 0.5), (int)(known_target[13] * GRID_SIZE + 0.5));
         } else {
-            // Print N/A for lines and rectangles
             snprintf(est_spline_str, 64, "N/A");
             snprintf(known_spline_str, 64, "N/A");
         }
@@ -526,6 +611,19 @@ void test_regression() {
                known_x, known_y, known_w, known_h,
                est_rot_deg, known_rot_deg,
                est_spline_str, known_spline_str);
+               
+        // --- VISUALIZATION CHECK ---
+        if (fabs(target_cls - TARGET_RECTANGLE) < DBL_EPSILON && rect_visual_count < 10) {
+            printf("\n--- VISUAL TEST (Rectangle #%d) ---\n", rect_visual_count + 1);
+            print_image_and_overlay(test_image, output);
+            printf("----------------------------------------------------------------\n");
+            rect_visual_count++;
+        } else if (fabs(target_cls - TARGET_SPLINE) < DBL_EPSILON && spline_visual_count < 10) {
+            printf("\n--- VISUAL TEST (Spline #%d) ---\n", spline_visual_count + 1);
+            print_image_and_overlay(test_image, output);
+            printf("----------------------------------------------------------------\n");
+            spline_visual_count++;
+        }
     }
     printf("--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\n");
 }
@@ -562,7 +660,7 @@ int main() {
     double acc_test = test_on_set_cls(N_TEST_SAMPLES, test_data);
     printf("NN Testing Accuracy (Line/Rect/Spline): %.2f%%\n", acc_test * 100.0);
     
-    // --- STEP 3: Regression Testing ---
+    // --- STEP 3: Regression Testing and Visualization ---
     test_regression();
     
     end_total = clock();
