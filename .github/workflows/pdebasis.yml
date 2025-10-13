@@ -12,7 +12,7 @@ jobs:
       uses: actions/checkout@v2
 
     - name: Build 
-      run: clang -O3 -fsanitize=address -msse4.1 -std=c11 pdebasis.c -lm -o pdebasis
+      run: clang -O0 -g -fsanitize=address -msse4.1 -std=c11 pdebasis.c -lm -o pdebasis
 
     - name: Run the program
       run: ./pdebasis 
