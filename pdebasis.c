@@ -20,7 +20,7 @@
 #define NUM_IMAGES 2       
 #define MIN_RADIUS 3       
 #define MAX_RADIUS 10.0    
-#define N_TRAINING_EPOCHS 1000      
+#define N_TRAINING_EPOCHS 100000      
 #define REPORT_FREQ 100             
 #define INITIAL_LEARNING_RATE 0.0001 
 #define COORD_WEIGHT 1.0             
