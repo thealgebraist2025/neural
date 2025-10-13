@@ -22,8 +22,8 @@
 #define N_HIDDEN4 16 
 
 // **Training Parameters**
-#define NUM_IMAGES 3000        
-#define TRAINING_TIME_LIMIT 60.0 // Resetting to 60s
+#define NUM_IMAGES 1000        
+#define TRAINING_TIME_LIMIT 120.0 // Resetting to 60s
 #define BATCH_SIZE 32          
 #define REPORT_FREQ 500             
 #define INITIAL_LEARNING_RATE 0.0001 
