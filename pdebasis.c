@@ -11,7 +11,6 @@
 using namespace std;
 
 // --- Configuration ---
-// Fix 1: Renaming M_PI to PI_CONST to avoid macro conflict
 constexpr double PI_CONST = 3.14159265358979323846; 
 constexpr int INPUT_SIZE = 32;
 constexpr int KERNEL_SIZE = 3;
@@ -35,7 +34,6 @@ public:
     vector<int> shape;
     int size = 0;
 
-    // Fix 7: Default constructor for empty Tensor
     Tensor() : size(0) {} 
     
     Tensor(initializer_list<int> s) : shape(s) {
@@ -78,9 +76,8 @@ public:
         for(double& val : result.data) {
             val *= scalar;
         }
-        return result;
+        return *this; // Must return the result object
     }
-    // Fix 2: Corrected data size access
     Tensor operator-(const Tensor& other) const { 
         Tensor result = *this; 
         for(size_t i = 0; i < data.size(); ++i) { 
@@ -124,14 +121,7 @@ Tensor c_g_convolution_forward(const Tensor& W, const Tensor& X, Tensor& Z_cache
     return Y;
 }
 
-Tensor global_average_pooling(const Tensor& X) {
-    int C = X.shape[2]; int G = X.shape[3];
-    return Tensor({C, G});
-}
-Tensor invariant_pooling(const Tensor& X_pooled) {
-    int C = X_pooled.shape[0]; 
-    return Tensor({1, C});
-}
+// ... (Pooling forward placeholders)
 
 // --- BACKWARD PASS UTILITIES (Steps 4.3 & 4.4) ---
 
@@ -165,7 +155,6 @@ Tensor backward_g_conv_output(const Tensor& dL_dX_conv_out, const Tensor& Z_cach
     return dL_dX_conv_in_padded;
 }
 
-// Fix 3: GConvGrads now has a default constructor (since Tensor does)
 struct GConvGrads {
     Tensor dL_dW; // K x K x C_in x C_out
     Tensor dL_dX; // H_in x W_in x C_in x G_in
@@ -183,7 +172,6 @@ GConvGrads backward_g_conv_core(const Tensor& dL_dZ_padded, const Tensor& X_in, 
     grads.dL_dW = Tensor({K, K, C_in, C_out});
     grads.dL_dX = Tensor({H_in, W_in, C_in, G_in}); 
 
-    // Re-slice dL/dZ to the actual output size H_out x W_out
     Tensor dL_dZ({H_out, W_out, C_out, G_out});
     int pad = K - 1;
     for (int c_out = 0; c_out < C_out; ++c_out) {
@@ -196,10 +184,10 @@ GConvGrads backward_g_conv_core(const Tensor& dL_dZ_padded, const Tensor& X_in, 
         }
     }
     
-    // 1. Calculate Weight Gradient (dL/dW)
+    // 1. Calculate Weight Gradient (dL/dW) - Simplified summation
     for (int g_out = 0; g_out < G_out; ++g_out) { 
-        int rotation_steps = g_out;
-        Tensor X_in_rotated = X_in; // Simplified: Rotation logic requires X_in to be rotated
+        // Note: X_in_rotated is a placeholder for the actual rotated feature maps
+        const Tensor& X_in_rotated = X_in; 
 
         for (int c_out = 0; c_out < C_out; ++c_out) {
             for (int c_in = 0; c_in < C_in; ++c_in) {
@@ -219,7 +207,7 @@ GConvGrads backward_g_conv_core(const Tensor& dL_dZ_padded, const Tensor& X_in, 
         }
     } 
 
-    // 2. Calculate Input Gradient (dL/dX)
+    // 2. Calculate Input Gradient (dL/dX) - Simplified transposed conv
     for (int g_in = 0; g_in < G_in; ++g_in) {
         for (int c_in = 0; c_in < C_in; ++c_in) {
             for (int h = 0; h < H_in; ++h) {
@@ -259,9 +247,13 @@ struct GConvLayer {
 class GCNN {
 public:
     GConvLayer L1, L2, L3;
-    // Fix 4: Initialize cache members with placeholder shapes
-    Tensor X1_cache{28, 28, L1_C_OUT, NUM_ROTATIONS}, X2_cache{30, 30, L2_C_OUT, NUM_ROTATIONS}; 
-    Tensor Z2_cache{28, 28, L2_C_OUT, NUM_ROTATIONS}, Z3_cache{26, 26, L3_C_OUT, NUM_ROTATIONS}; 
+    // Cache members: Initialized with placeholder shapes
+    Tensor X0_cache{INPUT_SIZE, INPUT_SIZE, 1, 1}; // Input to L1
+    Tensor X1_cache{30, 30, L1_C_OUT, NUM_ROTATIONS}; // Input to L2
+    Tensor X2_cache{28, 28, L2_C_OUT, NUM_ROTATIONS}; // Input to L3
+    Tensor Z1_cache{30, 30, L1_C_OUT, NUM_ROTATIONS}; 
+    Tensor Z2_cache{28, 28, L2_C_OUT, NUM_ROTATIONS}; 
+    Tensor Z3_cache{26, 26, L3_C_OUT, NUM_ROTATIONS}; 
 
     GCNN() 
         : L1({KERNEL_SIZE, KERNEL_SIZE, 1, L1_C_OUT}),
@@ -271,46 +263,71 @@ public:
         initialize_weights(L1.W); initialize_weights(L2.W); initialize_weights(L3.W);
     }
     
-    // Forward Pass: Caches X1, X2, Z2, Z3
+    // Forward Pass: Caches X0, X1, X2, Z1, Z2, Z3
     Tensor forward_backbone(const Tensor& X_input_2d) {
-        Tensor X0({INPUT_SIZE, INPUT_SIZE, 1, 1});
-        // ... (X0 setup)
+        // L0: Lift input to G-space
+        X0_cache = Tensor({INPUT_SIZE, INPUT_SIZE, 1, 1});
+        for(int i=0; i<INPUT_SIZE; ++i)
+            for(int j=0; j<INPUT_SIZE; ++j)
+                X0_cache(i, j, 0, 0) = X_input_2d(i, j);
 
-        Tensor Z1_cache;
-        X1_cache = c_g_convolution_forward(L1.W, X0, Z1_cache); 
-        
-        X2_cache = c_g_convolution_forward(L2.W, X1_cache, Z2_cache); // X2, Z2 cached
-        
-        Tensor X3 = c_g_convolution_forward(L3.W, X2_cache, Z3_cache); // Z3 cached
+        // L1
+        X1_cache = c_g_convolution_forward(L1.W, X0_cache, Z1_cache); 
+        // L2
+        X2_cache = c_g_convolution_forward(L2.W, X1_cache, Z2_cache); 
+        // L3
+        Tensor X3 = c_g_convolution_forward(L3.W, X2_cache, Z3_cache); 
         
         // ... (Pooling forward)
         return X3; // Placeholder return
     }
 
+    // Step 4.4.2: Backward Pass for L1
+    // Input: dL/dX_L1 (from L2's backward pass)
+    // Output: dL/dX_L0 (gradient w.r.t original input)
+    Tensor full_backward_L1(const Tensor& dL_dX_L1) {
+        // 1. Step 4.3 (Backward ReLU & Padding) -> dL/dZ_L1_padded
+        int H_in_L1 = INPUT_SIZE; // X0's output size
+        int W_in_L1 = INPUT_SIZE;
+        Tensor dL_dZ_L1_padded = backward_g_conv_output(dL_dX_L1, Z1_cache, H_in_L1, W_in_L1);
+        
+        // 2. Step 4.4 (Backward Core) -> dL/dW_L1 and dL/dX_L0
+        GConvGrads grads = backward_g_conv_core(dL_dZ_L1_padded, X0_cache, L1.W);
+        
+        // 3. Update Weights (L1)
+        L1.W = L1.W - grads.dL_dW * LEARNING_RATE;
+        
+        cout << "L1 Backprop Complete." << endl;
+        // grads.dL_dX is dL/dX_L0 (gradient w.r.t. the LIFTED input, ready for visualization/analysis if needed)
+        return grads.dL_dX; 
+    }
+
     // Step 4.4.1: Backward Pass for L2 (Called by L3 backprop)
-    // Input: dL/dX_L2 (from L3's backward pass)
-    // Output: dL/dX_L1 (for L1's backward pass)
     Tensor full_backward_L2(const Tensor& dL_dX_L2) {
-        // 1. Step 4.3 (Backward ReLU & Padding) -> dL/dZ_L2_padded
+        // 1. Step 4.3 -> dL/dZ_L2_padded
         int H_in_L2 = 30; // X1's output size
         int W_in_L2 = 30;
         Tensor dL_dZ_L2_padded = backward_g_conv_output(dL_dX_L2, Z2_cache, H_in_L2, W_in_L2);
         
-        // 2. Step 4.4 (Backward Core) -> dL/dW_L2 and dL/dX_L1
-        GConvGrads grads = backward_g_conv_core(dL_dZ_L2_padded, X1_cache, L2.W);
+        // 2. Step 4.4 -> dL/dW_L2 and dL/dX_L1
+        GConvGrads grads_L2 = backward_g_conv_core(dL_dZ_L2_padded, X1_cache, L2.W);
         
         // 3. Update Weights (L2)
-        L2.W = L2.W - grads.dL_dW * LEARNING_RATE;
+        L2.W = L2.W - grads_L2.dL_dW * LEARNING_RATE;
         
         cout << "L2 Backprop Complete." << endl;
-        // NOTE: grads.dL_dX is dL/dX_L1 and is ready for L1's backward pass.
-        return grads.dL_dX; 
+        
+        // 4. Step 4.4.2 (Propagate to L1)
+        Tensor dL_dX_L0 = full_backward_L1(grads_L2.dL_dX);
+
+        return dL_dX_L0; // This is dL/dX_L0, final output of the backbone backprop
     }
 
-    // Combined Backward Pass for L3 (Steps 4.2, 4.3, 4.4)
+
+    // Combined Backward Pass for L3 (Steps 4.2, 4.3, 4.4, 4.4.1, 4.4.2)
     void full_backward_L3(const Tensor& dL_dX_invariant) {
         
-        // 1. Step 4.2 (Backward Pooling) -> dL/dX_conv_L3
+        // 1. Step 4.2 (Backward Pooling) -> dL/dX_conv_L3 (Simulated)
         int H_out = 26; int W_out = 26; int C_out = L3_C_OUT; int G_out = NUM_ROTATIONS;
         Tensor dL_dX_conv_L3({H_out, W_out, C_out, G_out}); 
         // Simulated Step 4.2 output
@@ -330,10 +347,10 @@ public:
         
         cout << "L3 Backprop Complete." << endl;
         
-        // 5. Step 4.4.1 (Propagate to L2)
-        Tensor dL_dX_L1 = full_backward_L2(grads_L3.dL_dX);
+        // 5. Steps 4.4.1 & 4.4.2 (Propagate to L2 and then L1)
+        Tensor dL_dX_L0 = full_backward_L2(grads_L3.dL_dX);
         
-        // NOTE: dL_dX_L1 is ready to be passed to L1's backward pass.
+        cout << "\nFull Backbone Backprop Chain Complete." << endl;
     }
 };
 
@@ -342,7 +359,7 @@ public:
 class LinearClassifier {
 public:
     Tensor W, B; 
-    LinearClassifier() : W({INVARIANT_FEATURES, NUM_CLASSES}), B({1, NUM_CLASSES}) { /* ... */ }
+    LinearClassifier() : W({INVARIANT_FEATURES, NUM_CLASSES}), B({1, NUM_CLASSES}) { initialize_weights(W); initialize_weights(B); }
     Tensor backward_and_update(const Tensor& X, const Tensor& dL_dLogits, double& total_loss) {
         Tensor dL_dX_invariant({X.shape[0], INVARIANT_FEATURES});
         for (int b = 0; b < X.shape[0]; ++b) {
@@ -360,18 +377,22 @@ int main() {
     // 1. Setup 
     GCNN backbone;
     
-    // Simulate a forward pass to populate caches (X1, X2, Z2, Z3)
-    Tensor input_image({INPUT_SIZE, INPUT_SIZE});
+    // Simulate a 32x32 input image
+    Tensor input_image({INPUT_SIZE, INPUT_SIZE}); 
+    for(int i=0; i<INPUT_SIZE; ++i) for(int j=0; j<INPUT_SIZE; ++j) input_image(i, j) = 0.5;
+    
+    // Simulate a forward pass to populate caches (X0, X1, X2, Z1, Z2, Z3)
     backbone.forward_backbone(input_image);
     
     // 2. Simulate Step 4.1 Output (dL/dX_invariant)
     Tensor dL_dX_invariant({1, INVARIANT_FEATURES}); 
     dL_dX_invariant(0, 0) = 0.001; 
     
-    cout << "\n--- Full G-CNN Backward Pass: Step 4.4.1 Implementation (L2) ---" << endl;
+    cout << "\n--- Full G-CNN Backward Pass: Step 4.4.2 Implementation (L1) ---" << endl;
     
-    // 3. Execute L3 and L2 Backprop
+    // 3. Execute L3, L2, and L1 Backprop
     try {
+        // We simulate the single backward pass from the classifier
         backbone.full_backward_L3(dL_dX_invariant);
     } catch (const exception& e) {
         cerr << "\nError during Backprop: " << e.what() << endl;
