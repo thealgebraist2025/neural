@@ -12,7 +12,7 @@ jobs:
       uses: actions/checkout@v2
 
     - name: Build 
-      run: clang++ -std=c++20 -O1 -g -fsanitize=address -fno-omit-frame-pointer pdebasis.cpp -o gcnn_asan
+      run: clang++ -std=c++20 -O1 -g -fsanitize=address -fno-omit-frame-pointer pdebasis.c -o gcnn_asan
 
     - name: Run the program
       run: ./gcnn_asan 
