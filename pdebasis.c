@@ -13,14 +13,19 @@ using namespace std;
 
 // --- Configuration (SO(2) Features on a Feasible Scale) ---
 constexpr double PI_CONST = 3.14159265358979323846; 
+
+// SCALING FOR FEASIBILITY: Simulate 1024x1024 complexity on a smaller 64x64 input
 constexpr int INPUT_SIZE_SIM = 64; 
 constexpr int KERNEL_SIZE = 5; 
-constexpr int NUM_CLASSES = 2; 
-constexpr int NUM_ROTATIONS_SIM = 8; 
+constexpr int NUM_CLASSES = 2; // Binary classification: Rectangle vs. Other
+constexpr int NUM_ROTATIONS_SIM = 8; // Reduced G-dimension for speed
+
+// Network Width
 constexpr int L1_C_OUT = 4;
 constexpr int L2_C_OUT = 8;
 constexpr int L3_C_OUT = 16;
 constexpr int INVARIANT_FEATURES = L3_C_OUT; 
+
 constexpr double REG_LAMBDA = 1e-4; 
 constexpr double LEARNING_RATE = 0.01;
 constexpr int NUM_EPOCHS = 1000;
@@ -55,6 +60,7 @@ public:
         data.resize(size, 0.0);
     }
     
+    // 4D Access
     double& operator()(int d1, int d2, int d3, int d4) {
         if (shape.size() != 4) throw runtime_error("Invalid 4D access (4D).");
         return data[d1 * shape[1] * shape[2] * shape[3] + d2 * shape[2] * shape[3] + d3 * shape[3] + d4];
@@ -64,6 +70,7 @@ public:
         return data[d1 * shape[1] * shape[2] * shape[3] + d2 * shape[2] * shape[3] + d3 * shape[3] + d4];
     }
 
+    // 2D Access
     double& operator()(int r, int c) {
         if (shape.size() != 2) throw runtime_error("Invalid 2D access (2D).");
         return data[r * shape[1] + c];
@@ -73,6 +80,7 @@ public:
         return data[r * shape[1] + c];
     }
 
+    // Arithmetic operators
     Tensor& operator+=(const Tensor& other) { 
         if (size != other.size) throw runtime_error("Tensor size mismatch in +=.");
         for(size_t i = 0; i < data.size(); ++i) { data[i] += other.data[i]; }
@@ -159,7 +167,7 @@ DataSet generate_dataset(int num_samples) {
     return data;
 }
 
-// --- FORWARD/LOSS UTILITIES (MOVED TO FIX ERROR) ---
+// --- FORWARD/LOSS UTILITIES ---
 
 Tensor softmax_forward(const Tensor& logits) {
     Tensor probs({logits.shape[0], logits.shape[1]});
@@ -234,9 +242,39 @@ Tensor c_g_convolution_forward(const GConvLayer& layer, const Tensor& X, Tensor&
     return Y; 
 }
 
-Tensor global_average_pooling(const Tensor& X) { return Tensor({X.shape[2], X.shape[3]}); }
+// FIX IMPLEMENTED HERE: Perform actual spatial average pooling (H, W -> 1)
+Tensor global_average_pooling(const Tensor& X) { 
+    if (X.shape.size() != 4) throw runtime_error("G-Pool input must be 4D.");
 
+    int H = X.shape[0];
+    int W = X.shape[1];
+    int C = X.shape[2];
+    int G = X.shape[3];
+    
+    // The output is 2D: {C, G}
+    Tensor Y({C, G});
+    
+    double num_pixels = (double)(H * W);
+
+    for (int c = 0; c < C; ++c) {
+        for (int g = 0; g < G; ++g) {
+            double sum = 0.0;
+            // Sum over spatial dimensions H and W
+            for (int h = 0; h < H; ++h) {
+                for (int w = 0; w < W; ++w) {
+                    sum += X(h, w, c, g);
+                }
+            }
+            // Store the average (pooling result)
+            Y(c, g) = sum / num_pixels;
+        }
+    }
+    return Y; 
+}
+
+// Invariant pooling (Max-pooling over the rotation (g) dimension)
 Tensor invariant_pooling(const Tensor& X_pooled) { 
+    // X_pooled is 2D: {C, G}
     Tensor invariant_features({1, X_pooled.shape[0]});
     for(int c=0; c<X_pooled.shape[0]; ++c) {
         double max_val = -1e9;
@@ -348,7 +386,7 @@ public:
     }
 };
 
-// --- Linear Classifier (Now placed AFTER orthogonal_grad) ---
+// --- Linear Classifier ---
 class LinearClassifier {
 public:
     Tensor W, B; 
@@ -383,9 +421,9 @@ public:
                     if (c_in == 0) dL_dB(0, c_out) += dL_dLogits(b, c_out); 
                 }
             }
+            // Add L2 regularization gradient (simplified orthogonal grad)
         }
         
-        // This is the line that caused the error, but is now fixed by reordering
         Tensor dL_ortho_dW = orthogonal_grad(W);
         dL_dW += dL_ortho_dW;
 
@@ -482,6 +520,7 @@ void train_model(GCNN& backbone, LinearClassifier& classifier, const DataSet& tr
                 for (int c = 0; c < INVARIANT_FEATURES; ++c) {
                     dL_dX_single(0, c) = dL_dX_invariant(i, c);
                 }
+                // Reload caches for backward pass
                 backbone.forward_backbone(train_data.X[start_idx + i]);
                 backbone.full_backward_L3(dL_dX_single);
             }
