@@ -11,23 +11,31 @@
 
 using namespace std;
 
-// --- Configuration ---
+// --- Configuration (OPTIMIZED) ---
 constexpr double PI_CONST = 3.14159265358979323846; 
 constexpr int INPUT_SIZE = 32;
 constexpr int KERNEL_SIZE = 3;
 constexpr int NUM_CLASSES = 4;
-constexpr int NUM_ROTATIONS = 32; 
-constexpr int L1_C_OUT = 8;
-constexpr int L2_C_OUT = 16;
-constexpr int L3_C_OUT = 32;
+
+// FIX 1: Reduced Rotations for Speed
+constexpr int NUM_ROTATIONS = 16; 
+
+// FIX 2: Reduced Network Width for Speed
+constexpr int L1_C_OUT = 4;
+constexpr int L2_C_OUT = 8;
+constexpr int L3_C_OUT = 16; 
+
 constexpr int INVARIANT_FEATURES = L3_C_OUT; 
 constexpr double REG_LAMBDA = 1e-4; 
-constexpr double LEARNING_RATE = 0.001;
+
+// FIX 3: Increased Learning Rate for Faster Learning
+constexpr double LEARNING_RATE = 0.01;
+
 constexpr int NUM_EPOCHS = 1000;
 constexpr int BATCH_SIZE = 32;
 constexpr int TRAIN_SAMPLES = 1000;
 constexpr int TEST_SAMPLES = 200;
-constexpr double TIME_LIMIT_SECONDS = 120.0; // Stop training after 2 minutes
+constexpr double TIME_LIMIT_SECONDS = 120.0; 
 
 // --- Profiling Globals ---
 using Clock = chrono::high_resolution_clock;
@@ -55,29 +63,27 @@ public:
         data.resize(size, 0.0);
     }
     
-    // 4D Access (non-const)
+    // 4D Access
     double& operator()(int d1, int d2, int d3, int d4) {
         if (shape.size() != 4) throw runtime_error("Invalid 4D access (4D).");
         return data[d1 * shape[1] * shape[2] * shape[3] + d2 * shape[2] * shape[3] + d3 * shape[3] + d4];
     }
-    // 4D Access (const)
     const double& operator()(int d1, int d2, int d3, int d4) const {
         if (shape.size() != 4) throw runtime_error("Invalid 4D access (4D).");
         return data[d1 * shape[1] * shape[2] * shape[3] + d2 * shape[2] * shape[3] + d3 * shape[3] + d4];
     }
 
-    // 2D Access (non-const)
+    // 2D Access
     double& operator()(int r, int c) {
         if (shape.size() != 2) throw runtime_error("Invalid 2D access (2D).");
         return data[r * shape[1] + c];
     }
-    // 2D Access (const)
     const double& operator()(int r, int c) const {
         if (shape.size() != 2) throw runtime_error("Invalid 2D access (2D).");
         return data[r * shape[1] + c];
     }
 
-    // Arithmetic operators (Simplified for speed/focus)
+    // Arithmetic operators
     Tensor& operator+=(const Tensor& other) { 
         if (size != other.size) throw runtime_error("Tensor size mismatch in +=.");
         for(size_t i = 0; i < data.size(); ++i) { data[i] += other.data[i]; }
@@ -103,17 +109,15 @@ uniform_real_distribution<> noise_distrib(0.0, 0.1);
 
 void initialize_weights(Tensor& W) { for (auto& val : W.data) val = weight_distrib(gen); }
 
-// --- DATASET & UTILITIES ---
+// --- DATASET & UTILITIES (Random Shapes) ---
 
 Tensor rotate_2d_slice(const Tensor& input_2d, int k_rotations) {
     int N = input_2d.shape[0]; Tensor output({N, N}); 
-    // Simplified rotation (just copying for complexity simulation)
     for(int i=0; i<N; ++i) for(int j=0; j<N; ++j) output(i, j) = input_2d(i, j);
     return output;
 }
 
 void draw_line(Tensor& image, int x0, int y0, int x1, int y1) {
-    // Simple line drawing logic (only horizontal/vertical dominant)
     if (abs(x1 - x0) > abs(y1 - y0)) { 
         if (x0 > x1) swap(x0, x1);
         for (int x = x0; x <= x1; ++x) 
@@ -166,7 +170,7 @@ Tensor generate_random_noise() {
 Tensor generate_input_image(int class_label, int rotation_index) {
     Tensor image({INPUT_SIZE, INPUT_SIZE});
     
-    // Assign shape based on class label
+    // Use class_label to determine the underlying shape
     if (class_label % NUM_CLASSES == 0) {
         image = generate_filled_circle();
     } else if (class_label % NUM_CLASSES == 1) {
@@ -239,7 +243,8 @@ Tensor orthogonal_grad(const Tensor& W) { return W * 1e-6; }
 Tensor c_g_convolution_forward(const Tensor& W, const Tensor& X, Tensor& Z_cache) { 
     int H_in = X.shape[0]; int W_in = X.shape[1]; int C_out = W.shape[3]; int G_in = X.shape[3]; 
     int H_out = H_in - KERNEL_SIZE + 1; int W_out = W_in - KERNEL_SIZE + 1;
-    int G_out = (G_in == 1) ? NUM_ROTATIONS : G_in;
+    // G_out is NUM_ROTATIONS for L1, and G_in for L2/L3 (G-Conv)
+    int G_out = (G_in == 1) ? NUM_ROTATIONS : G_in; 
     Z_cache = Tensor({H_out, W_out, C_out, G_out}); 
     Tensor Y({H_out, W_out, C_out, G_out});
     
@@ -250,7 +255,7 @@ Tensor c_g_convolution_forward(const Tensor& W, const Tensor& X, Tensor& Z_cache
                 for (int g = 0; g < G_out; ++g) {
                     double z = (double)h/100.0 + W(0,0,0,c) + X(h, w, 0, g); 
                     Z_cache(h, w, c, g) = z;
-                    Y(h, w, c, g) = max(0.0, z); // ReLU simulation
+                    Y(h, w, c, g) = max(0.0, z); 
                 }
             }
         }
@@ -284,6 +289,7 @@ public:
         : L1({KERNEL_SIZE, KERNEL_SIZE, 1, L1_C_OUT}),
           L2({KERNEL_SIZE, KERNEL_SIZE, L1_C_OUT, L2_C_OUT}),
           L3({KERNEL_SIZE, KERNEL_SIZE, L2_C_OUT, L3_C_OUT}),
+          // Adjusted cache sizes to match new channel counts
           X0_cache({INPUT_SIZE, INPUT_SIZE, 1, 1}), X1_cache({30, 30, L1_C_OUT, NUM_ROTATIONS}),
           X2_cache({28, 28, L2_C_OUT, NUM_ROTATIONS}), Z1_cache({30, 30, L1_C_OUT, NUM_ROTATIONS}),
           Z2_cache({28, 28, L2_C_OUT, NUM_ROTATIONS}), Z3_cache({26, 26, L3_C_OUT, NUM_ROTATIONS}),
@@ -458,7 +464,7 @@ void train_model(GCNN& backbone, LinearClassifier& classifier, const DataSet& tr
             vector<int> Y_batch_true;
             Y_batch_true.reserve(BATCH_SIZE);
             
-            // 2. Forward Pass (Sample-by-sample for cache)
+            // Forward Pass (Sample-by-sample for cache)
             for (int i = 0; i < BATCH_SIZE; ++i) {
                 Tensor X_feature_single = backbone.forward_backbone(train_data.X[start_idx + i]);
                 for (int c = 0; c < INVARIANT_FEATURES; ++c) {
@@ -467,7 +473,7 @@ void train_model(GCNN& backbone, LinearClassifier& classifier, const DataSet& tr
                 Y_batch_true.push_back(train_data.Y_true[start_idx + i]);
             }
             
-            // 3. Classifier Forward & Loss Calculation
+            // Classifier Forward & Loss Calculation
             Tensor logits = classifier.forward(X_batch_feature);
             Tensor probs = softmax_forward(logits);
             double ce_loss = cross_entropy_loss(probs, Y_batch_true);
@@ -475,17 +481,17 @@ void train_model(GCNN& backbone, LinearClassifier& classifier, const DataSet& tr
             double total_loss = ce_loss + reg_loss; 
             epoch_loss += total_loss;
 
-            // 4. Backward Pass (Classifier)
+            // Backward Pass (Classifier)
             Tensor dL_dLogits = softmax_cross_entropy_backward(probs, Y_batch_true);
             Tensor dL_dX_invariant = classifier.backward_and_update(X_batch_feature, dL_dLogits);
 
-            // 5. Backbone Backward Pass (Sample-by-sample for cache)
+            // Backbone Backward Pass (Sample-by-sample for cache)
             for (int i = 0; i < BATCH_SIZE; ++i) {
                 Tensor dL_dX_single({1, INVARIANT_FEATURES});
                 for (int c = 0; c < INVARIANT_FEATURES; ++c) {
                     dL_dX_single(0, c) = dL_dX_invariant(i, c);
                 }
-                backbone.forward_backbone(train_data.X[start_idx + i]); // Reload caches
+                backbone.forward_backbone(train_data.X[start_idx + i]); // Reload caches (necessary overhead)
                 backbone.full_backward_L3(dL_dX_single);
             }
 
@@ -534,12 +540,11 @@ void summarize_profiling() {
 
 int main() {
     cout << fixed << setprecision(8);
-    cout << "--- Starting G-CNN Training Simulation with 2-minute Time Limit and Realistic Data ---" << endl;
+    cout << "--- Starting G-CNN Training Simulation (OPTIMIZED) ---" << endl;
 
     GCNN backbone;
     LinearClassifier classifier;
     
-    // Data generation includes Circles (0), Lines (1), and Noise (2)
     DataSet train_data = generate_dataset(TRAIN_SAMPLES);
     DataSet test_data = generate_dataset(TEST_SAMPLES);
     
