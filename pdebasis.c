@@ -20,8 +20,8 @@ constexpr double REG_LAMBDA = 1e-4;   // Orthogonal Regularization strength
 constexpr double LEARNING_RATE = 0.001; // Reduced learning rate for stability
 constexpr int NUM_EPOCHS = 10;
 
-// PI definition
-constexpr double M_PI = 3.14159265358979323846;
+// M_PI is typically defined in <cmath> (or <math.h>). We rely on the standard definition.
+// We remove the line: // constexpr double M_PI = 3.14159265358979323846;
 
 // --- Tensor Class (Minimal) ---
 class Tensor {
@@ -36,7 +36,7 @@ public:
         data.resize(size, 0.0);
     }
     
-    // Access operator for 2D (Simplified for Dense Layer W)
+    // Access operator for 2D (Used for W, B, X_features, Logits)
     double& operator()(int r, int c) {
         if (shape.size() != 2) throw runtime_error("Invalid 2D access.");
         return data[r * shape[1] + c];
@@ -90,6 +90,8 @@ void initialize_weights(Tensor& W) {
 Tensor softmax_forward(const Tensor& logits) {
     Tensor probs = logits;
     double max_logit = -numeric_limits<double>::infinity();
+    
+    // Find max logit for stable exponentiation
     for (double val : probs.data) max_logit = max(max_logit, val);
 
     double sum_exp = 0.0;
@@ -102,11 +104,12 @@ Tensor softmax_forward(const Tensor& logits) {
 }
 
 double cross_entropy_loss(const Tensor& probs, int true_class) {
+    // Probs must be a single-sample tensor (1D) of size NUM_CLASSES
     return -log(probs.data[true_class] + 1e-9); // Add epsilon for stability
 }
 
 // 2. Backward Pass for Softmax + Cross-Entropy
-// Output gradient dL/dLogits
+// Output gradient dL/dLogits (single sample)
 Tensor softmax_cross_entropy_backward(const Tensor& probs, int true_class) {
     Tensor dL_dLogits = probs; // dL/dLogits = probs - one_hot
     dL_dLogits.data[true_class] -= 1.0;
@@ -139,7 +142,7 @@ double calculate_orthogonal_loss(const Tensor& W) {
 Tensor orthogonal_grad(const Tensor& W) {
     int R = W.shape[0];
     int C = W.shape[1];
-    if (R > C) return Tensor({R, C}); 
+    // This function assumes W is the matrix we are regularizing (R x C)
 
     // Step 1: Compute G = W W^T (R x R)
     Tensor G({R, R});
@@ -186,7 +189,7 @@ Tensor simulate_gcnn_invariant_feature(int batch_size) {
 
 class LinearClassifier {
 public:
-    Tensor W; // INVARIANT_FEATURES x NUM_CLASSES
+    Tensor W; // INVARIANT_FEATURES x NUM_CLASSES (R x C)
     Tensor B; // 1 x NUM_CLASSES
 
     LinearClassifier() 
@@ -217,8 +220,8 @@ public:
         return logits;
     }
 
-    // Backward Pass
-    void backward(const Tensor& X, const Tensor& dL_dLogits, double& total_loss) {
+    // Backward Pass and SGD Update
+    void backward_and_update(const Tensor& X, const Tensor& dL_dLogits, double& total_loss) {
         int batch_size = X.shape[0];
         
         // --- 1. Calculate Gradients for W and B ---
@@ -239,29 +242,27 @@ public:
         }
         
         // --- 2. Add Orthogonal Regularization Gradient to W ---
-        // Treat W as R x C where R=INVARIANT_FEATURES, C=NUM_CLASSES
-        // For a true orthogonal matrix, we'd constrain the smaller dimension.
-        // We will constrain W^T W approx I (C x C constraint)
+        // Regularization is applied to the final classification layer weight W.
+        // We constrain the weights by transposing W (W^T) and enforcing W^T W approx I 
+        // (i.e., orthogonality between the input feature vectors).
         
-        // For demonstration, we transpose W for the gradient calculation to enforce 
-        // orthogonality across the input features (columns): W^T W approx I (C x C)
-        
-        // Transpose W (NUM_CLASSES x INVARIANT_FEATURES) for regularization gradient
-        Tensor W_T({NUM_CLASSES, INVARIANT_FEATURES});
+        // The matrix for regularization is W_reg = W^T (NUM_CLASSES x INVARIANT_FEATURES)
+        Tensor W_reg({W.shape[1], W.shape[0]});
         for(int r=0; r<W.shape[0]; ++r)
             for(int c=0; c<W.shape[1]; ++c)
-                W_T(c, r) = W(r, c);
+                W_reg(c, r) = W(r, c);
 
-        Tensor dL_reg_dW_T = orthogonal_grad(W_T); // This is dL/dW_T (NUM_CLASSES x INVARIANT_FEATURES)
+        // Calculate dL/dW_reg (NUM_CLASSES x INVARIANT_FEATURES)
+        Tensor dL_reg_dW_reg = orthogonal_grad(W_reg); 
         
         // Transpose gradient back to dL/dW (INVARIANT_FEATURES x NUM_CLASSES)
-        Tensor dL_reg_dW({INVARIANT_FEATURES, NUM_CLASSES});
-        for(int r=0; r<dL_reg_dW_T.shape[0]; ++r)
-            for(int c=0; c<dL_reg_dW_T.shape[1]; ++c)
-                dL_reg_dW(c, r) = dL_reg_dW_T(r, c);
+        Tensor dL_reg_dW({W.shape[0], W.shape[1]});
+        for(int r=0; r<dL_reg_dW_reg.shape[0]; ++r)
+            for(int c=0; c<dL_reg_dW_reg.shape[1]; ++c)
+                dL_reg_dW(c, r) = dL_reg_dW_reg(r, c);
 
         // Add the regularization penalty to the total loss
-        total_loss += calculate_orthogonal_loss(W_T);
+        total_loss += calculate_orthogonal_loss(W_reg);
 
         // Add the regularization gradient
         dL_dW += dL_reg_dW;
@@ -285,10 +286,16 @@ int main() {
     cout << "--- Soft Orthogonal Regularization Training (Simulated) ---" << endl;
     cout << "Regularization Lambda: " << REG_LAMBDA << endl;
     cout << "Learning Rate: " << LEARNING_RATE << endl;
-    cout << "Features Constrained (Rows/Cols): " << classifier.W.shape[1] << "x" << classifier.W.shape[0] << endl;
+    cout << "Matrix Constrained (R x C): " << classifier.W.shape[1] << "x" << classifier.W.shape[0] << endl;
     
-    double initial_reg_loss = calculate_orthogonal_loss({classifier.W.shape[1], classifier.W.shape[0]});
-    cout << "Initial Reg Loss (W^T W): " << initial_reg_loss << endl;
+    // Initial regularization loss for the transposed matrix W^T
+    Tensor W_initial_reg({classifier.W.shape[1], classifier.W.shape[0]});
+    for(int r=0; r<classifier.W.shape[0]; ++r)
+        for(int c=0; c<classifier.W.shape[1]; ++c)
+            W_initial_reg(c, r) = classifier.W(r, c);
+            
+    double initial_reg_loss = calculate_orthogonal_loss(W_initial_reg);
+    cout << "Initial Reg Loss (||W^T W - I||_F^2): " << initial_reg_loss << endl;
     
     // TRAINING
     for (int epoch = 0; epoch < NUM_EPOCHS; ++epoch) {
@@ -305,14 +312,19 @@ int main() {
 
         // 2. Compute Loss and initial gradient dL/dLogits
         for (int b = 0; b < BATCH_SIZE; ++b) {
-            double ce_loss = cross_entropy_loss(
-                Tensor({NUM_CLASSES}, probs.data | ranges::views::slice(b * NUM_CLASSES, (b + 1) * NUM_CLASSES)), 
-                Y_true[b]);
+            
+            // --- FIX 2: Manually extract the single-sample Tensor ---
+            Tensor sample_probs({NUM_CLASSES});
+            size_t start_index = b * NUM_CLASSES;
+            for (int c = 0; c < NUM_CLASSES; ++c) {
+                sample_probs.data[c] = probs.data[start_index + c];
+            }
+            // --------------------------------------------------------
+            
+            double ce_loss = cross_entropy_loss(sample_probs, Y_true[b]);
             total_loss += ce_loss;
 
             // Compute dL/dLogits for this sample
-            Tensor sample_probs({NUM_CLASSES});
-            for(int c=0; c < NUM_CLASSES; ++c) sample_probs.data[c] = probs(b, c);
             Tensor dL_dLogits_sample = softmax_cross_entropy_backward(sample_probs, Y_true[b]);
 
             // Store in batch gradient tensor
@@ -320,18 +332,29 @@ int main() {
         }
 
         // 3. Backward Pass and Update (Includes Orthogonal Gradient and Loss)
-        classifier.backward(X_features, dL_dLogits, total_loss);
+        classifier.backward_and_update(X_features, dL_dLogits, total_loss);
         
+        // Report final regularization loss for the epoch
+        Tensor W_current_reg({classifier.W.shape[1], classifier.W.shape[0]});
+        for(int r=0; r<classifier.W.shape[0]; ++r)
+            for(int c=0; c<classifier.W.shape[1]; ++c)
+                W_current_reg(c, r) = classifier.W(r, c);
+        double final_reg_loss = calculate_orthogonal_loss(W_current_reg);
+
         // Report
-        double final_reg_loss = calculate_orthogonal_loss({classifier.W.shape[1], classifier.W.shape[0]});
         cout << "\nEpoch " << epoch + 1 << " | Total Loss: " << total_loss / BATCH_SIZE 
              << " | Reg Loss: " << final_reg_loss;
     }
 
     // Final Check
-    double final_reg_loss = calculate_orthogonal_loss({classifier.W.shape[1], classifier.W.shape[0]});
+    Tensor W_final_reg({classifier.W.shape[1], classifier.W.shape[0]});
+    for(int r=0; r<classifier.W.shape[0]; ++r)
+        for(int c=0; c<classifier.W.shape[1]; ++c)
+            W_final_reg(c, r) = classifier.W(r, c);
+
+    double final_reg_loss_val = calculate_orthogonal_loss(W_final_reg);
     cout << "\n\n--- Final State ---" << endl;
-    cout << "Final Regularization Loss (W^T W): " << final_reg_loss << endl;
+    cout << "Final Regularization Loss (||W^T W - I||_F^2): " << final_reg_loss_val << endl;
     
     return 0;
 }
